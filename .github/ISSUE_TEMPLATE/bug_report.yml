@@ -1,0 +1,38 @@
+name: Bug report
+description: Something does not work as documented (NOT for exploitable security vulnerabilities).
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Security vulnerabilities must not be reported here.** Use the private reporting link on this page or see SECURITY.md.
+        Never paste keys, tokens, vault files, logs containing identifiers, or real messages.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands, test name, or UI steps. A failing test is ideal.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit / version
+  - type: dropdown
+    id: component
+    attributes:
+      label: Component
+      options: [cipher-core, cipher-relay, cipher-wire, cipher-ffi, Android app, docs, build/CI, other]
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Environment
+      description: OS, Rust version, Android version / emulator, relay setup (no hostnames or addresses that identify private infrastructure)

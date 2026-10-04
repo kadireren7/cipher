@@ -1,0 +1,22 @@
+name: Feature request
+description: Propose an improvement. Protocol or cryptography changes need a design first (see CONTRIBUTING.md).
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do, or what weakness are you addressing? Name the adversary if it is security-related.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal and alternatives
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security impact
+      options:
+        - label: This touches cryptography, keys, the wire protocol, group policy, or the privacy transport (a design document, threat-model update, invariants and negative tests will be required)
+        - label: I understand Cipher must not weaken an existing security invariant
