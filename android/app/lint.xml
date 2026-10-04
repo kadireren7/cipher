@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- UniFFI's generated Kotlin picks java.lang.ref.Cleaner only if the class exists (Class.forName guard) and otherwise falls
+         back to the JNA cleaner, so it is safe on API 30-32. The suppression is scoped to the generated directory only. -->
+    <issue id="NewApi">
+        <ignore path="**/generated/uniffi/**" />
+    </issue>
+</lint>

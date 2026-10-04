@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext is forbidden everywhere. Only SYSTEM trust anchors are trusted (no user-installed CAs, no debug overrides in release).
+     Certificate pinning (SECURITY TODO ST-002): the transport supports SPKI pins; none are shipped because the production relay
+     certificate strategy (and a backup pin / rotation plan) belongs to the operator. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

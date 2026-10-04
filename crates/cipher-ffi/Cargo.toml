@@ -1,0 +1,55 @@
+[package]
+name = "cipher-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Narrow UniFFI bridge between the Kotlin Android app and cipher-core. Exposes high-level operations only: no keys, no raw MLS state."
+
+# NOTE: not `[lints] workspace = true`: UniFFI's scaffolding macro necessarily expands to `unsafe` extern "C" code, so
+# `forbid(unsafe_code)` cannot apply to this crate. Instead `tests/boundary_guards.rs` asserts that THIS crate's
+# hand-written source contains no `unsafe` at all. All other lints are the workspace's.
+[lints.rust]
+unsafe_code = "allow"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+indexing_slicing = "warn"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "cipher_ffi"
+
+[dependencies]
+cipher-core = { path = "../cipher-core" }
+cipher-wire = { path = "../cipher-wire" }
+uniffi = "=0.32.2"
+thiserror = "2"
+zeroize = "1.9"
+serde_json = "1"
+
+[features]
+default = []
+# Test-only hooks (e.g. forcing a panic inside a call). Never enabled in builds that ship.
+test-hooks = []
+# Enables the `uniffi-bindgen` binary used to generate the Kotlin bindings.
+cli = ["uniffi/cli"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["cli"]
+
+[dev-dependencies]
+cipher-ffi = { path = ".", features = ["test-hooks"] }
+cipher-core = { path = "../cipher-core", features = ["insecure-test-support"] }
+proptest = "1.11"
+tempfile = "3"

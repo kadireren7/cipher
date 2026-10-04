@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- DEBUG BUILDS ONLY (src/debug is never packaged into release): additionally trusts the app-bundled test CA used by the
+     emulator integration tests against a local relay. Release builds use src/main's config, which trusts system anchors only. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="@raw/test_ca" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>

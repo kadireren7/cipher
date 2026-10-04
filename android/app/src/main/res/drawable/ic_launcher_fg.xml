@@ -1,0 +1,8 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <!-- Speech bubble with a keyhole: simple, not a "security dashboard". -->
+    <path android:fillColor="#FFFFFF"
+        android:pathData="M30,34 h48 a8,8 0 0 1 8,8 v22 a8,8 0 0 1 -8,8 h-30 l-12,10 v-10 h-6 a8,8 0 0 1 -8,-8 v-22 a8,8 0 0 1 8,-8 z" />
+    <path android:fillColor="#16315F"
+        android:pathData="M54,46 a6,6 0 0 1 3,11.2 v5.8 h-6 v-5.8 a6,6 0 0 1 3,-11.2 z" />
+</vector>

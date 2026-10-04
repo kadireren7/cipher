@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Cipher</string>
+    <string name="channel_messages">Messages</string>
+    <string name="channel_messages_desc">New message alerts. Contents are hidden unless you change the privacy setting.</string>
+    <string name="notif_title">Cipher</string>
+    <string name="notif_body">New message</string>
+</resources>
