@@ -179,7 +179,10 @@ jobs:
         run: python3 scripts/public_release_scan.py --history
       # gitleaks scans full git history. Note: gitleaks-action requires a GITLEAKS_LICENSE secret
       # when used in a GitHub organisation; personal repositories do not.
+      # The action derives <first-commit>^..HEAD from the push payload, which does not exist for the very first push of a branch (root commit).
+      # Skip it there; scripts/public_release_scan.py --history above already scanned the full history.
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        if: github.event_name != 'push' || github.event.before != '0000000000000000000000000000000000000000'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
