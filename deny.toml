@@ -1,0 +1,59 @@
+# cargo-deny policy. Run: cargo deny check
+[graph]
+all-features = false
+# Production graph only: dev-dependencies and test-support code never ship.
+exclude-dev = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # proc-macro-error2 is "unmaintained" (no known vulnerability). It is a COMPILE-TIME proc-macro
+  # dependency of hax-lib-macros <- libcrux-* <- hpke-rs <- openmls_rust_crypto; it is not linked into
+  # the shipped binaries' runtime logic. No upgrade exists. Re-evaluate on every OpenMLS bump.
+  { id = "RUSTSEC-2026-0173", reason = "compile-time-only transitive proc-macro in libcrux/hax; tracked in docs/SECURITY_TODO.md" },
+]
+
+[licenses]
+version = 2
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "ISC",
+  "Unicode-3.0",
+  "Zlib",
+  "CC0-1.0",
+  "MPL-2.0",
+  # Mozilla CA root data used by the relay's PostgreSQL TLS client (webpki-roots); a permissive data licence.
+  "CDLA-Permissive-2.0",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+deny = [
+  # TLS must be rustls only: no OpenSSL / native-tls anywhere in the graph.
+  { name = "openssl" },
+  { name = "openssl-sys" },
+  { name = "native-tls" },
+  # Telemetry / analytics SDKs must never appear.
+  { name = "sentry" },
+  { name = "sentry-core" },
+  # Non-cryptographic RNG crates for anything security-relevant are reviewed by hand.
+  # Allowed ONLY as tempfile's dependency inside the UniFFI code-generation toolchain (uniffi_pipeline); never used for secrets.
+  { name = "fastrand", wrappers = ["tempfile"] },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

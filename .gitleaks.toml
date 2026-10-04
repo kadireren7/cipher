@@ -1,0 +1,11 @@
+title = "cipher gitleaks config"
+
+[extend]
+useDefault = true
+
+# Test fixtures are deliberately fake and are not allow-listed by path: if a fixture trips the scanner
+# it should be reworded rather than the whole directory exempted. Only the explicitly fake placeholder
+# in .env.example is allowed.
+[[allowlists]]
+description = "placeholder values in .env.example"
+paths = ['''^\.env\.example$''']

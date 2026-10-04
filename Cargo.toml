@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = ["crates/cipher-wire", "crates/cipher-core", "crates/cipher-relay", "crates/cipher-ffi"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "UNLICENSED"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_debug_implementations = "warn"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "warn"
+panic = "deny"
+indexing_slicing = "warn"
+todo = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[profile.release]
+overflow-checks = true
+panic = "abort"
+lto = true
+codegen-units = 1
+
+# Android builds of the FFI library: identical to release but panics UNWIND so the FFI layer can catch them
+# (the relay and everything else keep `panic = "abort"`).
+[profile.android-release]
+inherits = "release"
+panic = "unwind"
+lto = "thin"
+codegen-units = 8
+strip = "symbols"

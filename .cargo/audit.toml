@@ -1,0 +1,4 @@
+[advisories]
+# Compile-time-only transitive proc-macro (hax-lib-macros <- libcrux <- hpke-rs <- openmls_rust_crypto).
+# Unmaintained, no known vulnerability. Tracked in docs/SECURITY_TODO.md; re-evaluate on each OpenMLS bump.
+ignore = ["RUSTSEC-2026-0173"]
