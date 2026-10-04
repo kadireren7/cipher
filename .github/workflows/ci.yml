@@ -1,0 +1,185 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: CI never needs to write to the repo.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+
+# All third-party actions are pinned to full commit SHAs (A11: compromised build pipeline).
+# Update deliberately and review the diff; do not use floating tags.
+jobs:
+  rust:
+    name: build / lint / tests (rust, real PostgreSQL)
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 # the exact image the suite was run against
+        env:
+          POSTGRES_PASSWORD: devonly-not-a-secret
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CIPHER_TEST_DATABASE_URL: postgres://postgres:devonly-not-a-secret@127.0.0.1:55432/postgres
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Toolchain (pinned by rust-toolchain.toml)
+        run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Lint (clippy, warnings are errors)
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Build (release, locked) - typechecks every crate in the production configuration
+        run: cargo build --workspace --release --locked
+      - name: Unit + integration tests (includes relay-vs-PostgreSQL, FFI boundary, Android static guards, experimental KT attack tests)
+        run: cargo test --workspace --all-features --locked
+      - name: FFI generation validation (Kotlin bindings are generated from the library; a stale or failing generator fails CI)
+        run: |
+          cargo build -p cipher-ffi --features cli --locked
+          cargo run -q -p cipher-ffi --features cli --locked --bin uniffi-bindgen -- generate \
+            --library target/debug/libcipher_ffi.so --language kotlin --out-dir "$RUNNER_TEMP/uniffi" --no-format
+          test -s "$RUNNER_TEMP/uniffi/uniffi/cipher_ffi/cipher_ffi.kt"
+      - name: Shipped dependency graph has no experimental/test-only crates
+        run: |
+          ! cargo tree -p cipher-ffi -e normal --locked | grep -E "ct-merkle|insecure"
+
+  security-invariants:
+    name: security invariants (a regression here fails CI)
+    runs-on: ubuntu-24.04
+    needs: rust
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24 # the exact image the suite was run against
+        env:
+          POSTGRES_PASSWORD: devonly-not-a-secret
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CIPHER_TEST_DATABASE_URL: postgres://postgres:devonly-not-a-secret@127.0.0.1:55432/postgres
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Invariant test suites (client protocol, vault, attachments, verification, relay, TLS, static guards)
+        run: |
+          cargo test --locked -p cipher-core --all-features \
+            --test mls_protocol --test vault_security --test attachments --test verification \
+            --test static_guards --test parsers_property
+          cargo test --locked -p cipher-ffi --test boundary_guards --test boundary_behaviour --test android_guards
+          cargo test --locked -p cipher-relay --test security_invariants --test tls --test postgres_relay --test engine_dm --test engine_groups --test engine_attachments
+      - name: Every invariant maps to tests that exist (renaming/deleting one fails CI)
+        run: python3 scripts/check_invariants.py
+      - name: Invariants doc is generated from the registry (no drift)
+        run: python3 scripts/gen_invariants_doc.py --check
+      - name: Relay has no message-crypto dependencies; no insecure test features in production graph
+        run: bash scripts/check-relay-deps.sh
+
+  supply-chain:
+    name: dependency audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Install audit tools (pinned versions)
+        run: cargo install --locked cargo-deny@0.20.2 cargo-audit@0.22.2
+      - name: cargo deny (advisories, licenses, bans incl. no OpenSSL/native-tls, sources)
+        run: cargo deny check
+      - name: cargo audit (warnings are errors; the one reviewed exception is in .cargo/audit.toml)
+        run: cargo audit --deny warnings
+
+  android:
+    name: android (unit tests / ktlint / lint / debug + release build)
+    runs-on: ubuntu-24.04
+    needs: rust
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Android Rust targets + cargo-ndk (pinned)
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install --locked cargo-ndk@3.5.4
+      - name: SDK components (API 36, NDK 27.2)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" >/dev/null
+      - name: JVM unit tests, ktlint, Android lint
+        working-directory: android
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
+        run: ./gradlew --no-daemon :app:testDebugUnitTest :app:ktlintCheck :app:lintDebug
+      - name: Debug APK (cross-compiles the Rust library, generates the UniFFI bindings)
+        working-directory: android
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
+        run: ./gradlew --no-daemon :app:assembleDebug
+      - name: Release build (minified; unsigned unless CIPHER_RELEASE_KEYSTORE* secrets are provided) + manifest gate
+        working-directory: android
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
+        run: |
+          ./gradlew --no-daemon :app:assembleRelease
+          bash ../scripts/check-release-apk.sh
+
+  android-instrumented:
+    name: android instrumented tests (emulator, software Keystore)
+    runs-on: ubuntu-24.04
+    needs: android
+    # NOTE: written but NOT yet executed on GitHub runners (no remote exists). It needs KVM; see scripts/ci-emulator-tests.sh.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Boot an API 34 x86_64 emulator and run connectedDebugAndroidTest
+        run: bash scripts/ci-emulator-tests.sh
+
+  secrets:
+    name: secret scanning
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      - name: Built-in scanner (no external dependency)
+        run: python3 scripts/secret_scan.py
+      - name: Public-release scanner (secrets, personal data, forbidden artifacts) over the tree and the full history
+        run: python3 scripts/public_release_scan.py --history
+      # gitleaks scans full git history. Note: gitleaks-action requires a GITLEAKS_LICENSE secret
+      # when used in a GitHub organisation; personal repositories do not.
+      - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}

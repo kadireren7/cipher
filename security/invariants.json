@@ -1,0 +1,1931 @@
+{
+  "_comment": "Source of truth for security invariants. scripts/check_invariants.py verifies every listed test exists (Rust by name via cargo --list, Kotlin by file + function name); CI runs the whole test suite, so a failing mapped test fails CI. 'status': automated = fully exercised by tests at the stated scope; partial = tested at the stated scope, with the listed gap; manual = cannot be automated here.",
+  "invariants": [
+    {
+      "id": "SEC-001",
+      "statement": "Application servers never receive message plaintext.",
+      "status": "automated",
+      "scope": "Fixture-based: the relay API has no type that can carry plaintext; end-to-end flows are captured on the wire, in the relay DB and in logs.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_001_005_010_relay_wire_db_and_logs_contain_no_plaintext_or_private_keys"
+        },
+        {
+          "kind": "rust",
+          "name": "one_to_one_roundtrip_and_ciphertext_hides_plaintext"
+        }
+      ],
+      "gap": "A modified/malicious CLIENT can always send plaintext it chooses to; this guards the shipped client+relay.",
+      "threats": [
+        "A2",
+        "A3"
+      ]
+    },
+    {
+      "id": "SEC-002",
+      "statement": "Servers never possess private cryptographic material able to decrypt conversations.",
+      "status": "automated",
+      "scope": "Relay manifest and transitive graph contain no MLS/AEAD/KDF crates (CI script); no client private key appears on the wire, in the relay DB or in logs.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_002_relay_crate_has_no_client_crypto_dependencies"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_001_005_010_relay_wire_db_and_logs_contain_no_plaintext_or_private_keys"
+        },
+        {
+          "kind": "script",
+          "name": "scripts/check-relay-deps.sh"
+        }
+      ],
+      "gap": "None at this scope; key-escrow/backup features added later must be re-evaluated.",
+      "threats": [
+        "A2",
+        "A3"
+      ]
+    },
+    {
+      "id": "SEC-003",
+      "statement": "A production database dump alone is insufficient to decrypt conversation history.",
+      "status": "automated",
+      "scope": "All queued ciphertext, key packages and directory records are given to an attacker client that cannot decrypt.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_003_full_database_dump_is_insufficient_to_decrypt_history"
+        }
+      ],
+      "gap": "A dump plus a device compromise is out of scope (see THREAT_MODEL A13).",
+      "threats": [
+        "A3"
+      ]
+    },
+    {
+      "id": "SEC-004",
+      "statement": "Object storage only receives client-side encrypted attachments.",
+      "status": "partial",
+      "scope": "Blob store content equals client ciphertext; no plaintext/filename/MIME/key in storage; tampering fails closed.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_004_object_storage_receives_only_ciphertext_and_tampering_fails_closed"
+        },
+        {
+          "kind": "rust",
+          "name": "storage_provider_sees_only_ciphertext"
+        },
+        {
+          "kind": "rust",
+          "name": "blob_endpoint_enforces_container_header_and_size_limits"
+        }
+      ],
+      "gap": "The relay can check the container header and size but cannot prove a body is encrypted; a malicious client could upload plaintext.",
+      "threats": [
+        "A4"
+      ]
+    },
+    {
+      "id": "SEC-005",
+      "statement": "Network interception does not reveal message plaintext.",
+      "status": "partial",
+      "scope": "Every byte crossing the client/relay transport is captured and searched; relay TLS config is 1.3-only and refuses TLS 1.2 and untrusted certificates.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_001_005_010_relay_wire_db_and_logs_contain_no_plaintext_or_private_keys"
+        },
+        {
+          "kind": "rust",
+          "name": "server_negotiates_tls13_and_refuses_tls12_and_untrusted_certs"
+        }
+      ],
+      "gap": "TLS enforcement in the Android networking stack (OEM variants) and certificate pinning are not tested (no physical-device testing). E2EE does not depend on TLS.",
+      "threats": [
+        "A1",
+        "A5"
+      ]
+    },
+    {
+      "id": "SEC-006",
+      "statement": "Removal from a group prevents the removed member from obtaining access to messages from later epochs.",
+      "status": "automated",
+      "scope": "Removed member cannot decrypt or send in later epochs, even with a pre-removal state snapshot and even if the relay misroutes ciphertext to them.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_006_removed_member_cannot_read_later_epochs_and_cannot_send"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_006_removed_member_with_old_state_snapshot_still_cannot_read_new_epoch"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_006_removed_member_cannot_decrypt_post_removal_even_if_relay_forwards_it"
+        }
+      ],
+      "gap": "Messages the member legitimately decrypted before removal remain known to them. Commit ordering/fork resolution across concurrent committers is not implemented.",
+      "threats": [
+        "A9"
+      ]
+    },
+    {
+      "id": "SEC-007",
+      "statement": "Compromise of a current messaging key does not expose all historical messages (forward secrecy).",
+      "status": "partial",
+      "scope": "Full current client state cannot decrypt already-consumed messages (replay cache cleared to isolate the cryptographic layer). Post-compromise security: after the victim issues a self-update commit, a holder of the old state cannot follow the new epoch or read its traffic.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_007_forward_secrecy_current_state_cannot_decrypt_past_messages"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_007_post_compromise_security_after_self_update_old_state_loses_access"
+        }
+      ],
+      "gap": "Properties are those of MLS (RFC 9420): keys for not-yet-received out-of-order messages are retained until used; local plaintext history is protected only by the vault, not by ratcheting. PCS only takes effect when members actually issue update commits; automatic scheduling is not implemented yet.",
+      "threats": [
+        "A13"
+      ]
+    },
+    {
+      "id": "SEC-008",
+      "statement": "Long-term private identity keys are never stored in plaintext in ordinary application storage.",
+      "status": "partial",
+      "scope": "Identity/transport private keys appear only inside vault-encrypted records; the Rust FFI never returns them; Android static guards forbid ordinary storage APIs (SharedPreferences, DataStore, external storage); an emulator run searched the app's whole data directory for fixtures (0 hits).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_008_identity_private_material_never_in_plaintext_on_disk"
+        },
+        {
+          "kind": "rust",
+          "name": "every_activity_extends_secure_activity_and_nothing_clears_the_flag"
+        },
+        {
+          "kind": "rust",
+          "name": "banned_apis_do_not_appear_in_app_code"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/EngineLifecycleInstrumentedTest.kt",
+          "name": "vaultFileNeverContainsThePin"
+        }
+      ],
+      "gap": "In-memory MLS provider state is not zeroized on drop (OpenMLS memory storage); the 32-byte vault key transits JVM memory during Keystore unwrap (ST-027); hardware backing is not verified on a physical device (ST-001).",
+      "threats": [
+        "A6",
+        "A7",
+        "A14"
+      ]
+    },
+    {
+      "id": "SEC-009",
+      "statement": "Sensitive local storage is encrypted and its protection is tied to OS/hardware key protection where supported.",
+      "status": "partial",
+      "scope": "Records are AEAD-sealed under a DEK wrapped by the keystore; location binding, corruption and wrong-key cases fail closed; lock lifecycle drops keys.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_009_database_file_contains_no_plaintext_and_roundtrips_after_unlock"
+        },
+        {
+          "kind": "rust",
+          "name": "corrupted_record_ciphertext_is_detected_never_returned"
+        },
+        {
+          "kind": "rust",
+          "name": "records_cannot_be_swapped_between_locations"
+        },
+        {
+          "kind": "rust",
+          "name": "lifecycle_states_and_keys_unreachable_when_not_unlocked"
+        },
+        {
+          "kind": "rust",
+          "name": "pin_unlock_requires_the_hardware_bound_secret"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/KeystoreInstrumentedTest.kt",
+          "name": "wrapUnwrapRoundTripsAndBindsTheAad"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/KeystoreInstrumentedTest.kt",
+          "name": "keyMaterialIsNotExportable"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/EngineLifecycleInstrumentedTest.kt",
+          "name": "lostDeviceKeyFailsClosedAndNeverWipesTheVault"
+        }
+      ],
+      "gap": "Hardware binding is provided by the Android Keystore, exercised only on an emulator (software-backed). Per-use biometrics, StrongBox and enrolment-change invalidation are NOT TESTED on hardware (ST-001). Rollback of individual records by a file-write attacker is not detected (ST-016).",
+      "threats": [
+        "A6",
+        "A7"
+      ]
+    },
+    {
+      "id": "SEC-010",
+      "statement": "Logs, analytics, crash reports, notifications and telemetry never contain plaintext, attachment contents, private keys, recovery secrets or auth secrets.",
+      "status": "partial",
+      "scope": "Relay logs captured under full-trace and searched for fixtures/ids/ciphertext/keys; static guards on logging calls (Rust and Kotlin); Android logger accepts closed event codes only and R8 strips Log in release; notification text is built in Rust from privacy mode and vault state; push payload constant; an emulator session's logcat, relay log and pg_dump had 0 fixture hits.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_001_005_010_relay_wire_db_and_logs_contain_no_plaintext_or_private_keys"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_010_logging_calls_never_reference_bodies_or_secrets"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_010_no_stdout_stderr_or_dbg_in_production_code"
+        },
+        {
+          "kind": "rust",
+          "name": "push_provider_receives_only_a_constant_content_free_wakeup"
+        },
+        {
+          "kind": "rust",
+          "name": "only_safelog_may_call_android_log_and_it_takes_closed_codes_only"
+        },
+        {
+          "kind": "rust",
+          "name": "r8_strips_android_logging_in_release"
+        },
+        {
+          "kind": "rust",
+          "name": "notifications_never_reveal_content_while_locked_whatever_the_mode"
+        },
+        {
+          "kind": "rust",
+          "name": "default_is_no_content_and_locked_vault_is_always_generic"
+        }
+      ],
+      "gap": "OS-level logs/crash dumps outside our control; third-party SDKs are forbidden by a static guard but runtime behaviour of platform crash handlers is not tested; Android notification history retention is not tested.",
+      "threats": [
+        "A2",
+        "A3",
+        "A14"
+      ]
+    },
+    {
+      "id": "SEC-011",
+      "statement": "The server cannot silently substitute identity/public keys without creating a detectable security event.",
+      "status": "partial",
+      "scope": "TOFU pins + endorsements: key swap in directory, rogue/unendorsed device, forged endorsement, auth-key swap and KeyPackage substitution are all detected and fail closed; safety numbers/QR detect substitution.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_011_server_substituting_identity_key_is_detected_and_untrusted_until_acknowledged"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_011_key_package_with_substituted_identity_is_refused"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_011_malicious_relay_swapping_directory_key_is_detected_by_pins"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_011_malicious_relay_swapping_key_package_is_refused_by_client"
+        },
+        {
+          "kind": "rust",
+          "name": "rogue_unendorsed_device_injected_by_server_is_untrusted"
+        },
+        {
+          "kind": "rust",
+          "name": "safety_number_and_qr_detect_substitution"
+        }
+      ],
+      "gap": "A relay that lies from the very first contact is detected only if users compare safety numbers out-of-band; key transparency is not implemented.",
+      "threats": [
+        "A2"
+      ]
+    },
+    {
+      "id": "SEC-012",
+      "statement": "Sensitive operations use cryptographically secure randomness.",
+      "status": "partial",
+      "scope": "Static guard forbids non-CSPRNG sources and restricts OS RNG calls to approved modules; per-attachment keys/nonces are fresh.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_012_no_non_cryptographic_or_ad_hoc_randomness"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_012_direct_os_rng_calls_only_in_approved_places"
+        },
+        {
+          "kind": "rust",
+          "name": "each_attachment_gets_fresh_key_and_nonce"
+        }
+      ],
+      "gap": "Randomness quality itself cannot be tested; relies on the OS CSPRNG (getrandom) and the OpenMLS RustCrypto provider.",
+      "threats": [
+        "A2",
+        "A11"
+      ]
+    },
+    {
+      "id": "SEC-013",
+      "statement": "Cryptographic authentication failures fail closed.",
+      "status": "automated",
+      "scope": "Bad signatures/replays/skew/audience/tampered bodies are rejected without state change; tampered envelopes, keystore blobs and records error out.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_013_authentication_failures_fail_closed"
+        },
+        {
+          "kind": "rust",
+          "name": "tampered_device_envelope_fails_closed"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_010_malicious_member_adding_unapproved_device_is_rejected_fail_closed"
+        },
+        {
+          "kind": "rust",
+          "name": "key_invalidation_by_os_is_terminal_and_fails_closed"
+        },
+        {
+          "kind": "rust",
+          "name": "missing_secure_storage_key_fails_closed"
+        }
+      ],
+      "gap": "None at this scope.",
+      "threats": [
+        "A5",
+        "A12"
+      ]
+    },
+    {
+      "id": "SEC-014",
+      "statement": "Replay of previously accepted protocol messages does not produce duplicate valid state transitions.",
+      "status": "automated",
+      "scope": "Client-side replay cache and MLS secret-tree both refuse replays (commits do not advance the epoch twice); relay refuses replayed signed requests and dedups message ids even after ack.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_014_replay_does_not_produce_second_valid_transition"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_014_replay_rejected_by_protocol_layer_even_without_client_cache"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_014_replayed_signed_request_is_rejected_and_causes_no_second_transition"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_014_duplicate_message_ids_are_idempotent_even_after_ack"
+        }
+      ],
+      "gap": "After the queue TTL expires the relay may accept the same message id again; the client replay cache and MLS then reject it. The client replay cache is bounded (8192 entries).",
+      "threats": [
+        "A12"
+      ]
+    },
+    {
+      "id": "SEC-015",
+      "statement": "Any modification of protocol ciphertext, attachment ciphertext or local records is detected and rejected.",
+      "status": "automated",
+      "scope": "Bit flips across the whole message, truncation, extension, chunk reordering/truncation in attachments, record swapping.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_015_modified_ciphertext_is_rejected_at_every_byte_position_sample"
+        },
+        {
+          "kind": "rust",
+          "name": "modified_ciphertext_is_rejected_everywhere"
+        },
+        {
+          "kind": "rust",
+          "name": "truncation_extension_and_reordering_detected_even_if_hash_is_recomputed"
+        },
+        {
+          "kind": "rust",
+          "name": "malformed_and_truncated_ciphertext_rejected"
+        }
+      ],
+      "gap": "None at this scope.",
+      "threats": [
+        "A2",
+        "A4"
+      ]
+    },
+    {
+      "id": "SEC-016",
+      "statement": "No silent downgrade of key protection, KDF cost, or transport security.",
+      "status": "partial",
+      "scope": "Provisioning fails below the minimum protection level (software keystore only with explicit opt-in + event); stored KDF params below the floor are refused; https-only endpoints; relay refuses to start without TLS except explicit loopback dev mode.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_016_provisioning_fails_closed_when_keystore_is_too_weak_and_never_silently_downgrades"
+        },
+        {
+          "kind": "rust",
+          "name": "kdf_parameter_downgrade_in_storage_fails_closed"
+        },
+        {
+          "kind": "rust",
+          "name": "plain_http_and_odd_urls_are_rejected"
+        },
+        {
+          "kind": "rust",
+          "name": "tls_is_mandatory_unless_loopback_dev"
+        },
+        {
+          "kind": "rust",
+          "name": "no_cleartext_http_or_tls_downgrade_in_production_code"
+        },
+        {
+          "kind": "rust",
+          "name": "manifest_is_locked_down"
+        },
+        {
+          "kind": "rust",
+          "name": "network_security_config_is_system_trust_only_in_release"
+        },
+        {
+          "kind": "rust",
+          "name": "transport_is_tls13_only_with_no_redirects_and_no_custom_trust"
+        },
+        {
+          "kind": "rust",
+          "name": "release_build_is_strict_and_the_debug_bypass_is_debug_only"
+        },
+        {
+          "kind": "rust",
+          "name": "protection_level_is_reported_honestly_and_software_is_refused_by_default"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/HardeningInstrumentedTest.kt",
+          "name": "backupAndCleartextAreOff"
+        }
+      ],
+      "gap": "Android NSC/TLS policy is checked by static guards and an installed-package check; a hostile CA / MITM against the app was NOT TESTED. Release build refusing the software Keystore is checked in the release gate (SECURITY_TESTING \u00a77), on an emulator only.",
+      "threats": [
+        "A5",
+        "A6",
+        "A7"
+      ]
+    },
+    {
+      "id": "SEC-017",
+      "statement": "Relay resources are bounded: queue sizes, message sizes, TTLs, rates; queued ciphertext expires.",
+      "status": "automated",
+      "scope": "Count/byte queue bounds, size limits, TTL bounds, expiry, rate limiting, hostile input never yields 5xx.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "queues_are_bounded_by_count_and_bytes"
+        },
+        {
+          "kind": "rust",
+          "name": "queued_ciphertext_expires_and_ttl_bounds_are_enforced"
+        },
+        {
+          "kind": "rust",
+          "name": "input_size_limits_and_strict_validation"
+        },
+        {
+          "kind": "rust",
+          "name": "rate_limiting_throttles_a_flooding_device_and_failed_auth"
+        },
+        {
+          "kind": "rust",
+          "name": "hostile_input_never_causes_server_errors"
+        }
+      ],
+      "gap": "Rate limits are per-process in memory; multi-instance deployments need a shared limiter.",
+      "threats": [
+        "A2",
+        "A10"
+      ]
+    },
+    {
+      "id": "SEC-018",
+      "statement": "Server account credentials are separate from cryptographic identity: knowing them does not allow reading messages or silently adding a trusted device.",
+      "status": "automated",
+      "scope": "Account credential cannot add a device without an endorsement by an existing device identity key; registration requires proof of possession of the identity key.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "account_credential_alone_cannot_add_a_device_a8"
+        },
+        {
+          "kind": "rust",
+          "name": "registration_requires_token_and_proof_of_identity_key_possession"
+        },
+        {
+          "kind": "rust",
+          "name": "endorsed_new_device_is_accepted_with_notification_and_forged_endorsement_is_not"
+        }
+      ],
+      "gap": "Account recovery / lost-device flows are not designed yet.",
+      "threats": [
+        "A8"
+      ]
+    },
+    {
+      "id": "SEC-019",
+      "statement": "While the vault is not unlocked, no plaintext API works: every data call returns Locked, previews are hidden, and keys are dropped on background, screen-off and inactivity.",
+      "status": "partial",
+      "scope": "Rust engine and FFI tests (every data API fails closed before unlock, lifecycle misuse, concurrent calls), plus instrumented tests driving the real native library with the real Android Keystore wrapper on an emulator (provision, lock, wrong PIN, restart, background, rate limiting). Plus a stress test racing rapid lock/unlock/background against plaintext calls from other threads (no panic, no stale success after a completed lock).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "every_data_api_fails_closed_before_the_vault_is_unlocked"
+        },
+        {
+          "kind": "rust",
+          "name": "lifecycle_misuse_is_safe"
+        },
+        {
+          "kind": "rust",
+          "name": "lock_lifecycle_blocks_every_plaintext_api_and_drops_the_session"
+        },
+        {
+          "kind": "rust",
+          "name": "lifecycle_states_and_keys_unreachable_when_not_unlocked"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/EngineLifecycleInstrumentedTest.kt",
+          "name": "pinOnlyProvisionLockUnlockAndRestart"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/EngineLifecycleInstrumentedTest.kt",
+          "name": "backgroundDropsKeysAndRequiresUnlock"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/EngineLifecycleInstrumentedTest.kt",
+          "name": "repeatedWrongPinsAreRateLimited"
+        },
+        {
+          "kind": "rust",
+          "name": "rapid_lock_unlock_racing_with_plaintext_calls_never_panics_or_leaks_a_stale_success"
+        }
+      ],
+      "gap": "Biometric unlock, setUnlockedDeviceRequired and invalidation on enrolment change are NOT TESTED on hardware. Anything held in process memory while UNLOCKED is exposed to a compromised device (A13).",
+      "threats": [
+        "A6",
+        "A7"
+      ]
+    },
+    {
+      "id": "SEC-020",
+      "statement": "The Kotlin/FFI boundary exposes no key material or raw MLS state, treats every Kotlin input as hostile, and a Rust panic never crosses into Kotlin.",
+      "status": "partial",
+      "scope": "Static guards over exported functions and hand-written unsafe; behaviour tests for malformed input, panics inside calls and callbacks, lifecycle misuse and concurrency; instrumented malformed-id test on the real library.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "hand_written_ffi_code_contains_no_unsafe"
+        },
+        {
+          "kind": "rust",
+          "name": "malformed_inputs_are_rejected_at_the_boundary_before_any_work"
+        },
+        {
+          "kind": "rust",
+          "name": "a_panic_inside_any_call_is_caught_and_locks_the_vault"
+        },
+        {
+          "kind": "rust",
+          "name": "a_panicking_callback_is_contained_and_does_not_leave_keys_unlocked"
+        },
+        {
+          "kind": "rust",
+          "name": "construction_rejects_cleartext_and_hostile_settings"
+        },
+        {
+          "kind": "rust",
+          "name": "offline_errors_map_to_offline_and_no_secret_text_appears_in_errors"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/EngineLifecycleInstrumentedTest.kt",
+          "name": "malformedIdentifiersAreRejectedAtTheBoundary"
+        }
+      ],
+      "gap": "The 32-byte vault key transits JVM memory during Keystore wrap/unwrap (ST-027). Fuzzing of the FFI inputs is by property tests and short fuzz smoke runs, not a campaign. A compromised UI process can call the engine like the UI does while unlocked.",
+      "threats": [
+        "A15"
+      ]
+    },
+    {
+      "id": "SEC-021",
+      "statement": "Every Android window is FLAG_SECURE (dialogs included), only one component is exported, there are no deep links, WebViews, backups or cleartext traffic, and release builds are non-debuggable and refuse a software Keystore.",
+      "status": "partial",
+      "scope": "Source-level guards with a negative control (mutation-checked), and instrumented checks of the INSTALLED package (flags, exported components, backup, cleartext, permissions) on an emulator; FLAG_SECURE was also observed in the live window and as a 0-byte screencap.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "manifest_is_locked_down"
+        },
+        {
+          "kind": "rust",
+          "name": "every_activity_extends_secure_activity_and_nothing_clears_the_flag"
+        },
+        {
+          "kind": "rust",
+          "name": "dialogs_are_only_created_through_secure_dialog"
+        },
+        {
+          "kind": "rust",
+          "name": "backup_rules_exclude_everything"
+        },
+        {
+          "kind": "rust",
+          "name": "dependencies_contain_no_trackers_webviews_or_cloud_sdks"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/HardeningInstrumentedTest.kt",
+          "name": "flagSecureIsSetOnTheMainWindow"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/HardeningInstrumentedTest.kt",
+          "name": "onlyTheLauncherActivityIsExportedAndNothingElseIs"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/HardeningInstrumentedTest.kt",
+          "name": "noDangerousOrUnneededPermissionsAreRequested"
+        },
+        {
+          "kind": "rust",
+          "name": "relay_address_is_validated_in_the_shell"
+        }
+      ],
+      "gap": "FLAG_SECURE does not stop another camera, a compromised OS or an enabled accessibility service. Not tested on physical devices or other OEM builds; actual backup/device-transfer attempts and cross-app attacks were not performed.",
+      "threats": [
+        "A13",
+        "A14",
+        "A16"
+      ]
+    },
+    {
+      "id": "SEC-022",
+      "statement": "Group authorisation is enforced by every receiver before a commit is merged; the relay is not trusted for authorisation, and a forged commit does not brick the group.",
+      "status": "automated",
+      "scope": "Pure authorisation function and role matrix (unit + property), MLS-level malicious-metadata commits, engine-level forged commit from a member, full lifecycle with roles; verified end to end on the real relay.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "full_group_lifecycle_with_roles_and_enforced_policy"
+        },
+        {
+          "kind": "rust",
+          "name": "malicious_metadata_commits_are_rejected_by_receivers"
+        },
+        {
+          "kind": "rust",
+          "name": "sender_identity_comes_from_the_authenticated_tree_not_from_the_relay"
+        },
+        {
+          "kind": "rust",
+          "name": "a_forged_commit_from_a_member_is_rejected_by_everyone_and_does_not_brick_the_group"
+        },
+        {
+          "kind": "rust",
+          "name": "group_messaging_roles_and_enforced_authorization"
+        }
+      ],
+      "gap": "A malicious relay can still partition a group by showing different commit orders to different members (detected as undecryptable traffic, no healing). Policy is ours and unreviewed (ST-005).",
+      "threats": [
+        "A10"
+      ]
+    },
+    {
+      "id": "SEC-023",
+      "statement": "Concurrent group commits are ordered deterministically and atomically by the relay's compare-and-swap sequencer; losers rebase; out-of-order or withheld commits are held, not misapplied; removal rotates the routing tag.",
+      "status": "automated",
+      "scope": "PostgreSQL integration tests with real concurrency (exactly one winner, no partial delivery, atomic fan-out), engine tests for rebase, held messages and key refresh, tag rotation after removal.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "group_commit_is_compare_and_swap_with_deterministic_ordering"
+        },
+        {
+          "kind": "rust",
+          "name": "concurrent_commits_have_exactly_one_winner_and_no_partial_delivery"
+        },
+        {
+          "kind": "rust",
+          "name": "group_commit_is_atomic_when_any_delivery_cannot_be_queued"
+        },
+        {
+          "kind": "rust",
+          "name": "removal_rotates_the_routing_tag_so_removed_members_cannot_brick_the_group"
+        },
+        {
+          "kind": "rust",
+          "name": "concurrent_commits_are_ordered_deterministically_and_the_loser_rebases"
+        },
+        {
+          "kind": "rust",
+          "name": "a_commit_withheld_by_the_relay_holds_later_messages_until_it_arrives"
+        },
+        {
+          "kind": "rust",
+          "name": "reordered_commits_are_held_not_applied_and_stale_ones_are_dropped"
+        },
+        {
+          "kind": "rust",
+          "name": "concurrent_commits_fork_is_detected_not_silently_merged"
+        }
+      ],
+      "gap": "Ordering authority is the (untrusted) relay: availability and partitioning attacks remain (see SEC-022 gap).",
+      "threats": [
+        "A2",
+        "A10"
+      ]
+    },
+    {
+      "id": "SEC-024",
+      "statement": "Notification text never reveals content while the vault is locked, whatever the privacy mode; the default mode shows neither sender nor content; the wake payload is the exact constant.",
+      "status": "partial",
+      "scope": "Rust policy tests and engine tests across all three modes and vault states; relay push test for the constant payload.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "default_is_no_content_and_locked_vault_is_always_generic"
+        },
+        {
+          "kind": "rust",
+          "name": "modes_expose_only_what_they_promise_when_unlocked"
+        },
+        {
+          "kind": "rust",
+          "name": "only_the_exact_constant_wake_payload_is_accepted"
+        },
+        {
+          "kind": "rust",
+          "name": "notifications_never_reveal_content_while_locked_whatever_the_mode"
+        },
+        {
+          "kind": "rust",
+          "name": "push_provider_receives_only_a_constant_content_free_wakeup"
+        }
+      ],
+      "gap": "No push provider is integrated (ST-017); Android notification history retention and OEM behaviour are not tested.",
+      "threats": [
+        "A6"
+      ]
+    },
+    {
+      "id": "SEC-025",
+      "statement": "Cipher IDs are random, not derived from any key/phone/email, and have exactly one canonical spelling; contacts are added only by Cipher ID or QR, and a replaced identity key is never accepted silently.",
+      "status": "automated",
+      "scope": "Property tests for round trip, typo detection and parser safety; regression test for the padding-bit alias bug found by property testing; trust-state and substitution tests.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "roundtrip"
+        },
+        {
+          "kind": "rust",
+          "name": "single_char_errors_are_detected"
+        },
+        {
+          "kind": "rust",
+          "name": "padding_bits_must_be_zero_so_every_id_has_exactly_one_spelling"
+        },
+        {
+          "kind": "rust",
+          "name": "parser_never_panics"
+        },
+        {
+          "kind": "rust",
+          "name": "contact_trust_states_and_identity_substitution"
+        },
+        {
+          "kind": "rust",
+          "name": "unknown_inviter_creates_a_hidden_request_and_no_receipt_until_accepted"
+        }
+      ],
+      "gap": "First-contact authenticity still depends on users comparing safety numbers/QR (no deployed key transparency).",
+      "threats": [
+        "A2",
+        "A10"
+      ]
+    },
+    {
+      "id": "SEC-026",
+      "statement": "The experimental key-transparency verifier cannot mark a contact verified or override manual verification, and rejects forged/rolled-back/forked/malformed log evidence. NOT PRODUCTION READY: feature-gated, no log, not wired in.",
+      "status": "partial",
+      "scope": "13 attack and property tests with the transparency-experimental feature (they run in this registry check because it lists tests with --all-features).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "transparency_is_structurally_independent_of_manual_verification"
+        },
+        {
+          "kind": "rust",
+          "name": "forged_or_tampered_heads_are_rejected"
+        },
+        {
+          "kind": "rust",
+          "name": "rollback_to_a_smaller_tree_is_refused"
+        },
+        {
+          "kind": "rust",
+          "name": "a_fork_at_the_same_size_yields_transferable_evidence"
+        },
+        {
+          "kind": "rust",
+          "name": "extension_needs_a_valid_proof_and_a_rewritten_history_has_none"
+        },
+        {
+          "kind": "rust",
+          "name": "substituted_key_wrong_index_and_tampered_proofs_fail_inclusion"
+        },
+        {
+          "kind": "rust",
+          "name": "gossip_detects_a_split_view_and_is_not_fooled_by_garbage"
+        }
+      ],
+      "gap": "No log server, gossip transport, monitor or deployment exists; the first head is trusted on first use; ct-merkle is unaudited (ST-006).",
+      "threats": [
+        "A2"
+      ]
+    },
+    {
+      "id": "SEC-027",
+      "statement": "The relay on PostgreSQL stays bounded and consistent: forward-only checksummed migrations, shared rate limits and replay protection across instances, exact bounded queues, atomic operations, load shedding.",
+      "status": "automated",
+      "scope": "Integration tests against a real PostgreSQL with multiple relay instances sharing one database.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "migrations_are_idempotent_checksummed_and_refuse_a_newer_schema"
+        },
+        {
+          "kind": "rust",
+          "name": "concurrent_migration_runs_do_not_race"
+        },
+        {
+          "kind": "rust",
+          "name": "rate_limits_are_shared_across_relay_instances"
+        },
+        {
+          "kind": "rust",
+          "name": "replay_protection_is_shared_across_relay_instances"
+        },
+        {
+          "kind": "rust",
+          "name": "rate_limit_keys_do_not_expose_ips_or_device_ids"
+        },
+        {
+          "kind": "rust",
+          "name": "queue_counters_stay_exact_through_enqueue_ack_expiry_and_duplicates"
+        },
+        {
+          "kind": "rust",
+          "name": "concurrent_senders_can_never_exceed_the_per_device_queue_bound"
+        },
+        {
+          "kind": "rust",
+          "name": "overload_is_shed_with_503_instead_of_queueing_without_bound"
+        },
+        {
+          "kind": "rust",
+          "name": "batch_send_reports_per_recipient_results_and_is_idempotent"
+        }
+      ],
+      "gap": "Not load-tested at scale; no TLS-terminating proxy or HA PostgreSQL topology tested; encryption at rest and backup policy of the database are operator concerns (ST-012).",
+      "threats": [
+        "A2",
+        "A12"
+      ]
+    },
+    {
+      "id": "SEC-028",
+      "statement": "Restoring an older copy of the app's local storage is detected and refused (monotonic generation held outside the data directory); the vault is not used afterwards.",
+      "status": "partial",
+      "threats": [
+        "A6",
+        "A7",
+        "A13",
+        "A16"
+      ],
+      "scope": "Core vault tests (device-key and PIN-only vaults, normal use never trips it, in-vault forgery impossible, reset overtakes a stale counter) and, on the emulator, the real Keystore counter plus a rollback through the real native library. On the emulator the real app was attacked by restoring an older vault.db after further use: refused with a rollback-specific message (EXERCISED, not automated).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "restoring_an_older_vault_file_is_detected_and_refused"
+        },
+        {
+          "kind": "rust",
+          "name": "rollback_is_detected_for_pin_only_vaults_too"
+        },
+        {
+          "kind": "rust",
+          "name": "normal_use_never_trips_the_rollback_check"
+        },
+        {
+          "kind": "rust",
+          "name": "an_attacker_cannot_forge_a_higher_generation_inside_the_vault"
+        },
+        {
+          "kind": "rust",
+          "name": "a_fresh_install_over_a_stale_counter_is_not_flagged"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/KeystoreInstrumentedTest.kt",
+          "name": "theGenerationCounterIsMonotonicAndNeverLowers"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/EngineLifecycleInstrumentedTest.kt",
+          "name": "restoringAnOlderCopyOfTheVaultIsRefusedAsRolledBack"
+        }
+      ],
+      "gap": "The counter lives in the system keystore database, not in hardware: an attacker who runs code as the app or has root can edit it. A snapshot taken and restored inside ONE unlocked session (no lock/unlock in between) is not detected. Restoring a stale copy together with deleting the counter keys defeats it. Individual record rollback inside a newer vault is detected only through the generation, not per record. Not tested on a physical device."
+    },
+    {
+      "id": "SEC-029",
+      "statement": "Attacker-controlled media (thumbnails, images, audio, video, PDF) can never crash the app or exhaust its memory: headers are checked, decoding is sub-sampled, failures degrade to 'cannot display'.",
+      "status": "partial",
+      "threats": [
+        "A10",
+        "A15"
+      ],
+      "scope": "Pure-logic JVM tests of the size policy, instrumented tests running the real platform decoders on a crafted decompression-bomb header, garbage and truncated input, and a source guard forbidding raw bitmap decoding outside SafeDecode.",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/media/SafeDecodeTest.kt",
+          "name": "decompressionBombsAndNonsenseHeadersAreRefused"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/media/SafeDecodeTest.kt",
+          "name": "normalImagesAreSampledDownToTheDisplaySize"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/MediaHostileInputInstrumentedTest.kt",
+          "name": "aDecompressionBombThumbnailIsRefusedQuicklyWithoutExhaustingMemory"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/MediaHostileInputInstrumentedTest.kt",
+          "name": "garbageAndTruncatedImagesDoNotThrow"
+        },
+        {
+          "kind": "rust",
+          "name": "bitmap_decoding_of_untrusted_bytes_only_happens_in_safe_decode"
+        }
+      ],
+      "gap": "Hostile audio/video/PDF files are handled by guarded player/renderer setup but were not fuzzed or tested with real malformed samples. Platform codec vulnerabilities (MediaPlayer, PdfRenderer) are outside our control; a platform bug can still crash the app or be exploited."
+    },
+    {
+      "id": "SEC-030",
+      "statement": "A fully compromised relay and database cannot read content or silently change authenticated conversation state: tampering, redirection, duplication, replay, epoch rollback, fake acknowledgements, partitions, tag retirement and counter resets are prevented or detected, with the undetectable cases documented.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A3",
+        "A12"
+      ],
+      "scope": "Engine-level tests against a real PostgreSQL where the test manipulates the relay's tables directly like a malicious operator.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "bit_flipped_ciphertext_is_dropped_never_decrypted_and_never_blocks_the_queue"
+        },
+        {
+          "kind": "rust",
+          "name": "ciphertext_redirected_to_the_wrong_device_yields_nothing"
+        },
+        {
+          "kind": "rust",
+          "name": "relay_duplication_is_not_shown_twice"
+        },
+        {
+          "kind": "rust",
+          "name": "a_dropped_message_is_undetectable_but_later_messages_still_work"
+        },
+        {
+          "kind": "rust",
+          "name": "a_fake_acknowledgement_does_not_make_a_message_delivered"
+        },
+        {
+          "kind": "rust",
+          "name": "replaying_an_old_commit_cannot_roll_the_group_back"
+        },
+        {
+          "kind": "rust",
+          "name": "a_group_partition_is_visible_as_held_messages_and_heals_when_the_commit_arrives"
+        },
+        {
+          "kind": "rust",
+          "name": "a_retired_routing_tag_stops_commits_cleanly_without_corrupting_state"
+        },
+        {
+          "kind": "rust",
+          "name": "a_reset_relay_group_counter_does_not_permanently_brick_commits"
+        },
+        {
+          "kind": "rust",
+          "name": "a_full_database_dump_after_all_the_attacks_still_contains_no_plaintext"
+        }
+      ],
+      "gap": "Message DROPPING and delay are UNDETECTABLE (no per-sender sequence numbers are exposed). A partition is detectable only as undecryptable traffic and heals only when the relay cooperates. The relay can always deny service."
+    },
+    {
+      "id": "SEC-031",
+      "statement": "The relay bounds attacker-controlled resource use BEFORE expensive work: large uploads are authenticated before their body is read, concurrent uploads are capped, and KeyPackage claims are limited per target and per requester.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A10"
+      ],
+      "scope": "Relay tests with a request body that records whether the server ever read it, plus multi-attacker KeyPackage draining.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "unauthenticated_or_badly_signed_uploads_are_refused_without_reading_the_body"
+        },
+        {
+          "kind": "rust",
+          "name": "a_valid_signature_over_a_different_body_is_rejected_after_reading"
+        },
+        {
+          "kind": "rust",
+          "name": "key_package_draining_is_throttled_per_target_even_across_many_attackers"
+        },
+        {
+          "kind": "rust",
+          "name": "body_hash_roundtrips_and_garbage_is_rejected"
+        },
+        {
+          "kind": "rust",
+          "name": "overload_is_shed_with_503_instead_of_queueing_without_bound"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/LiveRelayInstrumentedTest.kt",
+          "name": "anAttachmentUploadFromTheRealAppStackIsAcceptedByTheRealRelay"
+        }
+      ],
+      "gap": "Queue flooding of a victim's inbox by any authenticated device is NOT solved (the relay does not know who the victim's contacts are). No load test at scale. Connection-level slowloris relies on the request deadline and connection cap only."
+    },
+    {
+      "id": "SEC-032",
+      "statement": "A device record is bound to its account: the identity key signs account, device and auth key together, so a record cannot be replayed under another account id.",
+      "status": "automated",
+      "threats": [
+        "A2",
+        "A8"
+      ],
+      "scope": "Core directory verification and relay registration.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_device_record_transplanted_to_another_account_fails_binding_verification"
+        },
+        {
+          "kind": "rust",
+          "name": "a_device_record_cannot_be_registered_under_a_different_account_id"
+        },
+        {
+          "kind": "rust",
+          "name": "auth_key_swapped_by_server_fails_binding_check"
+        }
+      ],
+      "gap": "Account ids are chosen by clients; first-contact authenticity still depends on TOFU and manual verification."
+    },
+    {
+      "id": "SEC-033",
+      "statement": "Forward secrecy is durable: ratchet advances caused by receiving messages are persisted before the relay is told to forget the ciphertext and before locking, so the state on disk cannot re-derive consumed message keys.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A13"
+      ],
+      "scope": "Group message received, relay keeps a copy of the ciphertext, process restart, the persisted state must not decrypt it.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "consumed_group_message_keys_are_gone_from_the_state_on_disk_after_a_restart"
+        }
+      ],
+      "gap": "Between a ratchet step and the next persist (inside one sync batch) the old state is still on disk; process death inside that window keeps the old keys. OpenMLS in-memory storage is not zeroized."
+    },
+    {
+      "id": "SEC-034",
+      "statement": "The app's transport refuses downgrade (TLS 1.2), expired, wrong-host and untrusted-CA certificates (what a MITM proxy presents), never follows a redirect to HTTP and never speaks plain HTTP.",
+      "status": "partial",
+      "threats": [
+        "A1",
+        "A5"
+      ],
+      "scope": "Instrumented tests from the emulator against adversarial TLS servers on the host (skipped when the servers are not running).",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/NetworkAttackInstrumentedTest.kt",
+          "name": "theClientNegotiatesTls13EvenWhenTheServerAlsoOffersTls12"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/NetworkAttackInstrumentedTest.kt",
+          "name": "aTls12OnlyServerIsRefusedNoDowngrade"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/NetworkAttackInstrumentedTest.kt",
+          "name": "anExpiredCertificateIsRefused"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/NetworkAttackInstrumentedTest.kt",
+          "name": "aCertificateForTheWrongHostnameIsRefused"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/NetworkAttackInstrumentedTest.kt",
+          "name": "aCertificateFromAnUntrustedCaIsRefusedLikeAMitmProxy"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/NetworkAttackInstrumentedTest.kt",
+          "name": "aRedirectToPlainHttpIsNeverFollowed"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/NetworkAttackInstrumentedTest.kt",
+          "name": "plainHttpUrlsAreRefusedBeforeAnyConnection"
+        },
+        {
+          "kind": "rust",
+          "name": "transport_is_tls13_only_with_no_redirects_and_no_custom_trust"
+        }
+      ],
+      "gap": "No certificate pinning is shipped (deliberate, see docs/FINAL_SECURITY_REVIEW.md): a CA in the system store that is subverted can intercept metadata (not content). Tested on one emulator image only."
+    },
+    {
+      "id": "SEC-035",
+      "statement": "A lock request (background, screen off, manual) never waits behind a running operation: in-flight network calls and transfers are aborted first, then the vault locks.",
+      "status": "partial",
+      "threats": [
+        "A6",
+        "A13"
+      ],
+      "scope": "FFI-level abort plumbing and ordering test; Kotlin guard that the shell signals before queueing.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "once_a_lock_is_requested_no_new_network_call_reaches_the_platform"
+        },
+        {
+          "kind": "rust",
+          "name": "request_lock_then_background_locks_promptly_and_the_engine_works_after_the_next_unlock"
+        },
+        {
+          "kind": "rust",
+          "name": "background_and_screen_off_signal_the_lock_before_queueing_it"
+        }
+      ],
+      "gap": "A single blocking platform call that ignores cancellation (a stuck socket) can still delay the lock until its timeout. Not exercised with a real multi-megabyte transfer on a device."
+    },
+    {
+      "id": "SEC-036",
+      "statement": "The Keystore wrapper never RETURNS the vault key to Kotlin code and zeroes its own copies; a keystore that delivers nothing cannot unlock the vault. (Mitigates ST-027; does not eliminate it.)",
+      "status": "partial",
+      "threats": [
+        "A6",
+        "A13",
+        "A15"
+      ],
+      "scope": "Instrumented zeroing test on the real Keystore, Rust fail-closed test for a silent keystore, source guard.",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/KeystoreInstrumentedTest.kt",
+          "name": "theJvmCopyOfTheKeyIsZeroedAfterUnwrapAndWrap"
+        },
+        {
+          "kind": "rust",
+          "name": "a_keystore_that_never_delivers_the_secret_cannot_unlock_the_vault"
+        },
+        {
+          "kind": "rust",
+          "name": "keystore_wrapper_never_returns_the_vault_key_and_zeroes_its_copies"
+        }
+      ],
+      "gap": "The key still transits JVM memory for the duration of the Keystore operation; JCA/Keystore-internal temporary buffers are outside our control; a heap dump during that window or an in-process attacker can capture it (ST-027 stays open)."
+    },
+    {
+      "id": "SEC-037",
+      "statement": "Input and overlay surfaces are hardened: typed text avoids keyboard learning/autofill, touches are dropped under overlays, system overlays are hidden, non-tool accessibility services are denied (API 34+), and saved state never holds secrets.",
+      "status": "partial",
+      "threats": [
+        "A13",
+        "A14"
+      ],
+      "scope": "Source guards plus an instrumented check of the flags on the real views.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "every_text_field_goes_through_private_text_field"
+        },
+        {
+          "kind": "rust",
+          "name": "saved_state_never_holds_secrets_or_message_text"
+        },
+        {
+          "kind": "rust",
+          "name": "overlay_and_autofill_defences_are_present"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/HardeningInstrumentedTest.kt",
+          "name": "overlayAndAutofillDefencesAreActiveOnTheRealViews"
+        }
+      ],
+      "gap": "Keyboard 'incognito' is best effort (a third-party keyboard can ignore it); HIDE_OVERLAY_WINDOWS needs API 31+; accessibility sensitivity needs API 34+. No tapjacking attack app was built to test against."
+    },
+    {
+      "id": "SEC-038",
+      "statement": "Names and preview lines cannot disguise themselves: control characters, bidirectional overrides/embeddings/isolates, zero-width spaces and similar format characters are refused in group names by every receiver and stripped from contact names, previews and notifications; emoji joiners and RTL text remain valid.",
+      "status": "partial",
+      "threats": [
+        "A10",
+        "A18"
+      ],
+      "scope": "Shared policy (`is_disguising_char`) with unit tests and receiver-side shape validation of group metadata.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "overrides_zero_width_and_controls_are_disguising_but_emoji_joiners_and_marks_are_not"
+        },
+        {
+          "kind": "rust",
+          "name": "group_names_with_bidi_overrides_or_zero_width_characters_are_rejected_by_shape_validation"
+        }
+      ],
+      "gap": "Message BODY text is not filtered (bidi is legitimate there); confusable homoglyphs (Cyrillic '\u0430' for Latin 'a') are not detected; the UI does not warn about look-alike names."
+    },
+    {
+      "id": "REV-001",
+      "statement": "A removed member cannot decrypt group messages sent after the removal commit, nor send messages other members accept.",
+      "status": "partial",
+      "threats": [
+        "A9",
+        "A2"
+      ],
+      "scope": "Engine-level with the real relay and PostgreSQL: decryption of post-removal ciphertext fails for the removed client (including relay-misrouted rows), stale sends into retained past epochs are rejected by every remaining member.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "removal_splits_history_access_cryptographically"
+        },
+        {
+          "kind": "rust",
+          "name": "an_offline_removed_member_cannot_send_receive_or_force_a_rollback"
+        },
+        {
+          "kind": "rust",
+          "name": "a_message_sent_during_the_removal_is_kept_by_remaining_members_and_revoked_for_the_removed"
+        }
+      ],
+      "gap": "A modified client that holds pre-removal keys can still decrypt content it already received; physical devices not tested."
+    },
+    {
+      "id": "REV-002",
+      "statement": "After a removed member's compliant Cipher client observes the removal, it cannot decrypt Cipher-retained pre-removal history: the decryption operation itself fails (all per-epoch history keys are deleted, vault holds no plaintext).",
+      "status": "partial",
+      "threats": [
+        "A9"
+      ],
+      "scope": "Engine-level: sealed retained ciphertext fails to open, no history keys, no plaintext canary in the vault; attachments unavailable.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "removal_splits_history_access_cryptographically"
+        },
+        {
+          "kind": "rust",
+          "name": "admin_and_owner_removals_revoke_the_removed_member"
+        },
+        {
+          "kind": "rust",
+          "name": "an_attachment_sent_during_the_removal_is_unavailable_to_the_removed_member"
+        },
+        {
+          "kind": "rust",
+          "name": "process_death_around_the_removed_members_revocation_is_safe"
+        },
+        {
+          "kind": "rust",
+          "name": "restart_after_removal_keeps_access_for_members_and_revocation_for_the_removed"
+        },
+        {
+          "kind": "rust",
+          "name": "seal_roundtrips_and_is_bound_to_group_epoch_message_and_sender"
+        },
+        {
+          "kind": "rust",
+          "name": "sealing_is_randomised"
+        }
+      ],
+      "gap": "Takes effect only once the removed client observes the removal (a relay that withholds it delays revocation); plaintext copied outside Cipher, screenshots and modified clients are out of scope; NAND remanence not assessed."
+    },
+    {
+      "id": "REV-003",
+      "statement": "Remaining members retain the history they were authorised to read across removals, restarts and concurrent traffic.",
+      "status": "automated",
+      "threats": [
+        "A9"
+      ],
+      "scope": "Engine-level: A/B/C read M1/M2 before and after removal, after rapid successive removals and restarts, and messages sent concurrently with the removal.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "removal_splits_history_access_cryptographically"
+        },
+        {
+          "kind": "rust",
+          "name": "rapid_successive_removals_keep_history_for_the_remaining_and_revoke_each_removed"
+        },
+        {
+          "kind": "rust",
+          "name": "restart_after_removal_keeps_access_for_members_and_revocation_for_the_removed"
+        },
+        {
+          "kind": "rust",
+          "name": "a_reordered_removal_is_resolved_without_losing_history"
+        },
+        {
+          "kind": "rust",
+          "name": "a_message_sent_during_the_removal_is_kept_by_remaining_members_and_revoked_for_the_removed"
+        }
+      ],
+      "gap": ""
+    },
+    {
+      "id": "REV-004",
+      "statement": "A removed member cannot restore membership or history access from stale local state: a restored old vault is refused at unlock, a replayed Welcome is rejected by the revocation tombstone, and only a newer legitimate Welcome gives access to the NEW era.",
+      "status": "partial",
+      "threats": [
+        "A9",
+        "A17",
+        "A12"
+      ],
+      "scope": "Engine-level: old vault snapshot, replayed Welcome and legitimate re-add.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "an_old_vault_snapshot_cannot_restore_access"
+        },
+        {
+          "kind": "rust",
+          "name": "replayed_welcome_and_a_legitimate_readd_restore_only_new_history"
+        }
+      ],
+      "gap": "Same-session snapshots and per-record rollback are not detected (ST-016)."
+    },
+    {
+      "id": "REV-005",
+      "statement": "The relay cannot independently restore a removed member's access or make the compliant client retain it: replayed Welcomes/commits and misrouted ciphertext are useless; withholding the removal only delays revocation and never yields new content.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A9"
+      ],
+      "scope": "Engine-level with relay replay, withholding, reordering and misrouting.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "replayed_welcome_and_a_legitimate_readd_restore_only_new_history"
+        },
+        {
+          "kind": "rust",
+          "name": "withheld_removal_blocks_new_content_and_ends_old_access_when_it_arrives"
+        },
+        {
+          "kind": "rust",
+          "name": "a_reordered_removal_is_resolved_without_losing_history"
+        }
+      ],
+      "gap": "A relay that withholds the removal commit from the removed member keeps that member's OLD access until it is delivered (asserted by test and documented)."
+    },
+    {
+      "id": "REV-006",
+      "statement": "Removal advances the MLS epoch and therefore the history-access key; a committer whose response was lost converges on the same epoch instead of diverging.",
+      "status": "partial",
+      "threats": [
+        "A9",
+        "A2"
+      ],
+      "scope": "Engine-level incl. fault injection (response lost after the relay executed the commit; restart; idempotent relay retry).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "removal_splits_history_access_cryptographically"
+        },
+        {
+          "kind": "rust",
+          "name": "a_lost_response_after_the_relay_accepted_the_removal_does_not_diverge_the_committer"
+        }
+      ],
+      "gap": "Idempotency window is the latest commit per group only."
+    },
+    {
+      "id": "REV-007",
+      "statement": "Removal rotates the relay routing capability: the old tag is retired and cannot be used to advance the group.",
+      "status": "automated",
+      "threats": [
+        "A9",
+        "A2"
+      ],
+      "scope": "Engine-level against the real relay (see also the sequencer tests).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "removal_rotates_the_tag_and_the_removed_member_cannot_read_even_if_the_relay_misroutes"
+        },
+        {
+          "kind": "rust",
+          "name": "an_offline_removed_member_cannot_send_receive_or_force_a_rollback"
+        }
+      ],
+      "gap": ""
+    },
+    {
+      "id": "REV-008",
+      "statement": "Removal is account-level: the commit removes every device (MLS leaf) of the removed account.",
+      "status": "partial",
+      "threats": [
+        "A9"
+      ],
+      "scope": "Code path filters by account; engine-level removal tested with single-device accounts.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "admin_and_owner_removals_revoke_the_removed_member"
+        }
+      ],
+      "gap": "Cipher has no multi-device accounts yet (ST-020); an engine-level test with two devices of one account must be added when multi-device ships."
+    },
+    {
+      "id": "REV-009",
+      "statement": "A device that has been removed from a group receives no future group secrets.",
+      "status": "partial",
+      "threats": [
+        "A9"
+      ],
+      "scope": "Covered by the removal tests for the only device type that exists.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "removal_splits_history_access_cryptographically"
+        },
+        {
+          "kind": "rust",
+          "name": "withheld_removal_blocks_new_content_and_ends_old_access_when_it_arrives"
+        }
+      ],
+      "gap": "There is no per-device revocation (ST-010/ST-033/ST-020); revoking one of several devices without removing the account is not implemented."
+    },
+    {
+      "id": "REV-010",
+      "statement": "A relay acknowledgement cannot masquerade as a recipient's cryptographic receipt: Delivered is set only by an end-to-end receipt from the recipient.",
+      "status": "partial",
+      "threats": [
+        "A2"
+      ],
+      "scope": "Engine-level: relay fake-ack leaves the sender at Sent.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_fake_acknowledgement_does_not_make_a_message_delivered"
+        }
+      ],
+      "gap": "Receipts are DM-only; group delivery state is not tracked per member."
+    },
+    {
+      "id": "PRIV-001",
+      "statement": "Message plaintext remains protected independently of the privacy transport: the transport (and every node behind it) only ever carries E2EE ciphertext inside TLS.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A5"
+      ],
+      "scope": "Engine-level: the in-process transport that records every byte, the relay DB and the relay logs contain no plaintext canary; the relay build has no message-crypto dependency.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_001_005_010_relay_wire_db_and_logs_contain_no_plaintext_or_private_keys"
+        },
+        {
+          "kind": "rust",
+          "name": "a_database_dump_links_no_sender_to_any_recipient_and_the_live_stream_shows_senders_only_for_authenticated_requests"
+        },
+        {
+          "kind": "script",
+          "name": "scripts/check-relay-deps.sh"
+        }
+      ],
+      "gap": "The Tor network was not exercised in this environment (no tor binary, no permission to join the live network); the SOCKS endpoint used in tests is a local test double, so Tor's own properties are inherited from its design, not measured here. No physical device."
+    },
+    {
+      "id": "PRIV-002",
+      "statement": "The final Cipher delivery relay does not normally receive the client's source IP: the connection it sees comes from the privacy route's egress.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A5"
+      ],
+      "scope": "Emulator: the app's real OkHttp stack through a SOCKS5 test double \u2014 the relay saw the proxy's address, not the direct route's (loopback-level measurement, `PRIVACY_TRANSPORT_REVIEW.md`).",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/PrivacyRouteInstrumentedTest.kt",
+          "name": "theRelayNameIsResolvedByTheProxyAndTlsSucceedsThroughIt"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/PrivacyRouteInstrumentedTest.kt",
+          "name": "theDirectDevControlReachesTheRelayWithoutAProxy"
+        }
+      ],
+      "gap": "The Tor network was not exercised in this environment (no tor binary, no permission to join the live network); the SOCKS endpoint used in tests is a local test double, so Tor's own properties are inherited from its design, not measured here. No physical device. The measurement used two loopback addresses; it shows the plumbing, not real IP hiding."
+    },
+    {
+      "id": "PRIV-003",
+      "statement": "In a multi-hop mode no single privacy node normally learns both the client's address and the final Cipher destination.",
+      "status": "manual",
+      "threats": [
+        "A2",
+        "A5"
+      ],
+      "scope": "Not testable here: this is a property of the selected network (Tor), documented in the ADR.",
+      "tests": [],
+      "gap": "The Tor network was not exercised in this environment (no tor binary, no permission to join the live network); the SOCKS endpoint used in tests is a local test double, so Tor's own properties are inherited from its design, not measured here. No physical device."
+    },
+    {
+      "id": "PRIV-004",
+      "statement": "Long-lived stable routing identifiers are avoided where possible: contacts deliver with random, rotating, revocable capabilities instead of the recipient's device id and their own authenticated identity.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A3"
+      ],
+      "scope": "Real relay + PostgreSQL: after the capability exchange no message body is sent authenticated; the DB links no sender to a recipient; capabilities rotate and die on group removal.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "contacts_exchange_capabilities_inside_e2ee_and_then_deliver_without_authenticating"
+        },
+        {
+          "kind": "rust",
+          "name": "group_removal_rotates_capabilities_and_the_removed_member_cannot_use_the_old_one"
+        },
+        {
+          "kind": "rust",
+          "name": "unknown_guessed_revoked_and_expired_capabilities_are_all_just_invalid"
+        }
+      ],
+      "gap": "Account and device ids remain stable pseudonyms in the directory and in group commits; the relay can still map a capability to its recipient device; first contact and group commits are authenticated."
+    },
+    {
+      "id": "PRIV-005",
+      "statement": "Transport failures never trigger a silent direct-to-Cipher fallback: with the privacy route down the request fails, the encrypted message stays queued, and the destination is never contacted.",
+      "status": "partial",
+      "threats": [
+        "A1",
+        "A2"
+      ],
+      "scope": "JVM (hostile SOCKS test double + a canary listener), emulator (real relay reachable directly, route dead: relay log unchanged), engine (route down: no request leaves, delivered later).",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "aDeadProxyFailsClosedAndTheDestinationIsNeverContacted"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "aProxyThatRefusesTheConnectionIsRouteUnavailableAndNotRetriedDirectly"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/PrivacyRouteInstrumentedTest.kt",
+          "name": "aDeadRouteFailsClosedEvenThoughTheRelayIsReachableDirectly"
+        },
+        {
+          "kind": "rust",
+          "name": "a_dead_privacy_route_keeps_the_encrypted_message_queued_and_nothing_is_sent_anywhere_else"
+        }
+      ],
+      "gap": "The Tor network was not exercised in this environment (no tor binary, no permission to join the live network); the SOCKS endpoint used in tests is a local test double, so Tor's own properties are inherited from its design, not measured here. No physical device."
+    },
+    {
+      "id": "PRIV-006",
+      "statement": "Privacy mode fails closed: a malformed, refusing or unreachable proxy is a failure, never a working route.",
+      "status": "partial",
+      "threats": [
+        "A1",
+        "A5"
+      ],
+      "scope": "JVM against a proxy that refuses, speaks garbage, or is dead.",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "aProxyThatSpeaksGarbageIsRejectedNotTrusted"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "aProxyThatRefusesTheConnectionIsRouteUnavailableAndNotRetriedDirectly"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "aDeadProxyFailsClosedAndTheDestinationIsNeverContacted"
+        }
+      ],
+      "gap": "The Tor network was not exercised in this environment (no tor binary, no permission to join the live network); the SOCKS endpoint used in tests is a local test double, so Tor's own properties are inherited from its design, not measured here. No physical device."
+    },
+    {
+      "id": "PRIV-007",
+      "statement": "DNS resolution does not bypass the privacy path: the relay's name is handed to the proxy, local DNS is disabled, the proxy itself is an IP literal.",
+      "status": "partial",
+      "threats": [
+        "A1",
+        "A5"
+      ],
+      "scope": "JVM (SOCKS ATYP=3 domain, `.invalid` name) and emulator (a name the emulator cannot resolve works only through the proxy).",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "theHostnameIsHandedToTheProxyNeverResolvedOnTheDevice"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "theProxyMustBeAnIpLiteralAndLocalDnsIsDisabled"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/PrivacyRouteInstrumentedTest.kt",
+          "name": "theRelayNameIsResolvedByTheProxyAndTlsSucceedsThroughIt"
+        }
+      ],
+      "gap": "No packet capture of the device's DNS traffic was taken; other apps' and the OS's own queries are outside Cipher; the proxy's (Orbot's) own resolver behaviour is untested."
+    },
+    {
+      "id": "PRIV-008",
+      "statement": "Application and relay logs contain no route secrets, capabilities, ids, IPs or bodies; the relay writes no per-request line by default and rounds any timestamp to the minute.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A3"
+      ],
+      "scope": "Relay: full-trace log capture contains no identifiers; default level is INFO (request lines are DEBUG); coarse timer unit test. Android: closed-set `SafeLog`, R8 strips `Log`.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "timestamps_are_rounded_down_to_the_minute"
+        },
+        {
+          "kind": "rust",
+          "name": "sec_001_005_010_relay_wire_db_and_logs_contain_no_plaintext_or_private_keys"
+        }
+      ],
+      "gap": "Operator-enabled DEBUG logging records per-request timing; reverse proxies and Tor nodes have their own logs; no crash reporter exists to audit."
+    },
+    {
+      "id": "PRIV-009",
+      "statement": "Message padding remains authenticated and cannot change message semantics: frames are padded with zeros to a size class (1 KiB minimum) inside the MLS ciphertext; the decoder rejects any non-zero or extra padding.",
+      "status": "partial",
+      "threats": [
+        "A1",
+        "A18"
+      ],
+      "scope": "Core unit/property tests incl. fuzz target `app_parsers` and the new class test.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "receipts_control_frames_and_short_texts_share_one_size_class"
+        },
+        {
+          "kind": "rust",
+          "name": "strict_decoding"
+        },
+        {
+          "kind": "rust",
+          "name": "buckets_hide_exact_length_and_roundtrip"
+        }
+      ],
+      "gap": "Size classes still leak a coarse length class for long messages; attachments leak Padm\u00e9-bucketed size."
+    },
+    {
+      "id": "PRIV-010",
+      "statement": "The privacy transport (and a delivery capability) cannot decrypt Cipher messages: no key material crosses the transport seam and capabilities grant only the right to queue ciphertext.",
+      "status": "automated",
+      "threats": [
+        "A2"
+      ],
+      "scope": "Relay dependency graph has no message crypto; Kotlin source guard: only `net/` touches sockets; capability tests show delivery needs no key.",
+      "tests": [
+        {
+          "kind": "script",
+          "name": "scripts/check-relay-deps.sh"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "releaseHasNoDirectRouteSourceAndNoOtherNetworkStackExists"
+        },
+        {
+          "kind": "rust",
+          "name": "a_capability_holder_delivers_without_authenticating_and_the_relay_stores_no_sender"
+        }
+      ],
+      "gap": ""
+    },
+    {
+      "id": "PRIV-011",
+      "statement": "Network-path selection cannot disable E2EE: there is no setting, profile or route that changes message encryption, and no insecure-transport switch exists in release.",
+      "status": "automated",
+      "threats": [
+        "A5"
+      ],
+      "scope": "Existing no-downgrade tests plus the source guard and the release dex gate.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "sec_016_provisioning_fails_closed_when_keystore_is_too_weak_and_never_silently_downgrades"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "releaseHasNoDirectRouteSourceAndNoOtherNetworkStackExists"
+        },
+        {
+          "kind": "script",
+          "name": "scripts/check-release-apk.sh"
+        }
+      ],
+      "gap": ""
+    },
+    {
+      "id": "PRIV-012",
+      "statement": "Push payload remains content-free: only the exact constant wake-up is accepted; no sender, title, type or filename can be carried.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A3"
+      ],
+      "scope": "Unit tests of the wake payload. No real provider exists (ST-017).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "only_the_exact_constant_wake_payload_is_accepted"
+        },
+        {
+          "kind": "rust",
+          "name": "notifications_never_reveal_content_while_locked_whatever_the_mode"
+        }
+      ],
+      "gap": "Real FCM/UnifiedPush behaviour is NOT TESTED; the provider would still see device token and wake times."
+    },
+    {
+      "id": "PRIV-013",
+      "statement": "The privacy status shown to the user reflects the actual routing state: Protected only after a request completed through the route recently.",
+      "status": "partial",
+      "threats": [
+        "A15"
+      ],
+      "scope": "JVM state-machine test.",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/test/java/app/cipher/messenger/net/PrivacyRouteTest.kt",
+          "name": "theStatusShownToTheUserReflectsTheRealRouteState"
+        }
+      ],
+      "gap": "The Compose rendering of the banner/Settings text was compiled and linted but not exercised on screen."
+    },
+    {
+      "id": "PRIV-014",
+      "statement": "A compromised final relay cannot recover the original source IP from application-layer fields: no request body or header Cipher builds contains an address.",
+      "status": "partial",
+      "threats": [
+        "A2"
+      ],
+      "scope": "Engine-level over a whole session against the real relay.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_database_dump_links_no_sender_to_any_recipient_and_the_live_stream_shows_senders_only_for_authenticated_requests"
+        }
+      ],
+      "gap": "The TCP source address itself is outside application-layer fields (that is the privacy route's job)."
+    },
+    {
+      "id": "PRIV-015",
+      "statement": "No direct fallback occurs when all privacy routes are unavailable (engine and release artifact).",
+      "status": "partial",
+      "threats": [
+        "A1",
+        "A2"
+      ],
+      "scope": "Engine route-down test; release dex/native gate for the debug-only direct route marker.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_dead_privacy_route_keeps_the_encrypted_message_queued_and_nothing_is_sent_anywhere_else"
+        },
+        {
+          "kind": "script",
+          "name": "scripts/check-release-apk.sh"
+        }
+      ],
+      "gap": "The Tor network was not exercised in this environment (no tor binary, no permission to join the live network); the SOCKS endpoint used in tests is a local test double, so Tor's own properties are inherited from its design, not measured here. No physical device."
+    },
+    {
+      "id": "PRIV-016",
+      "statement": "Delivery capabilities are unguessable, rotate, can be revoked and expire; a stranger flood cannot starve capability holders; replay is idempotent and bounded.",
+      "status": "partial",
+      "threats": [
+        "A3",
+        "A18"
+      ],
+      "scope": "Real relay + PostgreSQL (multi-account flood, guessed/expired/revoked/replayed capabilities, bounded mint).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "strangers_flooding_from_many_accounts_cannot_starve_capability_holders"
+        },
+        {
+          "kind": "rust",
+          "name": "replaying_a_capability_is_idempotent_and_bounded_by_its_quota"
+        },
+        {
+          "kind": "rust",
+          "name": "guessing_capabilities_is_rate_limited_per_source_and_never_succeeds"
+        },
+        {
+          "kind": "rust",
+          "name": "strangers_filling_the_open_lane_cannot_stop_a_contact_from_delivering"
+        }
+      ],
+      "gap": "With enough capabilities leaked, junk up to the per-capability quota is possible until rotation; the commit lane is only protected by per-sender share (ST-031)."
+    },
+    {
+      "id": "PRIV-017",
+      "statement": "Cover traffic is bounded, content-free and cannot trigger actions: at most one dummy delivery per tick, random bytes of the real size class, answered `invalid` and stored nowhere.",
+      "status": "partial",
+      "threats": [
+        "A18"
+      ],
+      "scope": "Engine-level against the real relay; cadence property test; fuzz target `privacy_wire`.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "cover_requests_store_nothing_and_share_the_real_message_size_class"
+        },
+        {
+          "kind": "rust",
+          "name": "delays_stay_inside_the_jitter_window_and_enhanced_is_slower"
+        },
+        {
+          "kind": "rust",
+          "name": "enhanced_holds_sends_until_the_tick_and_every_tick_has_exactly_one_send_shaped_request"
+        }
+      ],
+      "gap": "Cover does not defeat an observer who sees both ends (measured: candidate set 1.21 -> 2.06 for 6 senders)."
+    }
+  ]
+}

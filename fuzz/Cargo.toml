@@ -1,0 +1,91 @@
+[package]
+name = "cipher-fuzz"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cipher-core = { path = "../crates/cipher-core", features = ["insecure-test-support"] }
+cipher-wire = { path = "../crates/cipher-wire" }
+cipher-ffi = { path = "../crates/cipher-ffi" }
+serde_json = "1"
+sha2 = "0.10"
+
+# Detach from the main workspace (needs nightly + cargo-fuzz).
+[workspace]
+
+[[bin]]
+name = "wire_json"
+path = "fuzz_targets/wire_json.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "auth_header"
+path = "fuzz_targets/auth_header.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "mls_snapshot_restore"
+path = "fuzz_targets/mls_snapshot_restore.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "mls_welcome_and_keypackage"
+path = "fuzz_targets/mls_welcome_and_keypackage.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "attachment_decrypt"
+path = "fuzz_targets/attachment_decrypt.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "attachment_descriptor"
+path = "fuzz_targets/attachment_descriptor.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "filename_and_endpoint"
+path = "fuzz_targets/filename_and_endpoint.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "app_parsers"
+path = "fuzz_targets/app_parsers.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "ffi_validate"
+path = "fuzz_targets/ffi_validate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "vault_file"
+path = "fuzz_targets/vault_file.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "history_unseal"
+path = "fuzz_targets/history_unseal.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "privacy_wire"
+path = "fuzz_targets/privacy_wire.rs"
+test = false
+doc = false

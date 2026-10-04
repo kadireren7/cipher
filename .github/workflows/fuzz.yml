@@ -1,0 +1,41 @@
+name: fuzz-smoke
+
+# Time-boxed libFuzzer runs over every parser / security boundary. Nightly toolchain is required by
+# cargo-fuzz and is used ONLY here, never for shipped artifacts.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - wire_json
+          - auth_header
+          - mls_snapshot_restore
+          - mls_welcome_and_keypackage
+          - attachment_decrypt
+          - attachment_descriptor
+          - filename_and_endpoint
+          - app_parsers
+          - ffi_validate
+          - vault_file
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup toolchain install nightly --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: fuzz
+      - run: cargo +nightly install --locked cargo-fuzz@0.13.2
+      - name: Fuzz ${{ matrix.target }} (120 s)
+        working-directory: fuzz
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=120
