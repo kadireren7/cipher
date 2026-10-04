@@ -1,0 +1,43 @@
+[package]
+name = "cipher-relay"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Untrusted ciphertext relay: device registry, KeyPackage directory, bounded offline queue, opaque attachment blobs."
+
+[lints]
+workspace = true
+
+# SEC-002: this crate must never depend on client crypto (openmls, cipher-core, AEAD, KDF).
+# scripts/check-relay-deps.sh enforces it in CI. Only signature *verification* is present.
+[dependencies]
+cipher-wire = { path = "../cipher-wire" }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "matched-path"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time"] }
+axum-server = { version = "0.8", features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "tls12", "ring"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "std", "json"] }
+tokio-postgres = "0.7"
+deadpool-postgres = "0.14"
+tokio-postgres-rustls = "0.14"
+webpki-roots = "1"
+futures-util = "0.3"
+bytes = "1"
+ed25519-dalek = "2"
+sha2 = "0.10"
+subtle = "2.6"
+getrandom = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+[dev-dependencies]
+cipher-core = { path = "../cipher-core", features = ["insecure-test-support"] }
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+tempfile = "3"
+rcgen = "0.14"
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
