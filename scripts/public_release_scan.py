@@ -14,7 +14,7 @@ os.chdir(ROOT)
 def _owner_terms():
     """Personal terms are derived at run time (login name, git identity, GH login, extra CIPHER_SCAN_PERSONAL_TERMS) so this file publishes none."""
     import getpass
-    t = {getpass.getuser()}
+    t = set() if os.environ.get("CI") else {getpass.getuser()}  # a CI runner's login ("runner") is not personal data
     for cmd in (["git", "config", "user.name"], ["git", "config", "user.email"], ["gh", "api", "user", "--jq", ".login"]):
         try:
             v = subprocess.run(cmd, capture_output=True, text=True, timeout=10).stdout.strip()
