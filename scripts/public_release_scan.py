@@ -86,7 +86,7 @@ def scan_text(path, text):
                     ip = m.group(0)
                     if SAFE_IPS.match(ip) or any(int(p) > 255 for p in ip.split(".")) or re.search(r"\d\.\d+\.\d+\.\d+\.\d", line[max(0, m.start() - 1): m.end() + 2]):
                         continue
-                    if re.search(r"(?i)version|v?\d+\.\d+\.\d+\.\d+-|checksum", line) or path.endswith(("Cargo.lock", ".xml", "gradle.properties")):
+                    if re.search(r"(?i)version|v?\d+\.\d+\.\d+\.\d+-|checksum|\.(jar|aar|pom|module|klib)\b|artifact name", line) or path.endswith(("Cargo.lock", ".xml", "gradle.properties")):
                         continue
                 add(path, i, kind)
         for t in OWNER_TERMS:
