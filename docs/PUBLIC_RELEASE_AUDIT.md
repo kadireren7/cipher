@@ -27,4 +27,4 @@ No real credential, token, key or personal datum was found, so **no rotation is 
 Experimental and unaudited (ST-005 open); emulator-only; privacy route not validated against live Tor; relay still sees recipients, timing, size classes and commit authors; no global-observer or end-to-end correlation resistance; no push provider; no account recovery; no multi-device; revocation depends on the removed client observing the removal; no license yet. See [SECURITY_TODO](SECURITY_TODO.md) and [FINAL_SECURITY_REVIEW](FINAL_SECURITY_REVIEW.md).
 
 ## Pre-push re-run
-Filled in at publication time (see the repository's first commit message and the release notes).
+Before the first push, `scripts/public_release_scan.py --history` and `scripts/secret_scan.py` were run on the 8 commits that were created (every commit diff scanned): **0 findings**. All commits use the author's GitHub no-reply address; no personal e-mail address or real name is in the history. A fresh `git clone` of the local repository built (`cargo check --workspace --all-targets --locked`) without any ignored file, confirming that nothing required is excluded.
