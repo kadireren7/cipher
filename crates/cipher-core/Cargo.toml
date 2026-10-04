@@ -1,0 +1,54 @@
+[package]
+name = "cipher-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Client-side security core: protocol adapters, key storage abstraction, encrypted local storage, app lock, attachments, verification."
+
+[lints]
+workspace = true
+
+[dependencies]
+# --- Group / 1:1 messaging protocol: MLS (RFC 9420) via OpenMLS. Pinned exactly. ---
+openmls = "=0.9.0"
+openmls_rust_crypto = "=0.6.0"
+openmls_basic_credential = "=0.6.0"
+openmls_traits = "=0.6.0"
+tls_codec = "0.5"
+# --- Primitives: RustCrypto / dalek. Pinned to the minor series. ---
+chacha20poly1305 = { version = "0.10", features = ["alloc", "stream"] }
+argon2 = "0.6"
+hkdf = "0.12"
+sha2 = "0.10"
+ed25519-dalek = "2"
+subtle = "2.6"
+zeroize = { version = "1.9", features = ["derive"] }
+getrandom = "0.3"
+cipher-wire = { path = "../cipher-wire" }
+# --- Plumbing ---
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+base64 = "0.23"
+unicode-normalization = "0.1"
+# --- EXPERIMENTAL key transparency (feature `transparency-experimental`, off by default, NOT PRODUCTION READY). ---
+# ct-merkle implements the RFC 6962/9162 Merkle tree proofs; it is a small, UNAUDITED crate and needs digest/sha2 0.11.
+ct-merkle = { version = "=0.3.0", optional = true }
+sha2_011 = { package = "sha2", version = "0.11", optional = true }
+
+[dev-dependencies]
+proptest = "1.11"
+tempfile = "3"
+cipher-core = { path = ".", features = ["insecure-test-support"] }
+
+[features]
+default = []
+# Exposes an in-memory fake SecureKeyStore, fast (INSECURE) KDF parameters and a
+# manual clock. MUST NOT be enabled in production builds; CI asserts this.
+insecure-test-support = ["openmls_basic_credential/test-utils"]
+# Experimental key-transparency verifier (inclusion/consistency proofs, signed tree heads, split-view detection).
+# NOT PRODUCTION READY: no log server exists, nothing in the app depends on it. See docs/KEY_TRANSPARENCY.md.
+transparency-experimental = ["dep:ct-merkle", "dep:sha2_011"]
