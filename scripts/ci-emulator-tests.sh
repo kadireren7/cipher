@@ -41,4 +41,11 @@ python3 -m pip install --quiet cryptography
 python3 scripts/adversarial-tls-servers.py &
 sleep 3
 trap '"$SDK/platform-tools/adb" logcat -d > /tmp/emulator-logcat.txt 2>&1 || true' EXIT
+if [ "${CIPHER_E2E:-}" = "multirelay" ]; then
+  # Two independent relays + the real app on the emulator + a headless peer; every phase must pass (the driver exits non-zero otherwise).
+  cargo build --release --locked -p cipher-relay -p cipher-ffi --example e2e_peer
+  (cd android && ./gradlew --no-daemon :app:assembleDebug :app:assembleDebugAndroidTest)
+  timeout 1500 python3 -u scripts/android-e2e-multirelay.py 2>&1 | tee /tmp/e2e-multirelay.txt
+  exit "${PIPESTATUS[0]}"
+fi
 (cd android && ./gradlew --no-daemon :app:connectedDebugAndroidTest)

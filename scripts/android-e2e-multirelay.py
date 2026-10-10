@@ -3,7 +3,7 @@
 headless peer on relay B. Covers: contact card across relays, pinned self-signed relay B (PinnedTls on a real device stack), messages while either side
 is offline, encrypted attachments both ways, process restarts between phases, end-to-end delivery receipts.
 
-Honest scope: emulator (software-backed Keystore), debug direct route (no Tor), no physical device. Not run by CI automatically.
+Honest scope: emulator (software-backed Keystore), debug direct route (no Tor), no physical device. Run by the `android-e2e-multirelay` CI job (scripts/ci-emulator-tests.sh with CIPHER_E2E=multirelay).
 
 Needs: a booted emulator reachable by adb (host = 10.0.2.2 from inside), built APKs (gradlew :app:assembleDebug :app:assembleDebugAndroidTest),
 target/release/cipher-relay, target/release/examples/e2e_peer, android/build/test-ca (scripts/make-test-ca.sh), docker container cipher-pg.
@@ -37,6 +37,9 @@ def sh(*a, **kw):
 
 
 def psql(sql, db="postgres"):
+    if os.environ.get("CIPHER_E2E_PG_HOST"):  # CI: PostgreSQL service container reached over TCP with the psql client
+        return sh("psql", "-h", os.environ["CIPHER_E2E_PG_HOST"], "-p", "55432", "-U", "postgres", "-d", db, "-tAc", sql,
+                  env=dict(os.environ, PGPASSWORD="devonly-not-a-secret")).stdout.strip()
     return sh("docker", "exec", "cipher-pg", "psql", "-U", "postgres", "-d", db, "-tAc", sql).stdout.strip()
 
 
