@@ -1,5 +1,5 @@
 //! Contact Card v1 (docs/MULTI_RELAY_PROTOCOL.md §3): signature, strictness, freshness, tamper-evidence.
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing, clippy::unnecessary_to_owned)]
 use cipher_core::contact_card::{ContactCard, MAX_CARD_LIFETIME_MS};
 use cipher_core::mls::MlsClient;
 use cipher_wire::{b64, Id16, RelayDescriptor};

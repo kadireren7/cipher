@@ -87,7 +87,7 @@ impl ContactCard {
             return Err(SecurityError::Malformed("card"));
         }
         let (len, rest) = rest.split_at_checked(2).ok_or(SecurityError::Malformed("card"))?;
-        let len = usize::from(u16::from_be_bytes([len[0], len[1]]));
+        let len = usize::from(u16::from_be_bytes(len.try_into().map_err(|_| SecurityError::Malformed("card"))?));
         if len == 0 || len > MAX_PAYLOAD || rest.len() != len + 64 {
             return Err(SecurityError::Malformed("card"));
         }

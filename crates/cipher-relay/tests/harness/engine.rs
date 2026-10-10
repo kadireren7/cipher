@@ -27,6 +27,8 @@ pub struct NetEvent {
     pub authed: bool,
     /// The relay answered with a queued delivery (a REAL delivery, as opposed to cover or an error).
     pub queued: bool,
+    /// The request body as the relay received it (for measuring what identifiers a request carries).
+    pub req_body: Vec<u8>,
 }
 
 pub struct AppTransport {
@@ -35,7 +37,7 @@ pub struct AppTransport {
     /// Privacy route down: every request fails with `RouteUnavailable` (nothing is sent anywhere).
     pub route_down: AtomicBool,
     rt: Arc<tokio::runtime::Runtime>,
-    app: Router,
+    app: Mutex<Router>,
     captured: Arc<Mutex<Vec<Captured>>>,
     pub offline: AtomicBool,
     pub rewrite: Mutex<Option<ResponseRewrite>>,
@@ -45,6 +47,14 @@ pub struct AppTransport {
     pub lose_response_on: Mutex<Option<String>>,
     /// Paths of requests that carried NO Authorization header.
     pub unauth: Mutex<Vec<String>>,
+    /// Other relays reachable from this device, by base URL (two independent relays, each with its own database). Requests to any other base go to `app`.
+    pub others: Mutex<Vec<(String, Router, Arc<tokio::runtime::Runtime>)>>,
+    /// Bases that are unreachable right now (that relay is down / the route to it fails); other relays keep working.
+    pub down: Mutex<Vec<String>>,
+    /// Base URLs this transport was asked to pin, with the pin (what a platform stack would enforce).
+    pub pins: Mutex<Vec<(String, [u8; 32])>>,
+    /// (base URL, path) of every request, in order.
+    pub requests_by_base: Mutex<Vec<(String, String)>>,
 }
 
 impl AppTransport {
@@ -54,7 +64,7 @@ impl AppTransport {
             log: Mutex::new(Vec::new()),
             route_down: AtomicBool::new(false),
             rt: w.rt.clone(),
-            app: w.app.clone(),
+            app: Mutex::new(w.app.clone()),
             captured: w.captured.clone(),
             offline: AtomicBool::new(false),
             rewrite: Mutex::new(None),
@@ -62,10 +72,46 @@ impl AppTransport {
             requests: Mutex::new(Vec::new()),
             lose_response_on: Mutex::new(None),
             unauth: Mutex::new(Vec::new()),
+            others: Mutex::new(Vec::new()),
+            down: Mutex::new(Vec::new()),
+            pins: Mutex::new(Vec::new()),
+            requests_by_base: Mutex::new(Vec::new()),
         })
     }
 
-    fn call(&self, method: &str, path: &str, auth: Option<&str>, body: Vec<u8>) -> Result<(u16, Vec<u8>), HttpError> {
+    /// Make another relay (its own router and database) reachable from this device under `base`.
+    /// A relay RESTART: a fresh router (fresh in-memory state: rate limiters, caches, in-flight tracking) over the same database. Connections made so far are gone.
+    pub fn restart_relay(&self, fresh: Router) {
+        *self.app.lock().unwrap() = fresh;
+    }
+
+    /// Same for another relay this device can reach under `base`.
+    pub fn restart_other(&self, base: &str, fresh: Router) {
+        for (b, a, _) in self.others.lock().unwrap().iter_mut() {
+            if b == base {
+                *a = fresh.clone();
+            }
+        }
+    }
+
+    /// `rt` must be the runtime the relay's database pool lives on (its connection tasks only run while that runtime is driven).
+    pub fn reach(&self, base: &str, app: Router, rt: Arc<tokio::runtime::Runtime>) {
+        self.others.lock().unwrap().push((base.to_owned(), app, rt));
+    }
+
+    fn call(&self, base: &str, method: &str, path: &str, auth: Option<&str>, body: Vec<u8>) -> Result<(u16, Vec<u8>), HttpError> {
+        self.requests_by_base.lock().unwrap().push((base.to_owned(), path.to_owned()));
+        if self.down.lock().unwrap().iter().any(|b| b == base) {
+            return Err(HttpError::Network);
+        }
+        let (app, rt) = self
+            .others
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(b, _, _)| b == base)
+            .map(|(_, a, r)| (a.clone(), r.clone()))
+            .unwrap_or_else(|| (self.app.lock().unwrap().clone(), self.rt.clone()));
         if self.offline.load(Ordering::SeqCst) {
             return Err(HttpError::Network);
         }
@@ -91,10 +137,10 @@ impl AppTransport {
             b = b.header("authorization", a);
         }
         let req = b.body(Body::from(body.clone())).unwrap();
-        let resp = self.rt.block_on(self.app.clone().oneshot(req)).map_err(|_| HttpError::Io)?;
+        let resp = rt.block_on(app.oneshot(req)).map_err(|_| HttpError::Io)?;
         let status = resp.status().as_u16();
         use http_body_util::BodyExt;
-        let mut bytes = self.rt.block_on(resp.into_body().collect()).map_err(|_| HttpError::Io)?.to_bytes().to_vec();
+        let mut bytes = rt.block_on(resp.into_body().collect()).map_err(|_| HttpError::Io)?.to_bytes().to_vec();
         self.log.lock().unwrap().push(NetEvent {
             t_secs: self.clock.0.unix_secs(),
             method: method.to_owned(),
@@ -103,6 +149,7 @@ impl AppTransport {
             resp_bytes: bytes.len(),
             authed: auth.is_some(),
             queued: bytes.windows(8).any(|w| w == b"\"queued\""),
+            req_body: body.clone(),
         });
         self.captured.lock().unwrap().push(Captured { path: path.to_owned(), request_body: body, response_body: bytes.clone(), status });
         {
@@ -120,17 +167,17 @@ impl AppTransport {
 }
 
 impl HttpTransport for AppTransport {
-    fn execute(&self, _base: &str, method: &str, path: &str, auth: Option<&str>, body: &[u8]) -> Result<HttpOut, HttpError> {
-        let (status, body) = self.call(method, path, auth, body.to_vec())?;
+    fn execute(&self, base: &str, method: &str, path: &str, auth: Option<&str>, body: &[u8]) -> Result<HttpOut, HttpError> {
+        let (status, body) = self.call(base, method, path, auth, body.to_vec())?;
         Ok(HttpOut { status, body })
     }
-    fn upload_file(&self, _base: &str, path: &str, auth: Option<&str>, file: &str) -> Result<HttpOut, HttpError> {
+    fn upload_file(&self, base: &str, path: &str, auth: Option<&str>, file: &str) -> Result<HttpOut, HttpError> {
         let data = std::fs::read(file).map_err(|_| HttpError::Io)?;
-        let (status, body) = self.call("POST", path, auth, data)?;
+        let (status, body) = self.call(base, "POST", path, auth, data)?;
         Ok(HttpOut { status, body })
     }
-    fn download_file(&self, _base: &str, path: &str, auth: Option<&str>, dest: &str, max: u64) -> Result<u16, HttpError> {
-        let (status, body) = self.call("GET", path, auth, Vec::new())?;
+    fn download_file(&self, base: &str, path: &str, auth: Option<&str>, dest: &str, max: u64) -> Result<u16, HttpError> {
+        let (status, body) = self.call(base, "GET", path, auth, Vec::new())?;
         if status == 200 {
             if body.len() as u64 > max {
                 return Err(HttpError::Io);
@@ -138,6 +185,10 @@ impl HttpTransport for AppTransport {
             std::fs::write(dest, body).map_err(|_| HttpError::Io)?;
         }
         Ok(status)
+    }
+    fn pin_relay(&self, base: &str, spki_sha256: &[u8; 32]) -> Result<(), HttpError> {
+        self.pins.lock().unwrap().push((base.to_owned(), *spki_sha256));
+        Ok(())
     }
 }
 
@@ -157,6 +208,29 @@ impl std::ops::Deref for TestEngine {
 impl std::ops::DerefMut for TestEngine {
     fn deref_mut(&mut self) -> &mut Engine {
         &mut self.e
+    }
+}
+
+impl TestEngine {
+    /// A process restart: drop the in-memory engine and open the same data directory again with the same (in-memory) keystore, then unlock.
+    /// Nothing is carried over except what the vault persisted.
+    pub fn restart(self, w: &World) -> TestEngine {
+        let TestEngine { e, ks, transport, dir } = self;
+        drop(e);
+        let mut e = Engine::new_for_tests(
+            EngineConfig {
+                data_dir: dir.path().to_path_buf(),
+                relay_url: "https://relay.test".into(),
+                vault: VaultConfig { inactivity_timeout_secs: 30 * 86_400, ..vault_cfg() },
+            },
+            ks.clone(),
+            transport.clone(),
+            w.clock.clone(),
+            AUDIENCE,
+        )
+        .unwrap();
+        e.unlock_with_device_auth().unwrap();
+        TestEngine { e, ks, transport, dir }
     }
 }
 

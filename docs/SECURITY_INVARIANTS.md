@@ -73,6 +73,16 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | PRIV-015 | No direct fallback occurs when all privacy routes are unavailable (engine and release artifact). | partial | 2 |
 | PRIV-016 | Delivery capabilities are unguessable, rotate, can be revoked and expire; a stranger flood cannot starve capability holders; replay is idempotent and bounded. | partial | 4 |
 | PRIV-017 | Cover traffic is bounded, content-free and cannot trigger actions: at most one dummy delivery per tick, random bytes of the real size class, answered `invalid` and stored nowhere. | partial | 3 |
+| MR-001 | A contact card is signed by the issuer's root identity key: flipping any single bit, truncating, extending, retargeting its relay/capability, expiring it or lengthening its lifetime makes it unusable; an onion relay cannot be named without a certificate pin. | automated | 8 |
+| MR-002 | A hostile relay cannot substitute a contact's keys on another relay: the directory answer must contain the card's root key with a valid binding signature before anything is pinned or stored. | automated | 2 |
+| MR-003 | Intro capabilities open exactly three things at the issuer's relay (device records, KeyPackage claims for the issuer's own devices, delivery); ordinary, unknown, expired and revoked capabilities are one indistinguishable not-found; KeyPackage draining and live card count are bounded. | automated | 6 |
+| MR-004 | Alice on relay A and Bob on relay B exchange messages in both directions, in order, including while either is offline, with end-to-end receipts; neither relay holds any record of the other relay's user and no relay-to-relay contact exists. | automated | 3 |
+| MR-005 | A message is never reported as sent while nothing left the device: if the peer's relay is unreachable it stays Pending and is delivered after the relay returns; a remote peer is never reached through the authenticated path (whose `not_found` would count as delivered). | automated | 2 |
+| MR-006 | Cross-relay attachments (image, PDF, video, voice, arbitrary file, thumbnails) are encrypted before upload, stored by both relays as ciphertext only, downloaded by the recipient from his own relay, and fail closed when tampered, truncated, swapped or missing; uploads need a live capability and respect per-capability and global quotas. | automated | 4 |
+| MR-007 | Metadata exposure of first contact is measured: against the mailbox relay, a card-based cross-relay first contact exposes zero signed requests, zero initiator-to-target links, zero stored mentions of the initiator's ids and zero sender hashes. | partial | 1 |
+| MR-008 | A conversation that arrives as a message request gets its delivery receipts once accepted, and outgoing timestamps are strictly increasing so same-millisecond messages keep their order. | automated | 2 |
+| MR-009 | The Android TLS trust component cannot become an accept-all manager: the platform trust manager decides for every host without a pin, a pin compares the full SPKI SHA-256 in constant time with validity dates, and no other file may touch trust-manager or socket-factory APIs. | partial | 2 |
+| MR-010 | Under seeded fault injection (network flaps, responses lost after the relay executed the request, device restarts, relay restarts, clock jumps, same-tick sends) every message reaches the recipient exactly once, in send order, and ends Delivered; messages queued offline leave in encryption order so no generation is lost to MLS out-of-order limits. | automated | 3 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -856,3 +866,116 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
   * `cover_requests_store_nothing_and_share_the_real_message_size_class` (Rust)
   * `delays_stay_inside_the_jitter_window_and_enhanced_is_slower` (Rust)
   * `enhanced_holds_sends_until_the_tick_and_every_tick_has_exactly_one_send_shaped_request` (Rust)
+
+## MR-001 — A contact card is signed by the issuer's root identity key: flipping any single bit, truncating, extending, retargeting its relay/capability, expiring it or lengthening its lifetime makes it unusable; an onion relay cannot be named without a certificate pin.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Card codec exhaustively bit-flipped; descriptor validation unit tests; fuzz target `multi_relay_wire`.
+* **Known gap:** The signature authenticates the card, not the person presenting it: a whole card replaced by an attacker's own pins the attacker's identity (see MR-002).
+* **Tests:**
+  * `flipping_any_single_bit_of_a_card_is_rejected` (Rust)
+  * `truncated_extended_and_foreign_inputs_are_rejected` (Rust)
+  * `a_malicious_relay_cannot_retarget_a_card_without_the_issuers_key` (Rust)
+  * `freshness_is_enforced_and_lifetime_is_bounded` (Rust)
+  * `onion_cards_carry_their_pin_and_cannot_be_issued_without_one` (Rust)
+  * `refuses_everything_that_is_not_plain_https_host_port` (Rust)
+  * `onion_relays_require_a_pin_and_clearnet_relays_may_have_one` (Rust)
+  * `deserialisation_cannot_smuggle_a_noncanonical_or_pinless_onion_descriptor` (Rust)
+
+## MR-002 — A hostile relay cannot substitute a contact's keys on another relay: the directory answer must contain the card's root key with a valid binding signature before anything is pinned or stored.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Engine against two real relays and databases.
+* **Known gap:** First contact without an in-person scan is trust-on-first-use of the card; replacing the WHOLE card with an attacker's own is detectable only by comparing safety numbers.
+* **Tests:**
+  * `a_hostile_relay_cannot_substitute_the_contacts_keys_in_the_directory_answer` (Rust)
+  * `a_card_that_changes_hands_with_a_different_identity_is_never_merged_into_an_existing_contact` (Rust)
+
+## MR-003 — Intro capabilities open exactly three things at the issuer's relay (device records, KeyPackage claims for the issuer's own devices, delivery); ordinary, unknown, expired and revoked capabilities are one indistinguishable not-found; KeyPackage draining and live card count are bounded.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A18
+* **Scope tested:** Real relay router + PostgreSQL.
+* **Known gap:** No last-resort KeyPackage (ST-030): an attacker holding a card can still exhaust the pool within the per-capability and per-target limits.
+* **Tests:**
+  * `a_card_holder_without_an_account_gets_self_authenticating_records_and_key_packages` (Rust)
+  * `ordinary_unknown_guessed_expired_and_revoked_capabilities_are_one_indistinguishable_not_found` (Rust)
+  * `a_card_opens_only_its_issuers_devices` (Rust)
+  * `key_package_draining_through_a_leaked_card_is_bounded` (Rust)
+  * `the_number_of_live_cards_is_bounded_and_garbage_requests_are_rejected` (Rust)
+  * `intro_responses_never_contain_secrets_or_queue_content` (Rust)
+
+## MR-004 — Alice on relay A and Bob on relay B exchange messages in both directions, in order, including while either is offline, with end-to-end receipts; neither relay holds any record of the other relay's user and no relay-to-relay contact exists.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Two relay instances with separate PostgreSQL databases, real engines (in-process transport).
+* **Known gap:** In-process transport, not real TLS/Tor between processes. Cross-relay PCS (key-update commits) and groups are NOT supported (no sequencer): MULTI_RELAY_PROTOCOL.md §9.
+* **Tests:**
+  * `alice_on_relay_a_and_bob_on_relay_b_exchange_messages_both_ways_with_end_to_end_receipts` (Rust)
+  * `a_participant_who_is_offline_receives_everything_in_order_when_back` (Rust)
+  * `a_peer_on_another_relay_is_never_reached_through_the_authenticated_path` (Rust)
+
+## MR-005 — A message is never reported as sent while nothing left the device: if the peer's relay is unreachable it stays Pending and is delivered after the relay returns; a remote peer is never reached through the authenticated path (whose `not_found` would count as delivered).
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Two relays; fault injection on one relay's reachability.
+* **Known gap:** A relay that silently withholds after answering `queued` is still undetectable except by missing receipts (ST-032).
+* **Tests:**
+  * `when_the_peers_relay_is_down_messages_stay_pending_and_are_delivered_after_it_returns` (Rust)
+  * `groups_and_commits_with_a_peer_on_another_relay_are_refused_not_improvised` (Rust)
+
+## MR-006 — Cross-relay attachments (image, PDF, video, voice, arbitrary file, thumbnails) are encrypted before upload, stored by both relays as ciphertext only, downloaded by the recipient from his own relay, and fail closed when tampered, truncated, swapped or missing; uploads need a live capability and respect per-capability and global quotas.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A3, A18
+* **Scope tested:** Two relays + databases; files up to ~1 MB in tests; limits in code are 101 MiB per blob.
+* **Known gap:** No resumable/chunked upload: an interrupted upload restarts from zero and leaves an unreferenced blob until its 14-day TTL. Whole blob buffered by the relay (bounded by 8 concurrent uploads). Large-video streaming and parser-bomb behaviour of platform decoders are not covered (ST-034).
+* **Tests:**
+  * `text_image_pdf_video_voice_and_arbitrary_files_cross_relays_and_each_relay_stores_only_ciphertext` (Rust)
+  * `tampered_truncated_swapped_and_missing_blobs_at_the_recipients_relay_fail_closed` (Rust)
+  * `uploads_to_a_foreign_relay_need_a_live_capability_and_respect_quota` (Rust)
+  * `a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_can_be_retried` (Rust)
+
+## MR-007 — Metadata exposure of first contact is measured: against the mailbox relay, a card-based cross-relay first contact exposes zero signed requests, zero initiator-to-target links, zero stored mentions of the initiator's ids and zero sender hashes.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A3
+* **Scope tested:** Request contents and stored data only.
+* **Known gap:** Says nothing about traffic analysis: timing, sizes and source address remain visible to the relay and to colluding observers (NETWORK_ADVERSARY_MODEL.md).
+* **Tests:**
+  * `first_contact_exposure_before_and_after` (Rust)
+
+## MR-008 — A conversation that arrives as a message request gets its delivery receipts once accepted, and outgoing timestamps are strictly increasing so same-millisecond messages keep their order.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Single relay engine tests (Phase 1 regressions).
+* **Known gap:** Timestamps are strictly increasing per sending device only; interleaving between different senders depends on their clocks.
+* **Tests:**
+  * `a_message_that_arrived_as_a_request_becomes_delivered_once_the_recipient_accepts` (Rust)
+  * `messages_sent_within_one_clock_tick_keep_their_order` (Rust)
+
+## MR-009 — The Android TLS trust component cannot become an accept-all manager: the platform trust manager decides for every host without a pin, a pin compares the full SPKI SHA-256 in constant time with validity dates, and no other file may touch trust-manager or socket-factory APIs.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Source-shape guard (static).
+* **Known gap:** The Kotlin component is NOT exercised against a real onion relay, nor on a device; only its shape is checked. Live Tor tests used curl, not the app (NETWORK_ADVERSARY_MODEL.md §5).
+* **Tests:**
+  * `the_pinned_tls_component_cannot_become_an_accept_all_trust_manager` (Rust)
+  * `banned_apis_do_not_appear_in_app_code` (Rust)
+
+## MR-010 — Under seeded fault injection (network flaps, responses lost after the relay executed the request, device restarts, relay restarts, clock jumps, same-tick sends) every message reaches the recipient exactly once, in send order, and ends Delivered; messages queued offline leave in encryption order so no generation is lost to MLS out-of-order limits.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real engines, relay router and PostgreSQL; 8 single-relay and 6 cross-relay seeds x 70 steps; in-process transport.
+* **Known gap:** Not exercised: PostgreSQL restart inside the matrix (covered separately by scripts/test-deploy.py), real network stacks, group conversations, multi-device. Delivery is at-least-once on the wire with dedupe by message id; a relay that withholds after answering `queued` is undetectable (ST-032).
+* **Tests:**
+  * `single_relay_delivery_matrix` (Rust)
+  * `cross_relay_delivery_matrix` (Rust)
+  * `many_messages_queued_offline_all_arrive_after_reconnecting` (Rust)

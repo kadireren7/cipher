@@ -22,7 +22,8 @@ import uniffi.cipher_ffi.HttpReply
 /**
  * The only network stack. Policy, all enforced by construction:
  *  - TLS 1.3 ONLY (`ConnectionSpec` below); cleartext is not in the connection-spec list, so `http://` cannot even be attempted;
- *  - platform trust anchors only: NO custom TrustManager, NO HostnameVerifier, NO "accept invalid certificate" path anywhere;
+ *  - platform trust anchors only. The single exception is [PinnedTls] (certificate-pinned relays, e.g. onion services): there the server key must hash
+ *    to the pin from the invitation; for every other host the platform trust manager decides. No HostnameVerifier, no "accept invalid certificate" path;
  *  - HTTP/1.1, no redirects (a relay never legitimately redirects; following one could leak signed headers);
  *  - optional SPKI certificate pinning (`pins`), empty by default (SECURITY TODO ST-002: needs the operator's pin + backup pin).
  *
@@ -32,12 +33,14 @@ class OkHttpCallbacks(
     private val route: RouteConfig,
     private val tracker: RouteTracker,
     pins: List<Pair<String, String>> = emptyList(),
+    private val pinnedTls: PinnedTls = PinnedTls(),
 ) : HttpCallbacks {
     private val tls13Only: ConnectionSpec = ConnectionSpec.Builder(ConnectionSpec.RESTRICTED_TLS)
         .tlsVersions(TlsVersion.TLS_1_3)
         .build()
 
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .sslSocketFactory(pinnedTls.socketFactory, pinnedTls.trustManager)
         .connectionSpecs(listOf(tls13Only))
         .protocols(listOf(Protocol.HTTP_1_1))
         .followRedirects(false)
@@ -65,6 +68,16 @@ class OkHttpCallbacks(
             }
         }
         .build()
+
+    /** The core asks that `baseUrl` be authenticated by this key (SHA-256 of its SubjectPublicKeyInfo, unpadded base64url) instead of by a CA chain. */
+    override fun pinRelay(baseUrl: String, spkiSha256B64: String) {
+        val pin = try {
+            java.util.Base64.getUrlDecoder().decode(spkiSha256B64)
+        } catch (e: IllegalArgumentException) {
+            throw HttpFault.Tls()
+        }
+        if (!pinnedTls.pins.register(baseUrl, pin)) throw HttpFault.Tls() // malformed, or the host is already pinned to a DIFFERENT key
+    }
 
     /** Cancels every running and queued call (used when the app is about to lock: an in-flight transfer must not keep keys alive). */
     fun cancelAll() = client.dispatcher.cancelAll()

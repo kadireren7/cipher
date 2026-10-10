@@ -86,6 +86,9 @@ impl HttpCallbacks for DeadHttp {
     fn download_file(&self, _: String, _: String, _: Option<String>, _: String, _: u64) -> Result<u16, HttpFault> {
         Err(HttpFault::Network)
     }
+    fn pin_relay(&self, _: String, _: String) -> Result<(), HttpFault> {
+        Err(HttpFault::Tls)
+    }
 }
 
 fn engine(ks: Arc<MockKeystore>, allow_software: bool) -> (Arc<CipherEngine>, tempfile::TempDir) {

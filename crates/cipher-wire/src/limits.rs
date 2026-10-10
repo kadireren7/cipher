@@ -46,6 +46,8 @@ pub const MAX_CAPS_PER_DEVICE: usize = 256;
 pub const MAX_CAPS_PER_MINT: usize = 16;
 /// Live INTRO capabilities (contact cards) per device.
 pub const MAX_INTRO_CAPS_PER_DEVICE: usize = 8;
+/// Live attachment bytes a single delivery capability may have stored (capability uploads, docs/MULTI_RELAY_PROTOCOL.md §10).
+pub const CAP_BLOB_QUOTA_BYTES: u64 = 256 * 1024 * 1024;
 /// Default capability lifetime (rotated well before this) and the grace window an old capability keeps working after rotation.
 pub const CAP_TTL_SECS: u64 = 30 * 24 * 3600;
 pub const CAP_REVOKE_GRACE_MAX_SECS: u64 = 24 * 3600;

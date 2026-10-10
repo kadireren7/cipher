@@ -82,9 +82,10 @@ jobs:
         run: |
           cargo test --locked -p cipher-core --all-features \
             --test mls_protocol --test vault_security --test attachments --test verification \
-            --test static_guards --test parsers_property
+            --test static_guards --test parsers_property --test contact_card
           cargo test --locked -p cipher-ffi --test boundary_guards --test boundary_behaviour --test android_guards
-          cargo test --locked -p cipher-relay --test security_invariants --test tls --test postgres_relay --test engine_dm --test engine_groups --test engine_attachments
+          cargo test --locked -p cipher-relay --test security_invariants --test tls --test postgres_relay --test engine_dm --test engine_groups --test engine_attachments \
+            --test intro --test multi_relay --test delivery_matrix --test metadata_measurement
       - name: Every invariant maps to tests that exist (renaming/deleting one fails CI)
         run: python3 scripts/check_invariants.py
       - name: Invariants doc is generated from the registry (no drift)
@@ -105,8 +106,13 @@ jobs:
         run: cargo install --locked cargo-deny@0.20.2 cargo-audit@0.22.2
       - name: cargo deny (advisories, licenses, bans incl. no OpenSSL/native-tls, sources)
         run: cargo deny check
-      - name: cargo audit (warnings are errors; the one reviewed exception is in .cargo/audit.toml)
+      - name: cargo audit (warnings are errors; the reviewed exceptions, with their evidence, are in .cargo/audit.toml)
         run: cargo audit --deny warnings
+      - name: SBOM (CycloneDX) is generated from the lockfiles and is reproducible
+        run: |
+          python3 scripts/gen_sbom.py -o /tmp/sbom-1.cdx.json
+          python3 scripts/gen_sbom.py -o /tmp/sbom-2.cdx.json
+          cmp /tmp/sbom-1.cdx.json /tmp/sbom-2.cdx.json
 
   android:
     name: android (unit tests / ktlint / lint / debug + release build)

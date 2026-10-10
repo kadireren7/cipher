@@ -309,6 +309,35 @@ impl RelayApi<'_> {
         Ok(r.blob_id)
     }
 
+    /// UNAUTHENTICATED upload of an encrypted blob file into the mailbox the capability belongs to (`self.endpoint` is that mailbox's relay).
+    pub fn upload_blob_file_by_cap(&self, path: &str, cap: &Id16) -> Result<Id16> {
+        let resp = check(self.transport.upload_file(
+            self.endpoint,
+            HttpRequest {
+                method: "POST",
+                path_and_query: "/v1/blobs/by-cap".to_owned(),
+                authorization: Some(format!("Cap {cap}")),
+                body: Vec::new(),
+            },
+            path,
+        )?)?;
+        Ok(json::<BlobCreated>(&resp)?.blob_id)
+    }
+
+    /// Same for an in-memory blob (thumbnails).
+    pub fn upload_blob_by_cap(&self, ciphertext: Vec<u8>, cap: &Id16) -> Result<Id16> {
+        let resp = check(self.transport.execute(
+            self.endpoint,
+            HttpRequest {
+                method: "POST",
+                path_and_query: "/v1/blobs/by-cap".to_owned(),
+                authorization: Some(format!("Cap {cap}")),
+                body: ciphertext,
+            },
+        )?)?;
+        Ok(json::<BlobCreated>(&resp)?.blob_id)
+    }
+
     pub fn download_blob_file(&self, id: &Id16, dest: &str, max_bytes: u64) -> Result<()> {
         use sha2::{Digest, Sha256};
         let path = format!("/v1/blobs/{id}");

@@ -24,6 +24,7 @@ problems = []
 required = {f"SEC-{n:03d}" for n in range(1, 39)}  # SEC-001..SEC-014 from the first task, SEC-015..037 added since
 ids = {i["id"] for i in data["invariants"]}
 required |= {f"REV-{n:03d}" for n in range(1, 11)}  # history/membership revocation (docs/HISTORY_REVOCATION.md)
+required |= {f"MR-{n:03d}" for n in range(1, 11)}  # multi-relay (docs/MULTI_RELAY_PROTOCOL.md)
 required |= {f"PRIV-{n:03d}" for n in range(1, 18)}  # network-privacy layer (docs/NETWORK_PRIVACY_THREAT_MODEL.md)
 for missing in sorted(required - ids):
     problems.append(f"{missing}: missing from registry")

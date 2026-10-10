@@ -85,7 +85,11 @@ fn a_card_opens_only_its_issuers_devices() {
     let kps = carol.generate_key_packages(1).unwrap();
     w.api(&carol).upload_key_packages(kps).unwrap();
     let bobs_card = intro(&w, &bob);
-    assert_eq!(post(&w, "/v1/intro/key-package", bobs_card, Some(carol.device_id())).0, 404, "Bob's card must not reach Carol's KeyPackages");
+    assert_eq!(
+        post(&w, "/v1/intro/key-package", bobs_card, Some(carol.device_id())).0,
+        404,
+        "Bob's card must not reach Carol's KeyPackages"
+    );
     assert_eq!(post(&w, "/v1/intro/key-package", bobs_card, Some(rid())).0, 404);
     assert_eq!(post(&w, "/v1/intro/key-package", bobs_card, None).0, 400);
 }
@@ -133,7 +137,14 @@ fn intro_responses_never_contain_secrets_or_queue_content() {
     assert!(!text.contains("ciphertext") && !text.contains(&cap.to_hex()), "{text}");
     // the database holds only the capability's hash
     let hits: i64 = w.rt.block_on(async {
-        w.pool.get().await.unwrap().query_one("SELECT count(*) FROM delivery_caps WHERE position($1::bytea in cap_hash) > 0", &[&cap.0.as_slice()]).await.unwrap().get(0)
+        w.pool
+            .get()
+            .await
+            .unwrap()
+            .query_one("SELECT count(*) FROM delivery_caps WHERE position($1::bytea in cap_hash) > 0", &[&cap.0.as_slice()])
+            .await
+            .unwrap()
+            .get(0)
     });
     assert_eq!(hits, 0);
 }

@@ -174,8 +174,13 @@ fn banned_apis_do_not_appear_in_app_code() {
     ];
     for (f, t) in kotlin_main() {
         for (n, l) in hits(&t, banned) {
-            // the one place allowed to touch the clipboard / the one logger
-            let allowed = (f.ends_with("SensitiveClipboard.kt")) || (f.ends_with("SafeLog.kt") && l.contains("Log.i("));
+            // the one place allowed to touch the clipboard / the one logger / the one TLS trust component (certificate-pinned relays)
+            let tls_api = ["X509TrustManager", "SSLSocketFactory", "sslSocketFactory("].iter().any(|b| l.contains(b));
+            let allowed = (f.ends_with("SensitiveClipboard.kt"))
+                || (f.ends_with("SafeLog.kt") && l.contains("Log.i("))
+                || (tls_api
+                    && (f.ends_with("net/PinnedTls.kt")
+                        || (f.ends_with("net/OkHttpCallbacks.kt") && l.contains("sslSocketFactory(pinnedTls."))));
             assert!(allowed, "{f}:{n}: banned API: `{}`", l.trim());
         }
     }
@@ -423,5 +428,37 @@ fn relay_address_is_validated_in_the_shell() {
     let f = &f[..f.find("host.configureRelay").unwrap()];
     for needle in ["startsWith(\"https://\")", "userInfo", "rawQuery", "rawFragment", "lastIndexOf(\"://\")"] {
         assert!(f.contains(needle), "configureRelay must check {needle}");
+    }
+}
+
+/// The pinned-TLS component is the only place that may implement a trust manager. Its shape is checked so a "temporary" accept-all cannot slip in.
+#[test]
+fn the_pinned_tls_component_cannot_become_an_accept_all_trust_manager() {
+    let t = read("app/src/main/java/app/cipher/messenger/net/PinnedTls.kt");
+    // delegates to the platform trust manager for every host without a pin, and refuses when there is none
+    assert!(
+        t.contains("platform.checkServerTrusted(chain, authType, socket)")
+            && t.contains("platform.checkServerTrusted(chain, authType, engine)")
+    );
+    assert!(t.contains("platform.checkServerTrusted(chain, authType)"));
+    assert!(t.contains("platform trust manager unavailable") && t.contains("error("));
+    // a pin compares the full SHA-256 of the SubjectPublicKeyInfo in constant time, and checks validity dates
+    assert!(t.contains("MessageDigest.isEqual(spki, pin)") && t.contains("leaf.checkValidity()") && t.contains("SHA-256"));
+    // no server-side trust, no empty bodies that accept, no host-name verifier
+    assert!(t.matches("fun checkServerTrusted").count() == 3);
+    assert!(!t.contains("HostnameVerifier") && !t.contains("trustAll") && !t.contains("ALLOW_ALL"));
+    assert!(t.matches("throw CertificateException(\"client auth unsupported\")").count() == 3);
+    // only OkHttpCallbacks wires it, and only with this component's own factory
+    for (f, text) in kotlin_main() {
+        if f.ends_with("net/PinnedTls.kt") {
+            continue;
+        }
+        assert!(!text.contains("PinningTrustManager"), "{f}: the trust manager must not be used directly");
+        if text.contains("sslSocketFactory(") {
+            assert!(
+                f.ends_with("net/OkHttpCallbacks.kt") && text.contains("sslSocketFactory(pinnedTls.socketFactory, pinnedTls.trustManager)"),
+                "{f}"
+            );
+        }
     }
 }

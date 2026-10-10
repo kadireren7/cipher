@@ -60,7 +60,8 @@ async fn main() {
             let Ok(tls) = cipher_relay::tls::server_config(&cert, &key) else { die("invalid TLS material") };
             tracing::info!("listening (TLS 1.3)");
             let rc = axum_server::tls_rustls::RustlsConfig::from_config(Arc::new(tls));
-            let server = axum_server::bind_rustls(cfg.listen, rc).map(|a| a.handshake_timeout(std::time::Duration::from_secs(cfg.tls_handshake_secs)).acceptor(limit));
+            let server = axum_server::bind_rustls(cfg.listen, rc)
+                .map(|a| a.handshake_timeout(std::time::Duration::from_secs(cfg.tls_handshake_secs)).acceptor(limit));
             if server.serve(app).await.is_err() {
                 std::process::exit(1);
             }
