@@ -1,6 +1,6 @@
 # Cross-relay MLS groups and commits — sequencing and consistency design (ST-044)
 
-**Status: DESIGN ONLY. Nothing here is implemented. It needs independent review before code (ST-005).**
+**Status: DESIGN ONLY (v2 in §7 supersedes the shared-cap proposal of §3). Nothing here is implemented. It needs independent review before code (ST-005).**
 Cross-relay 1:1 conversations today perform no commits and groups with members on another relay are refused (`MULTI_RELAY_PROTOCOL.md` §9). This document says what a safe lift of that restriction would require.
 
 ## 1. What must hold
@@ -65,3 +65,42 @@ Re-reading §3–§4 as an attacker found these gaps. Each must be closed in the
 Relay: two endpoints + `group_caps` table + log retention + tests (`delivery_caps.rs`-style). Core: group metadata `home`, `GroupCaps` frame, polling of `H`, client-mediated fan-out of application messages for groups, per-relay Welcome delivery, removal rotation. Tests: extend `delivery_matrix.rs` with 3 members on 3 relays, concurrent admins, home-relay outage, removal races, malicious-`H` equivocation (expect detection, not prevention).
 
 **Until this is reviewed, the engine keeps refusing groups with members on another relay.**
+
+## 7. Revised design v2 (2026-10-10) — answers to §5a, still NOT implemented
+The §3 proposal used long-lived random "commit"/"read" capabilities handed around in application frames. §5a showed that this makes removal racy and leaks a liveness attack. v2 replaces them with **epoch-derived authentication**, which needs no separate rotation message.
+
+### 7.1 Authentication to the home relay `H` = knowledge of the current epoch
+* Both secrets are derived from the MLS epoch with the RFC 9420 exporter: `commit_key = Export("cipher-home-commit-v1", group_id, 32)`, `read_key = Export("cipher-home-read-v1", group_id, 32)`. Only current members can compute them; a removed member cannot compute them for any epoch after its removal.
+* `H` stores, per group tag, only `SHA-256("verifier" ‖ key)` for each of the two keys of the **current** log head epoch. A request carries a MAC (or the key itself over the pinned TLS channel; a MAC is preferred) that `H` checks against the verifier.
+* **A commit request carries the verifiers for the epoch it creates** (`next_commit_verifier`, `next_read_verifier`). `H` accepts the commit and switches verifiers **in the same database transaction** (the existing compare-and-swap on the sequence). Consequence: there is no window in which a removed member's credentials still work after its removal commit is accepted (closes §5a item 2), and no cap-rotation frame exists to be lost.
+* *Feasibility check required before code:* the committer must compute the **next** epoch's exporter before merging. If OpenMLS cannot expose it from a staged commit, compute it on a throw-away clone of the group state (load the group from storage, merge the clone, export, discard). If neither is possible, v2 does not work as written and a two-step "commit, then publish verifiers with a monotonic epoch number" protocol with a visible window must be designed instead.
+
+### 7.2 What a hostile member can and cannot do (closes §5a items 1 and 6)
+* Every current member can submit a commit, exactly as MLS allows. The receivers' `authorize_commit` decides whether a commit is acceptable (non-admins: update-only). No separate "self-update" capability is needed — PCS commits are ordinary commits.
+* A malicious *member* can therefore burn a log slot with a commit that receivers reject. This is **not preventable** by the home relay (it cannot validate MLS state) and is the same denial-of-service any hostile group member has in MLS. It is **attributable** when the commit is validly signed by a leaf (admins remove that leaf), and **not attributable** when it is unparseable garbage. Mitigation: `H` accepts only bodies that parse as an MLS `PublicMessage`/`PrivateMessage` commit of bounded size and rate-limits per tag; it cannot do more. This limitation must be shown to users (a group's liveness is only as good as its least trusted member).
+* A malicious member cannot forge membership: every receiver re-validates.
+
+### 7.3 Fork and rollback detection (closes §5a item 4)
+* Log entries are **hash-chained by `H` and re-checked by clients**: `h_i = SHA-256("cipher-home-log-v1" ‖ h_{i-1} ‖ be64(seq_i) ‖ SHA-256(commit_blob_i))`. Every `GET log` response includes `h_i`; a client verifies the chain it receives and refuses any response whose chain does not extend its stored head (rollback or rewrite ⇒ alarm, not silent acceptance). Sequence numbers must be gap-free.
+* Every application message carries, **inside its MLS-authenticated data**, `(seq, h_seq)` of the sender's current head. A receiver compares it with its own chain at the same `seq`. Mismatch ⇒ **fork alarm**: the group is frozen for sending until the user decides (the equivocation case of ST-029). A matching head proves the sender and receiver saw the same history up to `seq`.
+* *Not detectable:* a **permanent partition** in which `H` shows disjoint logs to two sets of members who never exchange a message across the split. That is inherent to any single-sequencer design. State it.
+
+### 7.4 Welcome delivery (closes §5a item 5)
+* **Write-ahead outbox:** before sending the commit, the committer durably records `PendingAdd{commit_id, joiner_card, welcome_blob}`. After `Accepted(seq)` — or after recovering from a crash by looking up `commit_id` in the log (idempotent by commit id) — the Welcome is delivered through the 1:1 client-mediated path (card/intro capability) with the usual retry/ordering machinery. If the commit turned out **not** to be accepted, the record is discarded and the add is rebuilt on the new head.
+* The Welcome carries the home relay descriptor (with pin) in the MLS-authenticated group-info extension, so the joiner learns `H` only from authenticated data.
+* A joiner whose Welcome is undeliverable (its relay is down) stays a *ghost leaf*: receivers must not treat it as a participant for security statements (UI shows "invitation pending"); an admin removes it after a timeout. Messages encrypted to the new epoch remain unreadable for the ghost until it joins, which is correct.
+
+### 7.5 Capability / metadata (closes §5a item 3, partially)
+* All members share the same two keys for an epoch, so `H` can only see *how many distinct sources* poll a tag. Over Tor (Profile A) the source is not visible; on Profile B (public TLS) `H` sees group size/online pattern by source address. **Tor is therefore a precondition for any claim of membership-size privacy for cross-relay groups**, and the UI must say so otherwise.
+* A batched poll across groups is **rejected**: it would give `H` the co-membership of groups for one device. One request per group, with randomised polling jitter.
+* Application messages never touch `H` (client-mediated fan-out to each member's relay, one request per distinct relay).
+
+### 7.6 Home relay failure and move
+* Failure of `H` stops **membership changes** (commits). Application messages continue in the last epoch (they do not use `H`), so a dead home relay degrades but does not kill a group. Recovery = an owner creates a new group and re-invites by card (no in-place recovery; stated, not hidden).
+* Planned move: an owner commits `MoveHome(new_descriptor)` through the *old* `H` (the last entry it serves); members then follow the descriptor in the new epoch. The old `H` marks the tag moved. A hostile old `H` that withholds the `MoveHome` commit only delays the move.
+
+### 7.7 Tests required before any code is considered done
+Extend `delivery_matrix.rs` (seeded) and `multi_relay.rs` with: 3 members on 3 relays plus `H` on a 4th; concurrent commits (CAS winner exactly one, loser rebases); removal then immediate use of old credentials (must fail at once); malicious `H` modes — drop one entry, reorder, duplicate, serve a stale head, equivocate between two members (**expected: detection via §7.3, never silent**); malicious member garbage at every slot (expected: liveness loss, no state fork, no forged membership); crash between commit and Welcome at every step; `H` outage and recovery with gap-free catch-up; move of home. Plus fuzz targets for the log and request codecs.
+
+### 7.8 What is still open (needs the independent review)
+(a) the feasibility check in §7.1; (b) whether hashing the whole commit blob in the chain is sufficient or the epoch authenticator should also be bound; (c) exact UI semantics of a fork alarm; (d) retention: a member offline longer than the log retention must be re-added — the rule and the re-add flow are not specified; (e) interaction with scheduled PCS updates under a hostile member (rate rules). **Conclusion: v2 closes the specific defects found in §5a on paper, but it is untested and unreviewed; ST-044 stays open and the engine keeps refusing cross-relay groups.**
