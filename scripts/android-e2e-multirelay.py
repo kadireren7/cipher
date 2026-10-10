@@ -30,6 +30,7 @@ TOKEN = "e2e-multirelay-registration-token-0123456789abcdef"
 tmp = tempfile.mkdtemp(prefix="cipher-mr-e2e-")
 sfx = str(os.getpid())
 results, procs = [], []
+RELAYS = {}  # label -> launch arguments (+ process), so a relay can be stopped and restarted on the SAME database
 
 
 def check(name, ok, detail=""):
@@ -48,12 +49,27 @@ def psql(sql, db="postgres"):
     return sh("docker", "exec", "cipher-pg", "psql", "-U", "postgres", "-d", db, "-tAc", sql).stdout.strip()
 
 
+def stop_relay(label):
+    p = RELAYS[label][-1]
+    p.terminate()
+    try:
+        p.wait(timeout=20)
+    except subprocess.TimeoutExpired:
+        p.kill()
+
+
+def restart_relay(label):
+    start_relay(*RELAYS[label][:-1])
+
+
 def start_relay(port, db, cert, key, label, audience=None, listen_host="0.0.0.0"):
     env = dict(os.environ, CIPHER_RELAY_AUDIENCE=audience or f"{HOST}:{port}", CIPHER_RELAY_TLS_HANDSHAKE_SECS="60", CIPHER_RELAY_REGISTRATION_TOKEN=TOKEN,
                CIPHER_RELAY_PEPPER=f"pepper-{label}-0123456789abcdef0123456789", CIPHER_RELAY_LISTEN=f"{listen_host}:{port}",
                CIPHER_RELAY_DATABASE_URL=f"postgres://postgres:devonly-not-a-secret@127.0.0.1:55432/{db}",
                CIPHER_RELAY_TLS_CERT=cert, CIPHER_RELAY_TLS_KEY=key)
-    p = subprocess.Popen([RELAY], env=env, stdout=open(f"{tmp}/relay-{label}.log", "w"), stderr=subprocess.STDOUT)
+    RELAYS[label] = (port, db, cert, key, label, audience, listen_host)
+    p = subprocess.Popen([RELAY], env=env, stdout=open(f"{tmp}/relay-{label}.log", "a"), stderr=subprocess.STDOUT)
+    RELAYS[label] += (p,)
     procs.append(p)
     for _ in range(60):
         time.sleep(0.5)
@@ -259,6 +275,60 @@ try:
     leak = psql(f"SELECT count(*) FROM queue WHERE sender_h IS NOT NULL", dbb)
     check("relay B holds no sender hash for anything the app delivered, and no record of the app's device",
           leak == "0" and psql(f"SELECT count(*) FROM devices WHERE encode(device_id,'hex')='{app_dev}'", dbb) == "0", leak)
+    # ======================================================================================================== resilience (after the baseline checks)
+    ik = dict(relayUrl=url_a, conv=conv_app)
+
+    def bob_sync(n=3, pause=1.0):
+        for _ in range(n):
+            bob.cmd("sync")
+            time.sleep(pause)
+
+    # R1: offline burst, recovered after an app restart (every phase is a new app process)
+    burst = [f"burst-{i}" for i in range(1, 11)]
+    for t in burst:
+        bob.cmd(f"send {conv_bob} {t}")
+    ok, v, out = instrument("recv", expectTexts=",".join(burst), **ik)
+    check("offline burst: 10 messages sent while the app was not running arrive complete and in order after an app restart", ok, out[-800:])
+
+    # R2: the APP'S relay (A) goes down; the peer's message must wait at the peer and arrive after A is back (same database)
+    stop_relay("a")
+    bob.cmd(f"send {conv_bob} a-down-1")
+    bob_sync(2, 2.0)
+    restart_relay("a")
+    bob_sync(8, 3.0)
+    ok, v, out = instrument("recv", expectTexts="a-down-1", **ik)
+    check("app's relay outage + restart: the peer's message is held by the peer and delivered after recovery (relay state survived the restart)", ok, out[-800:])
+
+    # R3: the PEER'S relay (B) is down while the app sends a text and an attachment
+    stop_relay("b")
+    ok, v, out = instrument("send", text="b-down-1", fileKb="300", fileName="outage.bin", **ik)
+    check("peer relay down: the app queues the text; the attachment either fails leaving no message behind or is queued (no crash, no partial state)", ok, out[-800:])
+    attach_failed = v.get("attachFailed") == "true"
+    sent_sha = v.get("sentSha", "")
+    restart_relay("b")
+    if attach_failed:
+        ok, v2, out = instrument("send", fileKb="300", fileName="outage.bin", **ik)
+        sent_sha = v2.get("sentSha", "")
+        check("peer relay back: the attachment send now succeeds", ok and bool(sent_sha), out[-600:])
+    got = ""
+    for _ in range(10):
+        bob.cmd("sync")
+        got = bob.cmd(f"history {conv_bob}")
+        if "b-down-1" in got and 'filename: "outage.bin"' in got:
+            break
+        time.sleep(3)
+    check("peer received the text and the attachment sent during its relay's outage EXACTLY ONCE",
+          got.count("b-down-1") == 1 and got.count('filename: "outage.bin"') == 1, got[-600:])
+    mid = re.search(r'id: "([0-9a-f]{32})"[^}]*?filename: "outage\.bin"', got)
+    opened = ""
+    if mid:
+        outp = f"{tmp}/bob-outage.bin"
+        bob.cmd(f"open {conv_bob} {mid.group(1)} {outp}")
+        opened = sha(open(outp, "rb").read()) if os.path.exists(outp) else ""
+    check("the attachment sent around the outage decrypts byte-for-byte at the peer", bool(sent_sha) and opened == sent_sha, (sent_sha, opened))
+    bob_sync(3, 2.0)
+    ok, v, out = instrument("settle", **ik)
+    check("after both outages every message the app sent is DELIVERED by end-to-end receipts and none is FAILED", ok, out[-800:])
 finally:
     for p in procs:
         p.terminate()
