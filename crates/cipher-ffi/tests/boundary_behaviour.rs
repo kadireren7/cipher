@@ -525,7 +525,16 @@ fn rapid_lock_unlock_racing_with_plaintext_calls_never_panics_or_leaks_a_stale_s
             }
         }));
     }
+    // Starvation of the reader threads is a test-environment problem, not a lock bug, so the wait is long; a genuine deadlock still fails.
+    fn wait_past(counter: &AtomicU32, before: u32, what: &str, round: u32) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while counter.load(Ordering::SeqCst) <= before {
+            assert!(std::time::Instant::now() < deadline, "no reader observed the {what} state in round {round} within 60 s");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
     for i in 0..12 {
+        let closed_before = closed_calls.load(Ordering::SeqCst);
         match i % 4 {
             0 => e.lock_vault(),
             1 => e.on_background(),
@@ -538,8 +547,13 @@ fn rapid_lock_unlock_racing_with_plaintext_calls_never_panics_or_leaks_a_stale_s
         }
         // after a COMPLETED lock call, a plaintext call from this thread must be refused
         assert!(matches!(e.list_conversations(), Err(CipherError::Locked)), "stale success after lock (round {i})");
+        // Deterministic exercise (was probabilistic and failed under machine load): do not move on until a reader thread has
+        // actually observed the locked state during this round.
+        wait_past(&closed_calls, closed_before, "locked", i);
         e.on_foreground(); // a backgrounded vault is only unlockable after the app is foregrounded again
         e.unlock_vault_with_pin("739104".into()).unwrap();
+        let ok_before = ok_calls.load(Ordering::SeqCst);
+        wait_past(&ok_calls, ok_before, "unlocked", i);
     }
     stop.store(true, Ordering::SeqCst);
     for r in readers {
