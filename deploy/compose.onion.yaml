@@ -1,0 +1,27 @@
+# Profile A overlay: Tor onion service is the ONLY entry point. Use:  docker compose -f deploy/compose.yaml -f deploy/compose.onion.yaml up -d
+# The relay publishes no host port and sits on internal-only networks; tor reaches it over the `onion` network and has no other route to it.
+name: cipher
+services:
+  relay:
+    ports: !reset []
+    networks: !override [backend, onion]
+    environment:
+      CIPHER_RELAY_TLS_HANDSHAKE_SECS: "60"   # a Tor rendezvous handshake exceeds the 10 s default (measured)
+  tor:
+    build: { context: ., dockerfile: Dockerfile.tor }
+    image: cipher-tor:local
+    restart: unless-stopped
+    depends_on: [relay]
+    volumes:
+      - tor-data:/var/lib/tor      # holds the onion service PRIVATE KEY: back it up offline, never publish it
+      - ./torrc:/etc/tor/torrc:ro
+    networks: [onion, frontend]    # frontend = outbound to the Tor network only
+    read_only: true
+    tmpfs: [/tmp:size=8m]
+    mem_limit: 256m
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+networks:
+  onion: { internal: true }
+volumes:
+  tor-data:

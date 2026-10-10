@@ -133,6 +133,7 @@ impl World {
             tls_key: None,
             insecure_dev_http: true,
             max_total_blob_bytes: 1024 * 1024 * 1024,
+            tls_handshake_secs: 10,
         });
         let clock = Arc::new(SharedClock(ManualClock::new(1_800_000_000)));
         let push = Arc::new(RecordingPush::default());

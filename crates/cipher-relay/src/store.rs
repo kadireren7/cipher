@@ -103,6 +103,14 @@ impl PgStore {
         self.pool.get().await.map_err(internal)
     }
 
+    /// Readiness probe: the database answers a trivial query.
+    pub async fn ping(&self) -> bool {
+        match self.conn().await {
+            Ok(c) => c.query_one("SELECT 1", &[]).await.is_ok(),
+            Err(_) => false,
+        }
+    }
+
     // ---- accounts / devices ----
 
     async fn insert_device(tx: &Transaction<'_>, account: &Id16, rec: &DeviceRecord) -> Result<(), ApiError> {
@@ -527,7 +535,7 @@ impl PgStore {
     // ---- delivery capabilities (docs/DELIVERY_CAPABILITIES.md) ----
 
     /// Mints `caps` (the caller generated the random ids; the relay stores only their hashes). Bounded per device.
-    pub async fn mint_caps(&self, device: &Id16, caps: &[Id16], now: u64) -> Result<(), ApiError> {
+    pub async fn mint_caps(&self, device: &Id16, caps: &[Id16], intro: bool, now: u64) -> Result<(), ApiError> {
         let mut c = self.conn().await?;
         let tx = c.transaction().await.map_err(internal)?;
         let d = device.0.as_slice();
@@ -537,11 +545,19 @@ impl PgStore {
         if live as usize + caps.len() > MAX_CAPS_PER_DEVICE {
             return Err(ApiError::QueueFull);
         }
+        if intro {
+            // Few cards at a time: every live intro capability is a way for a stranger who holds it to claim KeyPackages.
+            let live_intro: i64 =
+                tx.query_one("SELECT count(*) FROM delivery_caps WHERE device_id=$1 AND intro", &[&d]).await.map_err(internal)?.get(0);
+            if live_intro as usize + caps.len() > MAX_INTRO_CAPS_PER_DEVICE {
+                return Err(ApiError::QueueFull);
+            }
+        }
         let exp = (now + CAP_TTL_SECS) as i64;
         for cap in caps {
             let h = cap_hash(cap);
             match tx
-                .execute("INSERT INTO delivery_caps (cap_hash, device_id, expires_at) VALUES ($1,$2,$3)", &[&h.as_slice(), &d, &exp])
+                .execute("INSERT INTO delivery_caps (cap_hash, device_id, expires_at, intro) VALUES ($1,$2,$3,$4)", &[&h.as_slice(), &d, &exp, &intro])
                 .await
             {
                 Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
@@ -593,6 +609,22 @@ impl PgStore {
         let r = Self::enqueue_tx(&tx, &dev, message_id, ct, ttl_secs, now, None, Lane::Cap(h)).await?;
         tx.commit().await.map_err(internal)?;
         Ok((dev, r))
+    }
+
+    /// The device an INTRO capability belongs to (valid, unexpired, kind intro). Unknown / expired / revoked / ordinary capabilities are one outcome.
+    pub async fn intro_device(&self, cap: &Id16, now: u64) -> Result<Id16, ApiError> {
+        let c = self.conn().await?;
+        let row = c
+            .query_opt(
+                "SELECT device_id FROM delivery_caps WHERE cap_hash=$1 AND intro AND expires_at>$2",
+                &[&cap_hash(cap).as_slice(), &(now as i64)],
+            )
+            .await
+            .map_err(internal)?;
+        match row {
+            Some(r) => id(r.get(0)),
+            None => Err(ApiError::NotFound),
+        }
     }
 
     // ---- blobs ----

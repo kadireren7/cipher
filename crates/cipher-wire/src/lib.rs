@@ -11,6 +11,8 @@ pub mod b64;
 pub mod ids;
 pub mod limits;
 pub mod messages;
+pub mod relay_desc;
 pub mod signing;
 
 pub use ids::{Id16, IdError};
+pub use relay_desc::{RelayDescError, RelayDescriptor};

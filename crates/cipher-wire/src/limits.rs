@@ -44,6 +44,8 @@ pub const MAX_BATCH_DELIVERIES: usize = 256;
 /// Max live capabilities per device, and per mint request.
 pub const MAX_CAPS_PER_DEVICE: usize = 256;
 pub const MAX_CAPS_PER_MINT: usize = 16;
+/// Live INTRO capabilities (contact cards) per device.
+pub const MAX_INTRO_CAPS_PER_DEVICE: usize = 8;
 /// Default capability lifetime (rotated well before this) and the grace window an old capability keeps working after rotation.
 pub const CAP_TTL_SECS: u64 = 30 * 24 * 3600;
 pub const CAP_REVOKE_GRACE_MAX_SECS: u64 = 24 * 3600;
