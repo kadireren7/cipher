@@ -62,6 +62,8 @@ impl KeystoreCallbacks for Ks {
 struct Curl {
     ca: String,
     resolve: String,
+    /// base url -> SPKI pin (unpadded base64url); curl is then run with --pinnedpubkey (and --insecure ONLY because the pin replaces the CA chain).
+    pins: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
 impl Curl {
     #[allow(clippy::too_many_arguments)]
@@ -76,7 +78,24 @@ impl Curl {
         out: Option<&str>,
     ) -> Result<(u16, Vec<u8>), HttpFault> {
         let mut c = Command::new("curl");
-        c.args(["-sS", "--tlsv1.3", "--proto", "=https", "--max-time", "120", "--cacert", &self.ca, "--connect-to", &self.resolve]);
+        c.args(["-sS", "--tlsv1.3", "--proto", "=https", "--max-time", "120"]);
+        if let Some(pin) = self.pins.lock().unwrap().get(base) {
+            // curl wants standard base64 with padding; the pin replaces CA validation for this relay (self-signed / other relay).
+            let mut std_b64: String = pin
+                .chars()
+                .map(|c| match c {
+                    '-' => '+',
+                    '_' => '/',
+                    c => c,
+                })
+                .collect();
+            while std_b64.len() % 4 != 0 {
+                std_b64.push('=');
+            }
+            c.args(["--insecure", "--pinnedpubkey", &format!("sha256//{std_b64}")]);
+        } else {
+            c.args(["--cacert", &self.ca, "--connect-to", &self.resolve]);
+        }
         c.args(["-X", method, "-w", "\n%{http_code}"]);
         if let Some(a) = auth {
             c.args(["-H", &format!("Authorization: {a}")]);
@@ -121,13 +140,17 @@ impl HttpCallbacks for Curl {
         let (status, _) = self.run(&base, "GET", &path, auth.as_deref(), None, &[], Some(&dest))?;
         Ok(status)
     }
+    fn pin_relay(&self, base: String, pin: String) -> Result<(), HttpFault> {
+        self.pins.lock().unwrap().insert(base, pin);
+        Ok(())
+    }
 }
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (dir, host, ca, ip) = (&a[1], &a[2], &a[3], &a[4]);
     let port = host.rsplit(':').next().unwrap();
-    let http = Arc::new(Curl { ca: ca.clone(), resolve: format!("{host}:{ip}:{port}") });
+    let http = Arc::new(Curl { ca: ca.clone(), resolve: format!("{host}:{ip}:{port}"), pins: Default::default() });
     let ks = Arc::new(Ks(InMemoryKeyStore::new(ProtectionLevel::OsSoftware)));
     let eng = CipherEngine::new(
         EngineSettings {

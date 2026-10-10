@@ -100,6 +100,15 @@ impl World {
     }
 
     pub fn build(limits: Limits, max_inflight: usize, request_timeout_secs: u64) -> Self {
+        Self::build_with(limits, max_inflight, request_timeout_secs, cipher_wire::limits::CAP_BLOB_QUOTA_BYTES, 1024 * 1024 * 1024)
+    }
+
+    /// A relay with explicit blob storage limits: per delivery capability and in total.
+    pub fn with_blob_limits(cap_quota: u64, total: u64) -> Self {
+        Self::build_with(generous_limits(), 512, 30, cap_quota, total)
+    }
+
+    pub fn build_with(limits: Limits, max_inflight: usize, request_timeout_secs: u64, cap_quota: u64, total_blobs: u64) -> Self {
         let logs = LogBuf::default();
         let sub = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
         let guard = tracing::subscriber::set_default(sub);
@@ -132,8 +141,9 @@ impl World {
             tls_cert: None,
             tls_key: None,
             insecure_dev_http: true,
-            max_total_blob_bytes: 1024 * 1024 * 1024,
+            max_total_blob_bytes: total_blobs,
             tls_handshake_secs: 10,
+            cap_blob_quota_bytes: cap_quota,
         });
         let clock = Arc::new(SharedClock(ManualClock::new(1_800_000_000)));
         let push = Arc::new(RecordingPush::default());

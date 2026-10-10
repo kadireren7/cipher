@@ -69,6 +69,17 @@ pub struct Contact {
     /// Key the user explicitly verified, if any (so a later change is visible even after acknowledgement).
     pub verified_key: Option<Vec<u8>>,
     pub blocked: bool,
+    /// Set for a contact on ANOTHER relay (added through a contact card): where their mailbox lives and the intro capability from their card.
+    /// `None` = same relay as ours (directory lookups and authenticated sends work as before).
+    #[serde(default)]
+    pub home: Option<RemoteHome>,
+}
+
+/// A contact's relay as learned from their signed card (docs/MULTI_RELAY_PROTOCOL.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteHome {
+    pub relay: cipher_wire::RelayDescriptor,
+    pub intro: Id16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +100,10 @@ pub struct Conversation {
     /// This device was REMOVED from the group: its history keys were deleted (docs/HISTORY_REVOCATION.md). Not set for a voluntary leave.
     #[serde(default)]
     pub access_revoked: bool,
+    /// The peer lives on another relay: there is no sequencer for this conversation, so it performs NO MLS commits after creation
+    /// (no key-update commits, no membership changes) — docs/MULTI_RELAY_PROTOCOL.md §9.
+    #[serde(default)]
+    pub remote: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +136,9 @@ pub enum Content {
     /// Control frame: the sender's current delivery capability for this conversation (docs/DELIVERY_CAPABILITIES.md). Never shown, never stored in history.
     DeliveryCap {
         cap: Id16,
+        /// The relay this capability is valid at (None only in frames from before multi-relay support: then it is the sender's and our shared relay).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay: Option<cipher_wire::RelayDescriptor>,
     },
 }
 
@@ -169,6 +187,14 @@ pub struct OutboxItem {
     pub next_attempt_ms: u64,
     /// Marks a leave request: once delivered, the local MLS state of the conversation can be dropped.
     pub is_leave: bool,
+    /// A Welcome that creates a conversation at the peer: nothing else of that conversation is sent before it has been accepted by the peer's relay
+    /// (otherwise the peer could receive messages for a group it has not joined yet, and drop them).
+    #[serde(default)]
+    pub welcome: bool,
+    /// Position in the order messages were ENCRYPTED. Items of one conversation must leave in this order: the MLS receiver only keeps keys for a few skipped
+    /// generations, so a message that arrives many generations late is undecryptable and silently lost (0 = stored by an older build).
+    #[serde(default)]
+    pub order: u64,
 }
 
 pub fn msg_sort_key(ts_ms: u64, id: &Id16) -> String {

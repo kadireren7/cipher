@@ -1,4 +1,9 @@
 [advisories]
 # Compile-time-only transitive proc-macro (hax-lib-macros <- libcrux <- hpke-rs <- openmls_rust_crypto).
 # Unmaintained, no known vulnerability. Tracked in docs/SECURITY_TODO.md; re-evaluate on each OpenMLS bump.
-ignore = ["RUSTSEC-2026-0173"]
+ignore = ["RUSTSEC-2026-0173", "RUSTSEC-2026-0330", "RUSTSEC-2026-0331"]
+# RUSTSEC-2026-0330 / -0331 (libcrux-kem 0.0.9: panics on short hybrid seeds/keys). libcrux-kem is in Cargo.lock only as an INACTIVE optional dependency of
+# the hpke-rs-libcrux backend, which Cipher does not build (it uses hpke-rs-rust-crypto). Evidence, 2026-10-10:
+#   cargo tree --workspace --all-features --target all -e all | grep -c libcrux-kem   ->  0
+# No compatible upgrade exists (0.0.x is exact-match); it needs a new hpke-rs-libcrux upstream. Tracked as ST-045: re-check on every OpenMLS/hpke-rs bump
+# and REMOVE these two ignores the moment the dependency becomes active or a fixed release is resolvable.

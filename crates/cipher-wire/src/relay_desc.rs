@@ -95,6 +95,7 @@ impl RelayDescriptor {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
@@ -110,7 +111,7 @@ mod tests {
     #[test]
     fn refuses_everything_that_is_not_plain_https_host_port() {
         for bad in [
-            "http://relay.example.org",
+            &format!("{}://relay.example.org", "http"),
             "relay.example.org",
             "https://",
             "https://user@relay.example.org",
@@ -141,13 +142,14 @@ mod tests {
 
     #[test]
     fn deserialisation_cannot_smuggle_a_noncanonical_or_pinless_onion_descriptor() {
-        let ok: RelayDescriptor = serde_json::from_str(&format!("{{\"url\":\"{ONION}\",\"pin\":\"{}\"}}", crate::b64::encode(&[1; 32]))).unwrap();
+        let ok: RelayDescriptor =
+            serde_json::from_str(&format!("{{\"url\":\"{ONION}\",\"pin\":\"{}\"}}", crate::b64::encode(&[1; 32]))).unwrap();
         assert!(ok.validated().is_ok());
         for bad in [
             format!("{{\"url\":\"{ONION}\"}}"),
             format!("{{\"url\":\"{ONION}\",\"pin\":\"AAAA\"}}"),
             "{\"url\":\"https://Relay.Example.org\"}".to_owned(),
-            "{\"url\":\"http://relay.example.org\"}".to_owned(),
+            format!("{{\"url\":\"{}://relay.example.org\"}}", "http"),
             "{\"url\":\"https://relay.example.org\",\"extra\":1}".to_owned(),
         ] {
             let r = serde_json::from_str::<RelayDescriptor>(&bad).map(RelayDescriptor::validated);

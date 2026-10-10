@@ -27,6 +27,9 @@ jobs:
           - app_parsers
           - ffi_validate
           - vault_file
+          - privacy_wire
+          - history_unseal
+          - multi_relay_wire
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

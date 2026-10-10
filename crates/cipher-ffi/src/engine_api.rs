@@ -246,6 +246,35 @@ impl CipherEngine {
         self.with(|e| e.add_contact_by_qr(&qr_payload, &name).map(|c| ContactFfi::from(&c)))
     }
 
+    /// How other relays' users must name THIS relay in cards and capability frames. `spki_pin_b64` (SHA-256 of the relay certificate's public key,
+    /// unpadded base64url) is REQUIRED for `.onion` relays and optional otherwise. Fails for an invalid URL or an onion relay without a pin.
+    pub fn set_own_relay(&self, relay_url: String, spki_pin_b64: Option<String>) -> R<()> {
+        bounded(&relay_url, 255, "relay url")?;
+        let pin = match spki_pin_b64 {
+            Some(p) => {
+                bounded(&p, 64, "pin")?;
+                let raw = cipher_wire::b64::decode(&p).ok_or(CipherError::InvalidInput { what: "pin".into() })?;
+                Some(<[u8; 32]>::try_from(raw.as_slice()).map_err(|_| CipherError::InvalidInput { what: "pin".into() })?)
+            }
+            None => None,
+        };
+        let d = cipher_wire::RelayDescriptor::new(&relay_url, pin).map_err(|_| CipherError::InvalidInput { what: "relay url".into() })?;
+        self.with(|e| e.set_own_relay(d))
+    }
+
+    /// A signed contact card (show as QR / send as a link) that lets someone on ANY relay start a conversation with this account. Expires after
+    /// `lifetime_days` (1..=30).
+    pub fn create_contact_card(&self, lifetime_days: u32) -> R<String> {
+        self.with(|e| e.create_contact_card(lifetime_days))
+    }
+
+    /// Add a contact from their card, possibly on another relay. `scanned_in_person`: the card was read from their screen (it then counts as verified).
+    pub fn add_contact_by_card(&self, card: String, name: String, scanned_in_person: bool) -> R<ContactFfi> {
+        bounded(&card, v::MAX_PAYLOAD_BYTES, "card")?;
+        bounded(&name, v::MAX_NAME_BYTES, "name")?;
+        self.with(|e| e.add_contact_by_card(&card, &name, scanned_in_person).map(|c| ContactFfi::from(&c)))
+    }
+
     /// Verify an existing contact with their QR code (must be that contact's own code).
     pub fn verify_contact_by_qr(&self, account_id: String, qr_payload: String) -> R<ContactFfi> {
         let a = v::id(&account_id, "account id")?;

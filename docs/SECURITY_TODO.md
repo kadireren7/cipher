@@ -46,9 +46,16 @@ Severity (H/M/L) is a rough prioritisation. Evidence labels as in `SECURITY_TEST
 | ST-038 | H | **New (privacy).** The privacy route was only exercised against a local SOCKS5 test double; the Tor network, Orbot integration, circuit behaviour, Android DNS behaviour for the proxy and real latency/battery were never tested | OPEN — REQUIRES REAL INFRASTRUCTURE / PHYSICAL DEVICE | `ADR-PRIVACY-TRANSPORT.md`, `PRIVACY_TRANSPORT_REVIEW.md`; procedure in `DEVICE_TEST_CHECKLIST.md` §H |
 | ST-039 | M | **New.** The relay can still map a delivery capability to its recipient device, sees recipient + time of every delivery, the online state, and the committer/tag of every group commit and first contact | OPEN — DESIGN DECISION | needs sealed-sender/mailbox designs; `DELIVERY_CAPABILITIES.md` residual |
 | ST-040 | L | **New.** ENHANCED cover is distinguishable from real traffic by the relay (invalid capability / unknown device) and does not defeat end-to-end timing correlation (candidate set 1.2 → 2.1 for 6 senders) | OPEN — documented | `PRIVACY_TRANSPORT_REVIEW.md` |
-| ST-041 | M | **New.** Relay as an onion service (no exit) needs TLS for an onion name or an explicit relaxation of "no cleartext" | OPEN — DESIGN DECISION | `ADR-PRIVACY-TRANSPORT.md` |
+| ST-041 | M | Relay as an onion service (no exit) needs TLS for an onion name or an explicit relaxation of "no cleartext" | **PARTIAL — trust model chosen, relay side TESTED-LIVE, Android side NOT TESTED** | Decision: self-signed relay certificate authenticated ONLY by the SPKI pin carried in the invitation (`SELF_HOSTING.md`, `NETWORK_ADVERSARY_MODEL.md` §5). Live Tor test: correct pin accepted, wrong pin refused, no pin refused (curl through a real Tor client). `PinnedTls.kt` exists with a shape guard (MR-009) but has never run against a real onion relay or on a device; Orbot untested |
 | ST-042 | M | **New.** No background delivery without push; privacy mode relies on foreground polling | OPEN — REQUIRES PHYSICAL DEVICE / REAL INFRASTRUCTURE | `PUSH_DESIGN.md` addendum |
 | ST-043 | L | **New.** "Uses Tor" is visible to the ISP; no bridge/pluggable-transport support | OPEN — INTENTIONALLY DEFERRED | `ISP_OBSERVABILITY_REPORT.md` |
+| ST-044 | M | **New (multi-relay).** Conversations with a peer on another relay perform **no MLS commits**: no automatic key-update (post-compromise security refresh) and no membership change; **cross-relay groups are refused** | OPEN — DESIGN DECISION | No sequencer exists for members on different relays (`MULTI_RELAY_PROTOCOL.md` §9). Options (home-relay groups; capability-gated sequencer; 2-member tie-break) need a reviewed design. Welcome-only creation is safe |
+| ST-045 | L | **New.** `cargo audit` reports RUSTSEC-2026-0330/-0331 (`libcrux-kem` 0.0.9, panics on short hybrid keys) | **OPEN — reviewed exception, not a fix** | The crate is in `Cargo.lock` only as an inactive optional dependency (`cargo tree --workspace --all-features --target all -e all` shows 0 occurrences). Exception + evidence in `.cargo/audit.toml`; re-check on every OpenMLS / hpke-rs bump |
+| ST-046 | M | **New.** Attachment transfer is not resumable or chunked: an interrupted upload restarts from zero and leaves an unreferenced blob until its 14-day TTL; the relay buffers a whole blob (≤ 101 MiB, 8 concurrent) | OPEN | Quotas and capability checks are tested (MR-006); streaming/multipart design not done |
+| ST-047 | M | **New.** Relay migration (`MailboxUpdate`) is designed but not built: a contact cannot move to another relay without issuing a new card | OPEN | `MULTI_RELAY_PROTOCOL.md` §7 |
+| ST-048 | H | **New.** The Android UI for any of this does not exist: create/scan a contact card, enter an onion relay URL + pin, choose a relay, show relay status. The Rust/FFI surface exists (`create_contact_card`, `add_contact_by_card`, `set_own_relay`, `pin_relay`) | OPEN | Kotlin compiles are not verified for the new callback (`pinRelay`) until the Android build is run |
+| ST-049 | M | **New.** Real-device behaviour of everything above (TLS stack, Tor/Orbot, battery, network handover, process death during transfer) | OPEN — REQUIRES PHYSICAL DEVICE | Folded into ST-028 |
+| ST-050 | L | **New.** `own_relay` descriptors for onion relays rely on the app calling `set_own_relay` once after unlock; a forgotten call means cross-relay capabilities are not sent (the engine refuses rather than sending a relay-less one) | OPEN | Wire it into Kotlin onboarding (ST-048) |
 
 ## Classification of every open item (this pass)
 
@@ -85,6 +92,13 @@ CAN COMPLETE NOW = done in this environment (see status column above). REQUIRES 
 | ST-029 | DESIGN DECISION | |
 | ST-031 | PARTIAL (improved: lanes + capabilities); remainder DESIGN DECISION | commit lane still shares only a per-sender share |
 | ST-038..043 | see rows above | privacy pass |
+| ST-044 | DESIGN DECISION | cross-relay commit ordering |
+| ST-045 | INTENTIONALLY DEFERRED (upstream) | inactive dependency |
+| ST-046 | CAN COMPLETE (not done) | chunked/resumable transfer |
+| ST-047 | CAN COMPLETE (not done) | MailboxUpdate |
+| ST-048 | CAN COMPLETE (not done) | Kotlin UI |
+| ST-049 | REQUIRES PHYSICAL DEVICE | |
+| ST-050 | CAN COMPLETE (not done) | with ST-048 |
 | ST-032 | DESIGN DECISION | `DELIVERY_SEMANTICS.md` |
 | ST-033 | DESIGN DECISION (needs ST-020) | |
 | ST-034 | REQUIRES PHYSICAL DEVICE / EXTERNAL | platform codecs |

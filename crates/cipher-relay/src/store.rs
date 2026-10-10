@@ -557,7 +557,10 @@ impl PgStore {
         for cap in caps {
             let h = cap_hash(cap);
             match tx
-                .execute("INSERT INTO delivery_caps (cap_hash, device_id, expires_at, intro) VALUES ($1,$2,$3,$4)", &[&h.as_slice(), &d, &exp, &intro])
+                .execute(
+                    "INSERT INTO delivery_caps (cap_hash, device_id, expires_at, intro) VALUES ($1,$2,$3,$4)",
+                    &[&h.as_slice(), &d, &exp, &intro],
+                )
                 .await
             {
                 Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
@@ -643,6 +646,61 @@ impl PgStore {
             .execute(
                 "INSERT INTO blobs (blob_id, size_bytes, data, expires_at) VALUES ($1,$2,$3,$4)",
                 &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires],
+            )
+            .await
+        {
+            Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
+            r => r.map_err(internal)?,
+        };
+        tx.commit().await.map_err(internal)
+    }
+
+    /// Is `cap` a live delivery capability? (Cheap pre-check done BEFORE a request body is read.)
+    pub async fn cap_is_live(&self, cap: &Id16, now: u64) -> Result<bool, ApiError> {
+        let c = self.conn().await?;
+        Ok(c.query_opt("SELECT 1 FROM delivery_caps WHERE cap_hash=$1 AND expires_at>$2", &[&cap_hash(cap).as_slice(), &(now as i64)])
+            .await
+            .map_err(internal)?
+            .is_some())
+    }
+
+    /// Store an encrypted blob under a delivery capability. `NotFound` = the capability is not live; `QueueFull` = per-capability or global quota.
+    pub async fn put_blob_by_cap(
+        &self,
+        blob: &Id16,
+        data: &[u8],
+        cap: &Id16,
+        now: u64,
+        max_total: u64,
+        cap_quota: u64,
+    ) -> Result<(), ApiError> {
+        let h = cap_hash(cap);
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        tx.execute("SELECT pg_advisory_xact_lock(7263002)", &[]).await.map_err(internal)?;
+        tx.execute("DELETE FROM blobs WHERE expires_at<=$1", &[&(now as i64)]).await.map_err(internal)?;
+        if tx
+            .query_opt("SELECT 1 FROM delivery_caps WHERE cap_hash=$1 AND expires_at>$2", &[&h.as_slice(), &(now as i64)])
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            return Err(ApiError::NotFound);
+        }
+        let used: i64 = tx
+            .query_one("SELECT COALESCE(sum(size_bytes),0)::bigint FROM blobs WHERE cap_hash=$1", &[&h.as_slice()])
+            .await
+            .map_err(internal)?
+            .get(0);
+        let total: i64 = tx.query_one("SELECT COALESCE(sum(size_bytes),0)::bigint FROM blobs", &[]).await.map_err(internal)?.get(0);
+        if used as u64 + data.len() as u64 > cap_quota || total as u64 + data.len() as u64 > max_total {
+            return Err(ApiError::QueueFull);
+        }
+        let expires = round_up(now.saturating_add(BLOB_TTL_SECS));
+        match tx
+            .execute(
+                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at, cap_hash) VALUES ($1,$2,$3,$4,$5)",
+                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires, &h.as_slice()],
             )
             .await
         {

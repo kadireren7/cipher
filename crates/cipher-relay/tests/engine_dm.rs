@@ -438,3 +438,62 @@ fn start_dm_refuses_a_key_package_substituted_by_the_relay() {
     assert!(a.list_conversations().unwrap().is_empty(), "no half-created conversation");
     let _ = w.clock.unix_secs();
 }
+
+/// Phase 1 regression (lost acknowledgment): receipts for messages that arrived while the conversation was still a MESSAGE REQUEST used to be
+/// discarded in the same sync, so the sender's first message stayed `Sent` forever even after the recipient accepted.
+#[test]
+fn a_message_that_arrived_as_a_request_becomes_delivered_once_the_recipient_accepts() {
+    let w = World::new();
+    let (mut a, mut b) = (w.engine(), w.engine());
+    let ib = b.public_identity().unwrap();
+    a.add_contact_by_id(&ib.cipher_id, "Bob").unwrap(); // Bob does NOT know Alice: the conversation arrives as a request
+    let conv_a = a.start_dm(&ib.account_id).unwrap();
+    let sent = a.send_text(&conv_a, "first contact", None).unwrap();
+    b.sync().unwrap();
+    let c = b.list_conversations().unwrap().remove(0);
+    assert_eq!(c.state, ConvState::Requested);
+    a.sync().unwrap();
+    assert_eq!(a.message(&conv_a, &sent.id).unwrap().unwrap().state, DeliveryState::Sent, "no receipt while the request is unanswered");
+    b.accept_conversation(&c.id).unwrap();
+    b.sync().unwrap();
+    a.sync().unwrap();
+    assert_eq!(a.message(&conv_a, &sent.id).unwrap().unwrap().state, DeliveryState::Delivered);
+}
+
+/// Phase 1 regression (ordering): messages sent in the same millisecond must keep their order (ties used to be broken by the random message id).
+#[test]
+fn messages_sent_within_one_clock_tick_keep_their_order() {
+    let w = World::new();
+    let (mut a, mut b, _ia, ib) = pair(&w);
+    let conv_a = a.start_dm(&ib).unwrap();
+    for i in 0..20 {
+        a.send_text(&conv_a, &format!("m{i:02}"), None).unwrap(); // the test clock does not advance at all
+    }
+    b.sync().unwrap();
+    let conv_b = b.list_conversations().unwrap()[0].id;
+    let got = texts(&mut b, &conv_b);
+    let expected: Vec<String> = (0..20).map(|i| format!("m{i:02}")).collect();
+    assert_eq!(got, expected);
+    assert_eq!(texts(&mut a, &conv_a), expected, "and on the sender's own device");
+}
+
+/// Phase 1 regression (message LOSS): messages queued while offline must reach the peer in the order they were encrypted. The outbox used to be flushed
+/// in random-id order, so the relay queue could hold generation 9 before generation 2; MLS only keeps keys for 5 skipped generations, so the recipient
+/// silently dropped the older ones as undecryptable.
+#[test]
+fn many_messages_queued_offline_all_arrive_after_reconnecting() {
+    let w = World::new();
+    let (mut a, mut b, _ia, ib) = pair(&w);
+    let conv = a.start_dm(&ib).unwrap();
+    a.transport.offline.store(true, Ordering::SeqCst);
+    let sent: Vec<String> = (0..25).map(|i| format!("queued-{i:02}")).collect();
+    for t in &sent {
+        a.send_text(&conv, t, None).unwrap();
+    }
+    a.transport.offline.store(false, Ordering::SeqCst);
+    w.clock.0.advance(3600);
+    a.flush_outbox().unwrap();
+    b.sync().unwrap();
+    let cid = b.list_conversations().unwrap()[0].id;
+    assert_eq!(texts(&mut b, &cid), sent, "all 25, once each, in order");
+}

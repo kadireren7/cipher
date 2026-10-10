@@ -114,6 +114,7 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/groups/{tag}/commit", post(group_commit))
         .route("/v1/push-token", put(set_push_token))
         .route("/v1/blobs", post(upload_blob))
+        .route("/v1/blobs/by-cap", post(upload_blob_by_cap))
         .route("/v1/blobs/{id}", get(download_blob))
         .route_layer(middleware::from_fn(log_request))
         .layer(middleware::from_fn_with_state(state.clone(), shed_and_timeout))
@@ -379,6 +380,47 @@ async fn upload_blob(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     let (store, max) = (st.store.clone(), st.cfg.max_total_blob_bytes);
     let body = inc.body;
     store.put_blob(&id, &body, now, max).await?;
+    Ok((StatusCode::CREATED, Json(BlobCreated { blob_id: id })).into_response())
+}
+
+/// UNAUTHENTICATED attachment upload into the mailbox of the capability holder's CONTACT (docs/MULTI_RELAY_PROTOCOL.md §10): `Authorization: Cap <32 hex>`.
+/// Like the signed upload, the capability and the declared length are checked BEFORE the body is read; usage is bounded per capability (quota),
+/// per source address and globally. The relay cannot tell what the bytes are (only that they carry the container header); it learns the time and the
+/// padded size, never a sender.
+async fn upload_blob_by_cap(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let declared: usize =
+        req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).ok_or(ApiError::BadRequest)?;
+    if !(13 + 16..=MAX_BLOB_BYTES).contains(&declared) {
+        return Err(ApiError::TooLarge);
+    }
+    let cap = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Cap "))
+        .and_then(|v| Id16::parse(v).ok())
+        .ok_or(ApiError::BadRequest)?;
+    let ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip()).unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
+    let l = st.limits;
+    let kib = declared as f64 / 1024.0;
+    if !st.take("blob-ip", ip.as_bytes(), kib, f64::from(l.blob_bytes_burst), l.blob_bytes_refill_per_sec).await?
+        || !st.take("blob-cap", &cap.0, kib, f64::from(l.blob_bytes_burst), l.blob_bytes_refill_per_sec).await?
+    {
+        return Err(ApiError::RateLimited);
+    }
+    let now = st.clock.now();
+    if !st.store.cap_is_live(&cap, now).await? {
+        return Err(ApiError::NotFound); // unknown, revoked, expired: one outcome, before any body is buffered
+    }
+    let _slot = st.uploads.try_acquire().map_err(|_| ApiError::Overloaded)?;
+    let body = to_bytes(req.into_body(), declared).await.map_err(|_| ApiError::TooLarge)?;
+    if body.len() != declared || body.get(..4) != Some(ATTACHMENT_MAGIC.as_slice()) {
+        return Err(ApiError::BadRequest);
+    }
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).map_err(|_| ApiError::Internal)?;
+    let id = Id16(id);
+    st.store.put_blob_by_cap(&id, &body, &cap, now, st.cfg.max_total_blob_bytes, st.cfg.cap_blob_quota_bytes).await?;
     Ok((StatusCode::CREATED, Json(BlobCreated { blob_id: id })).into_response())
 }
 

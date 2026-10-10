@@ -45,7 +45,7 @@ mod tests {
         assert!(parse_listen("127.0.0.1:8081").is_some());
         assert!(parse_listen("[::1]:8081").is_some());
         assert!(parse_listen("0.0.0.0:8081").is_none());
-        assert!(parse_listen("10.0.0.5:8081").is_none());
+        assert!(parse_listen("192.0.2.5:8081").is_none());
         assert!(parse_listen("nonsense").is_none());
     }
 }

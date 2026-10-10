@@ -109,6 +109,11 @@ pub struct Engine {
     pub(crate) delivery_counts: (u64, u64),
     /// Whether our most recent real delivery used the authenticated path (cover then imitates that request shape).
     pub(crate) last_real_authed: bool,
+    /// How other relays' users name OUR relay (put into the `DeliveryCap` frames and contact cards we issue). `None` when it cannot be expressed
+    /// (an onion relay needs its certificate pin: call `set_own_relay`).
+    pub(crate) own_relay: Option<cipher_wire::RelayDescriptor>,
+    /// Timestamp given to the most recent outgoing message: outgoing timestamps are strictly increasing, so message order never depends on random ids.
+    pub(crate) last_ts_ms: u64,
 }
 
 impl std::fmt::Debug for Engine {
@@ -146,7 +151,10 @@ impl Engine {
             in_commit: false,
             delivery_counts: (0, 0),
             last_real_authed: false,
+            own_relay: None,
+            last_ts_ms: 0,
         };
+        e.own_relay = cipher_wire::RelayDescriptor::new(&e.cfg.relay_url, None).ok();
         e.cleanup_temp_files();
         Ok(e)
     }
@@ -187,6 +195,8 @@ impl Engine {
             in_commit: false,
             delivery_counts: (0, 0),
             last_real_authed: false,
+            own_relay: None,
+            last_ts_ms: 0,
         })
     }
 
@@ -194,6 +204,14 @@ impl Engine {
 
     pub(crate) fn now_ms(&self) -> u64 {
         self.clock.unix_millis()
+    }
+
+    /// Timestamp for an outgoing message: the clock, but never equal to or below the previous one (two messages in the same millisecond, or a clock that
+    /// steps back, must not reorder a conversation — ties would otherwise be broken by the random message id).
+    pub(crate) fn next_ts_ms(&mut self) -> u64 {
+        let t = self.now_ms().max(self.last_ts_ms.saturating_add(1));
+        self.last_ts_ms = t;
+        t
     }
 
     pub fn status(&mut self) -> Result<VaultStatus> {
@@ -312,6 +330,18 @@ impl Engine {
             (None, None) => None,
             _ => return Err(SecurityError::StorageCorrupt), // half-initialised identity: refuse
         };
+        if let Some(t) = self.vault.with_store(|s| get_json::<u64>(s, NS_META, "last_ts"))? {
+            self.last_ts_ms = self.last_ts_ms.max(t);
+        }
+        // How others name our relay (with its certificate pin, for onion relays) survives restarts. A descriptor for a DIFFERENT relay than the one
+        // configured now (the user switched relays) is ignored.
+        let persisted: Option<cipher_wire::RelayDescriptor> = self.vault.with_store(|s| get_json(s, NS_META, "own_relay"))?;
+        if let Some(p) = persisted.and_then(|p| p.validated().ok()) {
+            let configured = cipher_wire::RelayDescriptor::new(&self.cfg.relay_url, None).ok();
+            if self.own_relay.is_none() || configured.as_ref().is_some_and(|c| c.url() == p.url()) {
+                self.own_relay = Some(p);
+            }
+        }
         Ok(())
     }
 
@@ -335,6 +365,12 @@ impl Engine {
     pub(crate) fn api(&self) -> Result<RelayApi<'_>> {
         let s = self.session.as_ref().ok_or(SecurityError::Locked)?;
         Ok(RelayApi { transport: &self.transport, endpoint: &self.endpoint, client: &s.mls, clock: &*self.clock })
+    }
+
+    /// The same signed-request client, pointed at ANOTHER relay (a contact's). Only the unauthenticated calls are used there.
+    pub(crate) fn api_at<'a>(&'a self, endpoint: &'a RelayEndpoint) -> Result<RelayApi<'a>> {
+        let s = self.session.as_ref().ok_or(SecurityError::Locked)?;
+        Ok(RelayApi { transport: &self.transport, endpoint, client: &s.mls, clock: &*self.clock })
     }
 
     pub(crate) fn push_event(&mut self, e: SecurityEvent) {
@@ -463,7 +499,16 @@ impl Engine {
     /// Fetch the peer's device list from the (untrusted) relay and evaluate it against our pins. Emits security events and
     /// flips the contact to IDENTITY_CHANGED when keys changed unexpectedly. Never silently accepts a replacement key.
     pub(crate) fn refresh_peer(&mut self, account: &Id16) -> Result<verification::DirectoryTrust> {
-        let dir = self.api()?.directory(account)?;
+        let home = self.vault.with_store(|s| get_json::<Contact>(s, NS_CONTACT, &account.to_hex()))?.and_then(|c| c.home);
+        let dir = match home {
+            // A contact on another relay: ask THEIR relay through the intro capability of their card. The records are self-authenticating and are
+            // evaluated against our pins exactly like any directory answer, so that relay cannot substitute keys.
+            Some(h) => {
+                let ep = RelayEndpoint::from_descriptor(&h.relay)?;
+                self.api_at(&ep)?.intro_directory(&h.intro)?
+            }
+            None => self.api()?.directory(account)?,
+        };
         let trust = self.vault.with_store(|s| IdentityPins::new(s).evaluate_directory(account, &dir.devices))?;
         let changed =
             trust.events.iter().any(|e| matches!(e, SecurityEvent::IdentityChanged { .. } | SecurityEvent::UnendorsedDevice { .. }));
@@ -508,6 +553,7 @@ impl Engine {
             root_identity_key: Self::root_key_of(&trust)?,
             verified_key: None,
             blocked: false,
+            home: None,
         };
         self.save_contact(&c)?;
         Ok(c)
@@ -540,6 +586,7 @@ impl Engine {
                 root_identity_key: qr_key.to_vec(),
                 verified_key: None,
                 blocked: false,
+                home: None,
             },
         };
         if c.root_identity_key != qr_key {
@@ -743,7 +790,19 @@ impl Engine {
 
     pub fn peer_cap_for_tests(&mut self, conv: &Id16, device: &Id16) -> Option<Id16> {
         let key = format!("peer/{}/{}", conv.to_hex(), device.to_hex());
-        self.vault.with_store(|s| get_json::<Id16>(s, NS_CAPS, &key)).ok().flatten()
+        match self.vault.with_store(|s| get_json::<super::engine_msg::StoredPeerCap>(s, NS_CAPS, &key)).ok().flatten()? {
+            super::engine_msg::StoredPeerCap::Legacy(c) => Some(c),
+            super::engine_msg::StoredPeerCap::Full(p) => Some(p.cap),
+        }
+    }
+
+    /// TEST ONLY: the relay a peer device's capability is valid at (None = our own relay).
+    pub fn peer_relay_for_tests(&mut self, conv: &Id16, device: &Id16) -> Option<String> {
+        let key = format!("peer/{}/{}", conv.to_hex(), device.to_hex());
+        match self.vault.with_store(|s| get_json::<super::engine_msg::StoredPeerCap>(s, NS_CAPS, &key)).ok().flatten()? {
+            super::engine_msg::StoredPeerCap::Full(p) => p.relay.map(|r| r.url().to_owned()),
+            super::engine_msg::StoredPeerCap::Legacy(_) => None,
+        }
     }
 
     /// TEST ONLY: epochs of `conv` for which this device still holds a history key.

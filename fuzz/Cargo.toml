@@ -89,3 +89,9 @@ name = "privacy_wire"
 path = "fuzz_targets/privacy_wire.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "multi_relay_wire"
+path = "fuzz_targets/multi_relay_wire.rs"
+test = false
+doc = false
