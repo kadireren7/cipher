@@ -83,6 +83,8 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | MR-008 | A conversation that arrives as a message request gets its delivery receipts once accepted, and outgoing timestamps are strictly increasing so same-millisecond messages keep their order. | automated | 2 |
 | MR-009 | The Android TLS trust component cannot become an accept-all manager: the platform trust manager decides for every host without a pin, a pin compares the full SPKI SHA-256 in constant time with validity dates, and no other file may touch trust-manager or socket-factory APIs. | partial | 2 |
 | MR-010 | Under seeded fault injection (network flaps, responses lost after the relay executed the request, device restarts, relay restarts, clock jumps, same-tick sends) every message reaches the recipient exactly once, in send order, and ends Delivered; messages queued offline leave in encryption order so no generation is lost to MLS out-of-order limits. | automated | 3 |
+| MR-011 | The Android app stack reaches a self-signed onion relay through a real Tor client over the SOCKS privacy route only if the relay presents the pinned SPKI: the correct pin is accepted and the route is reported PROTECTED; a wrong pin and a missing pin (platform CA validation of a self-signed certificate) are refused with a TLS failure, never retried and never downgraded to a direct connection. | partial | 4 |
+| MR-012 | Across app restarts, a restart of the app's relay, an outage of the peer's relay while the app sends, and a burst of messages sent while the app is not running, every message arrives exactly once and in order, an attachment sent around an outage either fails leaving no message or is delivered once and decrypts byte-for-byte, and every message ends DELIVERED by end-to-end receipts with none FAILED; neither relay learns the other relay's user. | partial | 3 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -964,7 +966,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 * **Status:** partial
 * **Threats (docs/THREAT_MODEL.md):** A2, A4
 * **Scope tested:** Source-shape guard (static).
-* **Known gap:** The Kotlin component is NOT exercised against a real onion relay, nor on a device; only its shape is checked. Live Tor tests used curl, not the app (NETWORK_ADVERSARY_MODEL.md §5).
+* **Known gap:** The static guard checks only the SHAPE of the component. Its behaviour is exercised separately by MR-011 (JVM TLS 1.3 handshakes and, in CI, an emulator against a real onion service over real Tor). Not run on a physical device; not audited.
 * **Tests:**
   * `the_pinned_tls_component_cannot_become_an_accept_all_trust_manager` (Rust)
   * `banned_apis_do_not_appear_in_app_code` (Rust)
@@ -978,4 +980,27 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 * **Tests:**
   * `single_relay_delivery_matrix` (Rust)
   * `cross_relay_delivery_matrix` (Rust)
+  * `many_messages_queued_offline_all_arrive_after_reconnecting` (Rust)
+
+## MR-011 — The Android app stack reaches a self-signed onion relay through a real Tor client over the SOCKS privacy route only if the relay presents the pinned SPKI: the correct pin is accepted and the route is reported PROTECTED; a wrong pin and a missing pin (platform CA validation of a self-signed certificate) are refused with a TLS failure, never retried and never downgraded to a direct connection.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Emulator (software-backed Keystore) on a GitHub runner; the Tor client runs on the host and the app is its SOCKS client (as with Orbot); public Tor network; both relays are onion services. Workflow android-tor, 3 repetitions per push.
+* **Known gap:** Evidence is CI-only (not run by the local Rust suite). Not a physical device, not Orbot, not the app's own Tor integration; Tor circuit timeouts occur (see MASTER_IMPLEMENTATION_STATUS.md for the recorded flaky runs) and the test retries only 'offline', never a TLS refusal. Passing shows the pin check holds in these runs; it does not show anonymity.
+* **Tests:**
+  * `theCorrectPinIsAcceptedAndTheRouteIsReportedProtected` (Kotlin, `android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt`)
+  * `aWrongPinIsRefusedFailClosed` (Kotlin, `android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt`)
+  * `aSelfSignedOnionRelayWithoutAnyPinIsRefused` (Kotlin, `android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt`)
+  * `scripts/android-e2e-multirelay.py` (script)
+
+## MR-012 — Across app restarts, a restart of the app's relay, an outage of the peer's relay while the app sends, and a burst of messages sent while the app is not running, every message arrives exactly once and in order, an attachment sent around an outage either fails leaving no message or is delivered once and decrypts byte-for-byte, and every message ends DELIVERED by end-to-end receipts with none FAILED; neither relay learns the other relay's user.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real app stack on an emulator, two independent relays (separate processes/databases), headless peer. Direct route (workflow ci) and real Tor (workflow android-tor). Scripted outages (process stop/start), not packet-level faults.
+* **Known gap:** Not a mid-stream network cut during an upload (only a refused connection; the mid-transfer case is covered at Rust level), no database outage, no multi-device, one emulator model, a handful of repetitions (5/5 direct, Tor mostly green with recorded failures). Retry backoff means recovery takes up to tens of seconds; the driver keeps the peer syncing while the app recovers.
+* **Tests:**
+  * `scripts/android-e2e-multirelay.py` (script)
+  * `single_relay_delivery_matrix` (Rust)
   * `many_messages_queued_offline_all_arrive_after_reconnecting` (Rust)
