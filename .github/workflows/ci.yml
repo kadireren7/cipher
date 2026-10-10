@@ -168,6 +168,16 @@ jobs:
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
       - name: Boot an API 34 x86_64 emulator and run connectedDebugAndroidTest
         run: bash scripts/ci-emulator-tests.sh
+      - name: Upload emulator/test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: emulator-logs
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
+            /tmp/emulator-logcat.txt
+          if-no-files-found: ignore
 
   secrets:
     name: secret scanning

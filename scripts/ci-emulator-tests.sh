@@ -8,7 +8,16 @@ export ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-$SDK/ndk/27.2.12479018}"
 rustup target add aarch64-linux-android x86_64-linux-android
 command -v cargo-ndk >/dev/null || cargo install --locked cargo-ndk@3.5.4
 yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-"$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "system-images;android-34;google_apis;x86_64" >/dev/null
+IMG="system-images;android-34;google_apis;x86_64"
+# Downloads from dl.google.com are occasionally truncated ("Error on ZipFile unknown archive"): retry, and require the image to really be on disk.
+for attempt in 1 2 3 4; do
+  rm -rf "$SDK/system-images/android-34" # never reuse a half-extracted image
+  if "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "$IMG" 2>&1 | tail -n 5 \
+     && [ -s "$SDK/system-images/android-34/google_apis/x86_64/system.img" ]; then break; fi
+  echo "sdkmanager attempt $attempt did not produce a complete image" >&2
+  [ "$attempt" = 4 ] && { echo "system image could not be installed" >&2; exit 1; }
+  sleep 20
+done
 ls "$SDK/system-images/android-34/google_apis/x86_64" >/dev/null # fail loudly if the image was not installed
 mkdir -p "$HOME/.android/avd"
 export ANDROID_AVD_HOME="$HOME/.android/avd"
@@ -31,4 +40,5 @@ bash scripts/make-test-ca.sh
 python3 -m pip install --quiet cryptography
 python3 scripts/adversarial-tls-servers.py &
 sleep 3
+trap '"$SDK/platform-tools/adb" logcat -d > /tmp/emulator-logcat.txt 2>&1 || true' EXIT
 (cd android && ./gradlew --no-daemon :app:connectedDebugAndroidTest)
