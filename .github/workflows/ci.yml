@@ -154,6 +154,7 @@ jobs:
     name: android instrumented tests (emulator, software Keystore)
     runs-on: ubuntu-24.04
     needs: android
+    timeout-minutes: 60
     # NOTE: written but NOT yet executed on GitHub runners (no remote exists). It needs KVM; see scripts/ci-emulator-tests.sh.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

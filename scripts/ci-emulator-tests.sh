@@ -9,10 +9,19 @@ rustup target add aarch64-linux-android x86_64-linux-android
 command -v cargo-ndk >/dev/null || cargo install --locked cargo-ndk@3.5.4
 yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "system-images;android-34;google_apis;x86_64" >/dev/null
-echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd -n ci34 -k "system-images;android-34;google_apis;x86_64" --force
+ls "$SDK/system-images/android-34/google_apis/x86_64" >/dev/null # fail loudly if the image was not installed
+echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd -n ci34 -k "system-images;android-34;google_apis;x86_64" -d pixel_5 --force
+"$SDK/emulator/emulator" -list-avds | grep -qx ci34 || { echo "AVD ci34 was not created" >&2; exit 1; }
 "$SDK/emulator/emulator" -avd ci34 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot &
-"$SDK/platform-tools/adb" wait-for-device
-until [ "$("$SDK/platform-tools/adb" shell getprop sys.boot_completed | tr -d '\r')" = "1" ]; do sleep 5; done
+EMU=$!
+# Bounded waits: a missing or crashed emulator must fail the job, not hang it.
+timeout 300 "$SDK/platform-tools/adb" wait-for-device || { echo "emulator did not appear" >&2; exit 1; }
+for _ in $(seq 1 120); do
+  kill -0 "$EMU" 2>/dev/null || { echo "emulator exited" >&2; exit 1; }
+  [ "$("$SDK/platform-tools/adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+  sleep 5
+done
+[ "$("$SDK/platform-tools/adb" shell getprop sys.boot_completed | tr -d '\r')" = "1" ] || { echo "emulator boot timed out" >&2; exit 1; }
 # Adversarial TLS servers for the network-attack tests (they are skipped when these are not running).
 bash scripts/make-test-ca.sh
 python3 -m pip install --quiet cryptography
