@@ -6,6 +6,7 @@
 pub mod app;
 pub mod attachment;
 pub mod clock;
+pub mod contact_card;
 pub mod error;
 pub mod events;
 pub mod history;

@@ -13,6 +13,7 @@ pub mod config;
 pub mod conn_limit;
 pub mod db;
 pub mod error;
+pub mod health;
 pub mod logging;
 pub mod migrations;
 pub mod push;

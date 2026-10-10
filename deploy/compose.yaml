@@ -1,0 +1,77 @@
+# Cipher relay — Profile B (public TLS relay). Profile A (onion) adds compose.onion.yaml; see docs/SELF_HOSTING.md.
+# Run `./deploy/cipherctl.sh init` first: it generates every secret locally under deploy/data/ (never committed, never in an image).
+name: cipher
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    # Postgres insists on a key it owns with mode 0600; copy the mounted key before starting, then serve TLS only to the relay.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        install -m 600 -o postgres -g postgres /run/secrets/db_server_key /var/lib/postgresql/server.key &&
+        install -m 644 -o postgres -g postgres /run/secrets/db_server_cert /var/lib/postgresql/server.crt &&
+        exec docker-entrypoint.sh postgres -c ssl=on -c ssl_min_protocol_version=TLSv1.3
+        -c ssl_cert_file=/var/lib/postgresql/server.crt -c ssl_key_file=/var/lib/postgresql/server.key
+        -c listen_addresses=* -c max_connections=60 -c shared_buffers=128MB
+    environment:
+      POSTGRES_USER: cipher
+      POSTGRES_DB: cipher
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password, db_server_key, db_server_cert]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    networks: [backend]            # internal-only network: PostgreSQL is never published to the host
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cipher -d cipher"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    mem_limit: 512m
+    pids_limit: 200
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETUID, SETGID, FOWNER, DAC_OVERRIDE]
+    security_opt: ["no-new-privileges:true"]
+
+  relay:
+    build: { context: .., dockerfile: deploy/Dockerfile.relay }
+    image: cipher-relay:local
+    restart: unless-stopped
+    user: "${CIPHER_UID:?run ./deploy/cipherctl.sh init}:${CIPHER_GID:?run ./deploy/cipherctl.sh init}"   # the unprivileged owner of the mounted secrets
+    depends_on: { db: { condition: service_healthy } }
+    environment:
+      CIPHER_RELAY_AUDIENCE: ${CIPHER_RELAY_AUDIENCE:?run ./deploy/cipherctl.sh init}
+      CIPHER_RELAY_REGISTRATION_TOKEN_FILE: /run/secrets/registration_token
+      CIPHER_RELAY_PEPPER_FILE: /run/secrets/pepper
+      CIPHER_RELAY_DATABASE_URL_FILE: /run/secrets/database_url
+      CIPHER_RELAY_DB_CA: /run/secrets/db_ca
+      CIPHER_RELAY_TLS_CERT: /run/secrets/tls_cert
+      CIPHER_RELAY_TLS_KEY: /run/secrets/tls_key
+      CIPHER_RELAY_MAX_BLOB_BYTES: ${CIPHER_RELAY_MAX_BLOB_BYTES:-2147483648}
+    secrets: [registration_token, pepper, database_url, db_ca, tls_cert, tls_key]
+    networks: [backend, frontend]
+    ports: ["${CIPHER_PUBLISH:-0.0.0.0:8443}:8443"]
+    read_only: true
+    tmpfs: [/tmp:size=16m]
+    mem_limit: 1g
+    cpus: 2
+    pids_limit: 512
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+
+secrets:
+  registration_token: { file: ./data/secrets/registration_token }
+  pepper:             { file: ./data/secrets/pepper }
+  database_url:       { file: ./data/secrets/database_url }
+  db_password:        { file: ./data/secrets/db_password }
+  db_ca:              { file: ./data/secrets/db-ca.pem }
+  db_server_key:      { file: ./data/secrets/db-server.key }
+  db_server_cert:     { file: ./data/secrets/db-server.pem }
+  tls_cert:           { file: ./data/secrets/tls-cert.pem }
+  tls_key:            { file: ./data/secrets/tls-key.pem }
+
+networks:
+  backend:  { internal: true }     # no route to the outside: relay <-> PostgreSQL only
+  frontend: {}
+
+volumes:
+  pgdata:

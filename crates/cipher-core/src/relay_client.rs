@@ -17,6 +17,7 @@ use sha2::Digest as _;
 pub struct RelayEndpoint {
     base: String,
     audience: String,
+    pin: Option<[u8; 32]>,
 }
 
 impl RelayEndpoint {
@@ -27,13 +28,27 @@ impl RelayEndpoint {
         if host.is_empty() || host.contains(['/', '@', '?', '#', ' ']) {
             return Err(SecurityError::Transport("invalid relay url"));
         }
-        Ok(Self { base: format!("https://{host}"), audience: host.to_ascii_lowercase() })
+        Ok(Self { base: format!("https://{host}"), audience: host.to_ascii_lowercase(), pin: None })
     }
 
     /// Test-only: in-process transports have no real URL.
     #[cfg(any(test, feature = "insecure-test-support"))]
     pub fn for_tests(audience: &str) -> Self {
-        Self { base: format!("test://{audience}"), audience: audience.to_owned() }
+        Self { base: format!("test://{audience}"), audience: audience.to_owned(), pin: None }
+    }
+
+    /// Endpoint for a relay named by a descriptor (validated). The pin, if any, is available to the transport through `pin()`.
+    pub fn from_descriptor(d: &cipher_wire::RelayDescriptor) -> Result<Self> {
+        let d = d.clone().validated().map_err(|_| SecurityError::Transport("invalid relay descriptor"))?;
+        let pin = d.pin().map_err(|_| SecurityError::Transport("invalid relay descriptor"))?;
+        let mut e = Self::new(d.url())?;
+        e.pin = pin;
+        Ok(e)
+    }
+
+    /// SHA-256 of the relay certificate's SubjectPublicKeyInfo that the transport must require (instead of a CA chain), if the descriptor carried one.
+    pub fn pin(&self) -> Option<[u8; 32]> {
+        self.pin
     }
 
     pub fn base(&self) -> &str {
@@ -209,9 +224,31 @@ impl RelayApi<'_> {
 
     /// Registers capabilities (chosen by us) that let contacts deliver to this device without authenticating.
     pub fn mint_caps(&self, caps: Vec<Id16>) -> Result<()> {
-        let req = MintCapsRequest { caps };
+        self.mint_caps_inner(caps, false)
+    }
+
+    /// Registers an INTRO capability for a contact card (docs/MULTI_RELAY_PROTOCOL.md §4).
+    pub fn mint_intro_cap(&self, cap: Id16) -> Result<()> {
+        self.mint_caps_inner(vec![cap], true)
+    }
+
+    fn mint_caps_inner(&self, caps: Vec<Id16>, intro: bool) -> Result<()> {
+        let req = MintCapsRequest { caps, intro };
         req.validate().map_err(|_| SecurityError::Malformed("mint caps"))?;
         self.send_signed("POST", "/v1/caps", enc(&req)?).map(|_| ())
+    }
+
+    /// UNAUTHENTICATED (card holder → the card issuer's relay, i.e. `self.endpoint`): the issuer's device records. They are self-authenticating, so
+    /// the caller MUST evaluate them against the pinned root key from the card; this call alone proves nothing.
+    pub fn intro_directory(&self, cap: &Id16) -> Result<DirectoryResponse> {
+        json(&self.send_unauth("POST", "/v1/intro/directory", enc(&IntroRequest { cap: *cap, device: None })?)?)
+    }
+
+    /// UNAUTHENTICATED: consume one KeyPackage of one of the issuer's devices.
+    pub fn intro_key_package(&self, cap: &Id16, device: &Id16) -> Result<Vec<u8>> {
+        let r: KeyPackageResponse =
+            json(&self.send_unauth("POST", "/v1/intro/key-package", enc(&IntroRequest { cap: *cap, device: Some(*device) })?)?)?;
+        Ok(r.key_package)
     }
 
     pub fn revoke_caps(&self, caps: Vec<Id16>, grace_secs: Option<u64>) -> Result<()> {

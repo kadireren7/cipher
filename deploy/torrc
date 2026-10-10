@@ -1,0 +1,11 @@
+# Cipher onion relay. The onion service private key lives ONLY in the tor-data volume (mode 0700, owner debian-tor).
+DataDirectory /var/lib/tor
+SocksPort 0
+ControlPort 0
+Log notice stdout
+HiddenServiceDir /var/lib/tor/cipher-relay
+HiddenServiceVersion 3
+HiddenServicePort 443 relay:8443
+# Make a flood of introduction/rendezvous work costly for the attacker (tor >= 0.4.8).
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServicePoWDefensesEnabled 1

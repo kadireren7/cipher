@@ -26,7 +26,7 @@ fn anon(w: &World, items: Vec<(Id16, Id16, usize)>) -> (u16, Vec<String>) {
 
 fn mint(w: &World, who: &cipher_core::mls::MlsClient, n: usize) -> Vec<Id16> {
     let caps: Vec<Id16> = (0..n).map(|_| rid()).collect();
-    assert_eq!(authed_post(w, who, "/v1/caps", &MintCapsRequest { caps: caps.clone() }), 204);
+    assert_eq!(authed_post(w, who, "/v1/caps", &MintCapsRequest { caps: caps.clone(), intro: false }), 204);
     caps
 }
 
@@ -97,9 +97,9 @@ fn a_capability_cannot_be_revoked_or_minted_for_someone_elses_device() {
     );
     assert_eq!(anon(&w, vec![(cap, rid(), 100)]).1, ["queued"], "still valid: mallory does not own it");
     // minting the same value again (a collision / replayed mint) is refused
-    assert_eq!(authed_post(&w, &mallory, "/v1/caps", &MintCapsRequest { caps: vec![cap] }), 409);
+    assert_eq!(authed_post(&w, &mallory, "/v1/caps", &MintCapsRequest { caps: vec![cap], intro: false }), 409);
     // unauthenticated mint/revoke do not exist
-    assert_eq!(w.raw("POST", "/v1/caps", None, serde_json::to_vec(&MintCapsRequest { caps: vec![rid()] }).unwrap()).0, 401);
+    assert_eq!(w.raw("POST", "/v1/caps", None, serde_json::to_vec(&MintCapsRequest { caps: vec![rid()], intro: false }).unwrap()).0, 401);
 }
 
 #[test]
@@ -184,7 +184,7 @@ fn live_capabilities_per_device_are_bounded() {
         mint(&w, &bob, MAX_CAPS_PER_MINT);
         w.clock.0.advance(3600); // the mint rate limit is separate; this test is about the cap on live capabilities
     }
-    assert_eq!(authed_post(&w, &bob, "/v1/caps", &MintCapsRequest { caps: vec![rid()] }), 429, "bounded");
+    assert_eq!(authed_post(&w, &bob, "/v1/caps", &MintCapsRequest { caps: vec![rid()], intro: false }), 429, "bounded");
 }
 
 #[test]

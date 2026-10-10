@@ -361,6 +361,9 @@ mod tests {
 pub struct MintCapsRequest {
     /// Chosen by the CLIENT (random 128-bit values): the relay never influences them. It stores only their hashes.
     pub caps: Vec<Id16>,
+    /// Mint INTRO capabilities (contact cards, docs/MULTI_RELAY_PROTOCOL.md §4): additionally readable-by-visitor directory and KeyPackage access.
+    #[serde(default)]
+    pub intro: bool,
 }
 
 /// Revoke capabilities minted by the calling device. `grace_secs` keeps them valid a little longer so in-flight sends do not fail on rotation.
@@ -386,6 +389,15 @@ pub struct AnonDelivery {
 pub struct AnonDeliverRequest {
     pub deliveries: Vec<AnonDelivery>,
     pub ttl_secs: Option<u64>,
+}
+
+/// Unauthenticated introduction request (contact card holder → issuer's relay). `device` is only used by the KeyPackage call.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntroRequest {
+    pub cap: Id16,
+    #[serde(default)]
+    pub device: Option<Id16>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -26,6 +26,8 @@ pub struct Config {
     /// Plain-HTTP is only possible with an explicit flag AND a loopback listen address.
     pub insecure_dev_http: bool,
     pub max_total_blob_bytes: u64,
+    /// TLS handshake deadline. 10 s suits direct clients; a Tor rendezvous handshake routinely needs longer (measured: > 10 s), so the onion profile raises it.
+    pub tls_handshake_secs: u64,
 }
 
 impl std::fmt::Debug for Config {
@@ -40,13 +42,25 @@ pub enum ConfigError {
     Invalid(&'static str),
 }
 
+/// `KEY` from the environment, or the contents of the file named by `KEY_FILE` (container secrets: keeps secrets out of `docker inspect`
+/// and process environments). Setting both is an error-by-ambiguity: the file wins only when the plain variable is absent.
+fn env_or_file(k: &str) -> Option<String> {
+    if let Some(v) = std::env::var(k).ok().filter(|v| !v.is_empty()) {
+        return Some(v);
+    }
+    let path = std::env::var(format!("{k}_FILE")).ok().filter(|v| !v.is_empty())?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v = raw.trim_end_matches(['\n', '\r']).to_owned();
+    (!v.is_empty()).then_some(v)
+}
+
 impl Config {
     pub fn hash_token(token: &str) -> [u8; 32] {
         Sha256::digest(token.as_bytes()).into()
     }
 
     pub fn from_env() -> Result<Self, ConfigError> {
-        let get = |k: &'static str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let get = |k: &'static str| env_or_file(k);
         let audience = get("CIPHER_RELAY_AUDIENCE").ok_or(ConfigError::Invalid("CIPHER_RELAY_AUDIENCE"))?;
         let token = get("CIPHER_RELAY_REGISTRATION_TOKEN").ok_or(ConfigError::Invalid("CIPHER_RELAY_REGISTRATION_TOKEN"))?;
         if token.len() < 32 {
@@ -82,6 +96,7 @@ impl Config {
             max_total_blob_bytes: get("CIPHER_RELAY_MAX_BLOB_BYTES")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(cipher_wire::limits::DEFAULT_MAX_TOTAL_BLOB_BYTES),
+            tls_handshake_secs: (num("CIPHER_RELAY_TLS_HANDSHAKE_SECS", 10) as u64).clamp(1, 120),
         };
         cfg.check_transport()?;
         Ok(cfg)
@@ -125,6 +140,7 @@ mod tests {
             tls_key: None,
             insecure_dev_http: false,
             max_total_blob_bytes: 1,
+            tls_handshake_secs: 10,
         }
     }
     fn unreachable_addr() -> SocketAddr {

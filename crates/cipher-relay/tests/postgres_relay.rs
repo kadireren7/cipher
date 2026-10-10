@@ -320,7 +320,7 @@ fn concurrent_senders_can_never_exceed_the_per_device_queue_bound() {
     assert!(results.iter().filter(|r| r.is_err()).all(|r| matches!(r, Err(cipher_relay::error::ApiError::QueueFull))));
     // (2) the DEVICE bound is exact under concurrency across capabilities (6 capabilities x 250 would be 1500 > 1000)
     let caps: Vec<Id16> = (0..6).map(|_| rid()).collect();
-    w.rt.block_on(st.mint_caps(&bob.device_id(), &caps, now)).unwrap();
+    w.rt.block_on(st.mint_caps(&bob.device_id(), &caps, false, now)).unwrap();
     let remaining = MAX_QUEUED_ENVELOPES_PER_DEVICE - OPEN_LANE_ENVELOPES;
     let results = w.rt.block_on(join_all((0..remaining + 150).map(|i| {
         let (st, cap) = (st.clone(), caps[i % caps.len()]);

@@ -100,6 +100,12 @@ impl MlsClient {
         self.auth_key.verifying_key().to_bytes()
     }
 
+    /// Sign `msg` with this device's identity key. `pub(crate)`: callers must pass a DOMAIN-SEPARATED message (see `contact_card`); there is no
+    /// general-purpose signing oracle outside the crate.
+    pub(crate) fn sign_identity_raw(&self, msg: &[u8]) -> Result<Vec<u8>> {
+        self.sig.sign(msg).map_err(perr)
+    }
+
     /// Sign an HTTP request canonical string with the transport-auth key
     /// (distinct from the identity key; never leaves this struct).
     pub fn sign_transport(&self, msg: &[u8]) -> [u8; 64] {

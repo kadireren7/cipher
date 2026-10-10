@@ -108,6 +108,8 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/caps", post(mint_caps))
         .route("/v1/caps/revoke", post(revoke_caps))
         .route("/v1/deliver", post(anon_deliver))
+        .route("/v1/intro/directory", post(intro_directory))
+        .route("/v1/intro/key-package", post(intro_key_package))
         .route("/v1/groups/{tag}", get(group_state))
         .route("/v1/groups/{tag}/commit", post(group_commit))
         .route("/v1/push-token", put(set_push_token))
@@ -462,7 +464,7 @@ async fn mint_caps(State(st): S, req: Request<Body>) -> Result<Response, ApiErro
     if !st.take("cap-mint", &me.0, r.caps.len() as f64, 64.0, 64.0 / 3600.0).await? {
         return Err(ApiError::RateLimited);
     }
-    st.store.mint_caps(&me, &r.caps, st.clock.now()).await?;
+    st.store.mint_caps(&me, &r.caps, r.intro, st.clock.now()).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -473,6 +475,48 @@ async fn revoke_caps(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     let grace = r.validate().map_err(|_| ApiError::BadRequest)?;
     st.store.revoke_caps(&me, &r.caps, grace, st.clock.now()).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Shared front of the two unauthenticated intro calls: bounded per source address and per capability, one `NotFound` for every invalid capability.
+async fn intro_gate(st: &AppState, inc: &Incoming) -> Result<(IntroRequest, Id16), ApiError> {
+    let r: IntroRequest = parse(&inc.body)?;
+    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
+    if !st.take("intro-ip", ip.as_bytes(), 1.0, 60.0, 2.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    if !st.take("intro-cap", &r.cap.0, 1.0, 30.0, 30.0 / 3600.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let dev = st.store.intro_device(&r.cap, st.clock.now()).await?;
+    Ok((r, dev))
+}
+
+/// UNAUTHENTICATED. The issuer's device records, for a holder of the issuer's contact-card capability. The records are self-authenticating (binding
+/// signatures under the issuer's root key, which the card pins), so this endpoint needs no trust in the relay's honesty — only its availability.
+async fn intro_directory(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let (_, dev) = intro_gate(&st, &inc).await?;
+    let (account, _) = st.store.device(&dev).await?.ok_or(ApiError::NotFound)?;
+    let devices = st.store.devices_of(&account).await?;
+    Ok(Json(DirectoryResponse { account_id: account, devices }).into_response())
+}
+
+/// UNAUTHENTICATED. Consume one KeyPackage of a device of the capability issuer's account. Limited per capability (4/h) AND by the same per-target
+/// bucket the authenticated path uses, so leaked cards cannot drain the pool faster than before.
+async fn intro_key_package(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let (r, dev) = intro_gate(&st, &inc).await?;
+    let target = r.device.ok_or(ApiError::BadRequest)?;
+    let (account, _) = st.store.device(&dev).await?.ok_or(ApiError::NotFound)?;
+    let (tacc, _) = st.store.device(&target).await?.ok_or(ApiError::NotFound)?;
+    if tacc != account {
+        return Err(ApiError::NotFound); // a card opens its issuer's devices only
+    }
+    if !st.take("kp-target", &target.0, 1.0, 12.0, 12.0 / 3600.0).await? || !st.take("intro-kp", &r.cap.0, 1.0, 4.0, 4.0 / 3600.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let kp = st.store.pop_key_package(&target).await?.ok_or(ApiError::NotFound)?;
+    Ok(Json(KeyPackageResponse { key_package: kp }).into_response())
 }
 
 /// UNAUTHENTICATED capability delivery. Abuse control is per capability and per (hashed) source address; the relay never learns who the sender is,
