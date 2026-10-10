@@ -16,9 +16,13 @@ permissions:
   contents: read
 jobs:
   tor-e2e:
-    name: android over real Tor to onion relays (emulator)
+    name: android over real Tor to onion relays (emulator) #${{ matrix.n }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    strategy:
+      fail-fast: false # independent repetitions: a flaky Tor run must stay visible, not cancel the others
+      matrix:
+        n: [1, 2, 3]
     services:
       postgres:
         image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
@@ -46,7 +50,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: android-tor-logs
+          name: android-tor-logs-${{ matrix.n }}
           path: |
             /tmp/e2e-multirelay.txt
             /tmp/emulator-logcat.txt

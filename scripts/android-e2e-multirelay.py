@@ -220,6 +220,8 @@ try:
     ok, v, out = instrument("connect", relayUrl=url_a, peerCard=bob_card)
     check("app: adds a card from another relay, starts a conversation, sends (pinned TLS to relay B on-device)", ok and "conv" in v, out[-500:])
     conv_app = v.get("conv", "")
+    if not ok:  # everything after this depends on the conversation existing: stop instead of recording a cascade of consequential failures
+        raise SystemExit("baseline step failed (see above); later checks would only be consequences")
 
     # ---- peer side: join, read, reply while the APP IS NOT RUNNING (offline), with an attachment
     for _ in range(4):

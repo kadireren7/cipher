@@ -15,6 +15,7 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import uniffi.cipher_ffi.AttachmentKindFfi
 import uniffi.cipher_ffi.CipherEngine
+import uniffi.cipher_ffi.CipherException
 import uniffi.cipher_ffi.DeliveryStateFfi
 import uniffi.cipher_ffi.EngineSettings
 
@@ -105,13 +106,22 @@ class MultiRelayE2EInstrumentedTest {
         val (e, _) = engine()
         e.unlockVaultWithPin(pin)
         e.setOwnRelay(args.getString("relayUrl")!!, args.getString("ownPin"))
-        val bob = e.addContactByCard(args.getString("peerCard")!!, "Bob", true)
-        val conv = e.createConversation(bob.accountId)
+        // Over Tor a first connection to ANOTHER onion service can exceed the connect timeout (observed: one run in two). The user would simply try again; so do we, a
+        // bounded number of times and ONLY for "offline" (never for a pin/TLS refusal, which must fail at once).
+        var bob = runCatching { e.addContactByCard(args.getString("peerCard")!!, "Bob", true) }
+        var attempt = 1
+        while (bob.exceptionOrNull() is CipherException.Offline && args.getString("socks") != null && attempt < 4) {
+            attempt++
+            bob = runCatching { e.addContactByCard(args.getString("peerCard")!!, "Bob", true) }
+        }
+        status("addContactAttempts" to attempt.toString())
+        val bobContact = bob.getOrThrow()
+        val conv = e.createConversation(bobContact.accountId)
         val m = e.sendText(conv, "app-hello-1", null)
         assertTrue(m.state == DeliveryStateFfi.SENT || m.state == DeliveryStateFfi.PENDING)
         // The foreground app syncs continuously; a few ticks here hand our own mailbox capability to the peer (the app's side of the introduction).
         repeat(3) { e.sync() }
-        status("conv" to conv, "bobAccount" to bob.accountId)
+        status("conv" to conv, "bobAccount" to bobContact.accountId)
     }
 
     /** New process again: messages Bob sent while the app was not running must be here, in order; open his attachment; send ours. */
