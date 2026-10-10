@@ -10,7 +10,11 @@ command -v cargo-ndk >/dev/null || cargo install --locked cargo-ndk@3.5.4
 yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
 "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "system-images;android-34;google_apis;x86_64" >/dev/null
 ls "$SDK/system-images/android-34/google_apis/x86_64" >/dev/null # fail loudly if the image was not installed
-echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" create avd -n ci34 -k "system-images;android-34;google_apis;x86_64" -d pixel_5 --force
+mkdir -p "$HOME/.android/avd"
+export ANDROID_AVD_HOME="$HOME/.android/avd"
+echo no | "$SDK/cmdline-tools/latest/bin/avdmanager" --verbose create avd -n ci34 -k "system-images;android-34;google_apis;x86_64" -d pixel_5 --force || echo "avdmanager exit code $?" >&2
+echo "--- avdmanager list avd"; "$SDK/cmdline-tools/latest/bin/avdmanager" list avd || true
+echo "--- $ANDROID_AVD_HOME"; ls -la "$ANDROID_AVD_HOME" || true
 "$SDK/emulator/emulator" -list-avds | grep -qx ci34 || { echo "AVD ci34 was not created" >&2; exit 1; }
 "$SDK/emulator/emulator" -avd ci34 -no-window -no-audio -no-boot-anim -gpu swiftshader_indirect -no-snapshot &
 EMU=$!
