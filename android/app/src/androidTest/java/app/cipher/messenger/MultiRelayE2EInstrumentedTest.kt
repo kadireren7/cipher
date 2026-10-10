@@ -79,6 +79,9 @@ class MultiRelayE2EInstrumentedTest {
             "connect" -> connect()
             "read" -> read()
             "final" -> final()
+            "recv" -> recv()
+            "send" -> send()
+            "settle" -> settle()
             else -> throw AssertionError("unknown phase $phase")
         }
     }
@@ -154,6 +157,71 @@ class MultiRelayE2EInstrumentedTest {
         val out = e.getHistory(conv, null, 200u).items.filter { it.outgoing }
         assertTrue("app sent at least 3 messages", out.size >= 3)
         status("delivered" to out.size.toString())
+        e.lockVault()
+    }
+
+    private fun unlocked(): CipherEngine {
+        val (e, _) = engine()
+        e.unlockVaultWithPin(pin)
+        e.setOwnRelay(args.getString("relayUrl")!!, args.getString("ownPin"))
+        return e
+    }
+
+    /** Resilience: a new process; the listed incoming texts (sent while this app was offline or while a relay was down) must all be here, in order. */
+    private fun recv() {
+        val e = unlocked()
+        val conv = args.getString("conv")!!
+        val expect = args.getString("expectTexts")!!.split(",")
+        waitFor("texts in order $expect", 120) {
+            runCatching { e.sync() }
+            texts(e, conv).filter { it in expect } == expect
+        }
+        e.lockVault()
+    }
+
+    /**
+     * Resilience: send while a relay may be DOWN. Never throws for a network failure of the text (it must be queued); for the attachment either the call
+     * fails and leaves NO message behind, or the message is queued and settles later. Reports which, so the driver can check exactly-once delivery.
+     */
+    private fun send() {
+        val e = unlocked()
+        val conv = args.getString("conv")!!
+        val before = e.getHistory(conv, null, 200u).items.count { it.outgoing && it.attachment != null }
+        args.getString("text")?.let { e.sendText(conv, it, null) }
+        var failed = false
+        var sentSha = ""
+        args.getString("fileKb")?.let { kb ->
+            val bytes = ByteArray(kb.toInt() * 1024) { (it * 13 + 5).toByte() }
+            val f = File(dir, args.getString("fileName")!!).apply { writeBytes(bytes) }
+            try {
+                e.sendAttachment(conv, f.absolutePath, "application/octet-stream", args.getString("fileName")!!, AttachmentKindFfi.FILE, "", null, null, null, null)
+                sentSha = sha(bytes)
+            } catch (x: Exception) {
+                failed = true
+            } finally {
+                f.delete()
+            }
+        }
+        runCatching { e.flushOutbox() }
+        val after = e.getHistory(conv, null, 200u).items.count { it.outgoing && it.attachment != null }
+        if (failed) assertEquals("a failed attachment send must leave no message behind", before, after)
+        val states = e.getHistory(conv, null, 200u).items.filter { it.outgoing }.joinToString(",") { it.state.name }
+        status("attachFailed" to failed.toString(), "sentSha" to sentSha, "states" to states)
+        e.lockVault()
+    }
+
+    /** Resilience: every message this app sent must reach DELIVERED (end-to-end receipt) once the relays are back; nothing may be FAILED. */
+    private fun settle() {
+        val e = unlocked()
+        val conv = args.getString("conv")!!
+        waitFor("all outgoing messages DELIVERED after recovery", 180) {
+            runCatching { e.sync() }
+            runCatching { e.flushOutbox() }
+            val out = e.getHistory(conv, null, 200u).items.filter { it.outgoing }
+            assertTrue("a message ended FAILED", out.none { it.state == DeliveryStateFfi.FAILED })
+            out.all { it.state == DeliveryStateFfi.DELIVERED }
+        }
+        status("delivered" to e.getHistory(conv, null, 200u).items.count { it.outgoing }.toString())
         e.lockVault()
     }
 }
