@@ -9,7 +9,7 @@ Needs: a booted emulator reachable by adb (host = 10.0.2.2 from inside), built A
 target/release/cipher-relay, target/release/examples/e2e_peer, android/build/test-ca (scripts/make-test-ca.sh), docker container cipher-pg.
 Usage: scripts/android-e2e-multirelay.py
 """
-import base64, hashlib, os, re, subprocess, sys, tempfile, time
+import base64, hashlib, os, re, subprocess, sys, tempfile, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SDK = os.environ.get("ANDROID_HOME", os.path.expanduser("~/android-sdk"))
@@ -76,6 +76,23 @@ def start_relay(port, db, cert, key, label, audience=None, listen_host="0.0.0.0"
         if sh("curl", "-sk", "-o", "/dev/null", f"https://127.0.0.1:{port}/").returncode == 0:
             return p
     raise SystemExit(f"relay {label} did not start: " + open(f"{tmp}/relay-{label}.log").read()[-300:])
+
+
+class Pump(threading.Thread):
+    """Keeps the headless peer syncing (as a running app would) while the app under test recovers from an outage on its own retry backoff."""
+
+    def __init__(self, peer, every=3.0):
+        super().__init__(daemon=True)
+        self.peer, self.every, self.stop_ev = peer, every, threading.Event()
+
+    def run(self):
+        while not self.stop_ev.is_set():
+            self.peer.cmd("sync")
+            self.stop_ev.wait(self.every)
+
+    def stop(self):
+        self.stop_ev.set()
+        self.join(timeout=120)
 
 
 class Peer:
@@ -241,6 +258,11 @@ try:
     path = f"{tmp}/from-bob.bin"
     open(path, "wb").write(data)
     r = bob.cmd(f"file {conv_bob} {path} application/octet-stream")
+    for attempt in range(2, 5):  # Tor only: a circuit timeout surfaces as Offline and leaves no message behind, so repeating is safe (recorded, not hidden)
+        if not (TOR and "Offline" in r):
+            break
+        print(f"note: peer attachment upload returned Offline over Tor; retry {attempt - 1}", flush=True)
+        r = bob.cmd(f"file {conv_bob} {path} application/octet-stream")
     check("peer sends 3 texts + a 900 KB file while the app is offline", "Ok" in r, r[:200])
 
     # ---- phase 3 (new process): app comes back and must have everything, in order
@@ -312,6 +334,14 @@ try:
         ok, v2, out = instrument("send", fileKb="300", fileName="outage.bin", **ik)
         sent_sha = v2.get("sentSha", "")
         check("peer relay back: the attachment send now succeeds", ok and bool(sent_sha), out[-600:])
+    # The app retries failed sends on an exponential backoff (10 s, 20 s, 40 s ...): the peer must keep syncing meanwhile, exactly as a running app does.
+    pump = Pump(bob)
+    pump.start()
+    try:
+        ok, v, out = instrument("settle", **ik)
+    finally:
+        pump.stop()
+    check("after both outages every message the app sent is DELIVERED by end-to-end receipts and none is FAILED", ok, out[-800:])
     got = ""
     for _ in range(10):
         bob.cmd("sync")
@@ -328,9 +358,6 @@ try:
         bob.cmd(f"open {conv_bob} {mid.group(1)} {outp}")
         opened = sha(open(outp, "rb").read()) if os.path.exists(outp) else ""
     check("the attachment sent around the outage decrypts byte-for-byte at the peer", bool(sent_sha) and opened == sent_sha, (sent_sha, opened))
-    bob_sync(3, 2.0)
-    ok, v, out = instrument("settle", **ik)
-    check("after both outages every message the app sent is DELIVERED by end-to-end receipts and none is FAILED", ok, out[-800:])
 finally:
     for p in procs:
         p.terminate()
