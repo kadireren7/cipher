@@ -202,11 +202,10 @@ class MultiRelayE2EInstrumentedTest {
         var sentSha = ""
         args.getString("fileKb")?.let { kb ->
             val bytes = ByteArray(kb.toInt() * 1024) { (it * 13 + 5).toByte() }
-            val f = File(dir, args.getString("fileName")!!).apply { writeBytes(bytes) }
+            val name = args.getString("fileName")!!
+            val f = File(dir, name).apply { writeBytes(bytes) }
             try {
-                e.sendAttachment(
-                    conv, f.absolutePath, "application/octet-stream", args.getString("fileName")!!, AttachmentKindFfi.FILE, "", null, null, null, null,
-                )
+                e.sendAttachment(conv, f.absolutePath, "application/octet-stream", name, AttachmentKindFfi.FILE, "", null, null, null, null)
                 sentSha = sha(bytes)
             } catch (x: Exception) {
                 failed = true
