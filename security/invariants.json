@@ -2159,7 +2159,7 @@
           "name": "banned_apis_do_not_appear_in_app_code"
         }
       ],
-      "gap": "The Kotlin component is NOT exercised against a real onion relay, nor on a device; only its shape is checked. Live Tor tests used curl, not the app (NETWORK_ADVERSARY_MODEL.md \u00a75)."
+      "gap": "The static guard checks only the SHAPE of the component. Its behaviour is exercised separately by MR-011 (JVM TLS 1.3 handshakes and, in CI, an emulator against a real onion service over real Tor). Not run on a physical device; not audited."
     },
     {
       "id": "MR-010",
@@ -2185,6 +2185,63 @@
         }
       ],
       "gap": "Not exercised: PostgreSQL restart inside the matrix (covered separately by scripts/test-deploy.py), real network stacks, group conversations, multi-device. Delivery is at-least-once on the wire with dedupe by message id; a relay that withholds after answering `queued` is undetectable (ST-032)."
+    },
+    {
+      "id": "MR-011",
+      "statement": "The Android app stack reaches a self-signed onion relay through a real Tor client over the SOCKS privacy route only if the relay presents the pinned SPKI: the correct pin is accepted and the route is reported PROTECTED; a wrong pin and a missing pin (platform CA validation of a self-signed certificate) are refused with a TLS failure, never retried and never downgraded to a direct connection.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Emulator (software-backed Keystore) on a GitHub runner; the Tor client runs on the host and the app is its SOCKS client (as with Orbot); public Tor network; both relays are onion services. Workflow android-tor, 3 repetitions per push.",
+      "tests": [
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt",
+          "name": "theCorrectPinIsAcceptedAndTheRouteIsReportedProtected"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt",
+          "name": "aWrongPinIsRefusedFailClosed"
+        },
+        {
+          "kind": "kotlin",
+          "file": "android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt",
+          "name": "aSelfSignedOnionRelayWithoutAnyPinIsRefused"
+        },
+        {
+          "kind": "script",
+          "name": "scripts/android-e2e-multirelay.py"
+        }
+      ],
+      "gap": "Evidence is CI-only (not run by the local Rust suite). Not a physical device, not Orbot, not the app's own Tor integration; Tor circuit timeouts occur (see MASTER_IMPLEMENTATION_STATUS.md for the recorded flaky runs) and the test retries only 'offline', never a TLS refusal. Passing shows the pin check holds in these runs; it does not show anonymity."
+    },
+    {
+      "id": "MR-012",
+      "statement": "Across app restarts, a restart of the app's relay, an outage of the peer's relay while the app sends, and a burst of messages sent while the app is not running, every message arrives exactly once and in order, an attachment sent around an outage either fails leaving no message or is delivered once and decrypts byte-for-byte, and every message ends DELIVERED by end-to-end receipts with none FAILED; neither relay learns the other relay's user.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Real app stack on an emulator, two independent relays (separate processes/databases), headless peer. Direct route (workflow ci) and real Tor (workflow android-tor). Scripted outages (process stop/start), not packet-level faults.",
+      "tests": [
+        {
+          "kind": "script",
+          "name": "scripts/android-e2e-multirelay.py"
+        },
+        {
+          "kind": "rust",
+          "name": "single_relay_delivery_matrix"
+        },
+        {
+          "kind": "rust",
+          "name": "many_messages_queued_offline_all_arrive_after_reconnecting"
+        }
+      ],
+      "gap": "Not a mid-stream network cut during an upload (only a refused connection; the mid-transfer case is covered at Rust level), no database outage, no multi-device, one emulator model, a handful of repetitions (5/5 direct, Tor mostly green with recorded failures). Retry backoff means recovery takes up to tens of seconds; the driver keeps the peer syncing while the app recovers."
     }
   ]
 }
