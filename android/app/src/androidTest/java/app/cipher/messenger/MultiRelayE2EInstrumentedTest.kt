@@ -58,6 +58,23 @@ class MultiRelayE2EInstrumentedTest {
         return e to http
     }
 
+    /**
+     * Over Tor a request to an onion service can exceed the connect timeout (circuit building; observed in about one CI run in four). The user would simply try
+     * again, so do we: a bounded number of times, ONLY for "offline" and ONLY when the privacy route is in use. A pin/TLS refusal or any other error fails at once.
+     * A failed attachment send leaves no message behind (asserted by the `send` phase), so repeating it cannot duplicate anything.
+     */
+    private fun <T> retryOnTorOffline(what: String, block: () -> T): T {
+        var attempt = 1
+        while (true) {
+            try {
+                return block().also { status("retries_$what" to (attempt - 1).toString()) }
+            } catch (e: CipherException.Offline) {
+                if (args.getString("socks") == null || attempt >= 4) throw e
+                attempt++
+            }
+        }
+    }
+
     private fun sha(b: ByteArray) = MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
 
     private fun texts(e: CipherEngine, conv: String): List<String> =
@@ -106,16 +123,7 @@ class MultiRelayE2EInstrumentedTest {
         val (e, _) = engine()
         e.unlockVaultWithPin(pin)
         e.setOwnRelay(args.getString("relayUrl")!!, args.getString("ownPin"))
-        // Over Tor a first connection to ANOTHER onion service can exceed the connect timeout (observed: one run in two). The user would simply try again; so do we, a
-        // bounded number of times and ONLY for "offline" (never for a pin/TLS refusal, which must fail at once).
-        var bob = runCatching { e.addContactByCard(args.getString("peerCard")!!, "Bob", true) }
-        var attempt = 1
-        while (bob.exceptionOrNull() is CipherException.Offline && args.getString("socks") != null && attempt < 4) {
-            attempt++
-            bob = runCatching { e.addContactByCard(args.getString("peerCard")!!, "Bob", true) }
-        }
-        status("addContactAttempts" to attempt.toString())
-        val bobContact = bob.getOrThrow()
+        val bobContact = retryOnTorOffline("addContactByCard") { e.addContactByCard(args.getString("peerCard")!!, "Bob", true) }
         val conv = e.createConversation(bobContact.accountId)
         val m = e.sendText(conv, "app-hello-1", null)
         assertTrue(m.state == DeliveryStateFfi.SENT || m.state == DeliveryStateFfi.PENDING)
@@ -143,9 +151,11 @@ class MultiRelayE2EInstrumentedTest {
         e.sendText(conv, "app-reply-2", null)
         val bytes = ByteArray(700_000) { (it * 31 + 7).toByte() }
         val f = File(dir, "from-app.bin").apply { writeBytes(bytes) }
-        val sent = e.sendAttachment(
-            conv, f.absolutePath, "application/octet-stream", "from-app.bin", AttachmentKindFfi.FILE, "", null, null, null, null,
-        )
+        val sent = retryOnTorOffline("sendAttachment") {
+            e.sendAttachment(
+                conv, f.absolutePath, "application/octet-stream", "from-app.bin", AttachmentKindFfi.FILE, "", null, null, null, null,
+            )
+        }
         f.delete()
         assertTrue(sent.attachment != null)
         // the sender can still open its own copy (it lives on the sender's relay)
