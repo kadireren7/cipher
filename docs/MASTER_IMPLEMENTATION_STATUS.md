@@ -35,8 +35,8 @@ Image, PDF, video, voice, arbitrary file + thumbnail cross relays (`text_image_p
 ## Phase 5 — Metadata: **measured; modest, honest improvement**
 `metadata_measurement.rs`: against the mailbox relay, first contact via card exposes 0 signed requests / 0 Alice→Bob links / 0 stored mentions of Alice (vs 8 / 6 / 73 on the same-relay flow). PIR/mixnet/sealed-sender **not built** (design-only, `MAILBOX_PRIVACY.md` §5). Traffic analysis is unchanged.
 
-## Phase 6 — Tor: relay side TESTED-LIVE; **client side NOT TESTED**
-See `NETWORK_ADVERSARY_MODEL.md`. Not tested: Orbot, the Android `PinnedTls` against an onion relay, IPv6, handover, airplane mode, process death, backgrounding. Real-Tor evidence used `curl`, not the app.
+## Phase 6 — Tor: relay side TESTED-LIVE; **Android app stack TESTED over real Tor in CI (emulator)**
+See `NETWORK_ADVERSARY_MODEL.md` and *Session 3* below. Still not tested: Orbot, a physical device, IPv6, network handover, airplane mode, backgrounding, the app's own Tor integration (the Tor client runs on the host and the app is its SOCKS client).
 
 ## Phase 7 — Device/account security: **no new work** (needs a physical device; ST-001/028 unchanged). Cards are issued only by the root device; no recovery was added (explicit no-recovery policy kept).
 
@@ -62,7 +62,35 @@ See `NETWORK_ADVERSARY_MODEL.md`. Not tested: Orbot, the Android `PinnedTls` aga
 | CI `android-instrumented` (emulator job) | **GREEN on GitHub (run 38077466094; also 38071782971)**: 46 instrumented tests on an API 34 x86_64 emulator, 0 failed, 2 skipped (the skipped ones were not individually identified; the multi-relay phase test is skipped there by design and covered by the job below). It had never run before and failed three times for real reasons, all fixed: truncated system-image download hidden by the script (now retried and verified on disk), unbounded waits (now bounded + 60 min timeout), missing Gradle checksum for `junit-bom-5.9.2.module` (added after matching Maven Central's published SHA-256). |
 | Emulator E2E, two independent relays (`android-e2e-multirelay` CI job, `scripts/android-e2e-multirelay.py`) | **14/14 PASS on GitHub (run 38077466094, the commit "build the relay binary and the e2e peer example separately")**. Real app stack (native core, Android Keystore, OkHttp/TLS 1.3, `PinnedTls`) on an emulator against relay A (CA-signed) and a self-signed, pinned relay B, headless peer on B, separate PostgreSQL databases: card exchange across relays, message app→B, 3 offline texts + 900 KB file B→app while the app is offline, replies + attachment back (byte-for-byte), end-to-end receipts, each relay holds only its own user, no sender hash on B. The first CI attempt failed only because my script built `--example` without the relay binary (script bug). Earlier local emulator runs peaked at 10/14 (driver bugs, since fixed). Scope: emulator, software-backed Keystore, direct route (no Tor), one run — not a physical device, not a soak. |
 | Cross-relay groups (ST-044) | Design **reviewed and found not yet defensible** (`CROSS_RELAY_GROUPS.md` §5a: commit-cap liveness attack, removal window, read-cap linkage, undefined equivocation detection, welcome ordering). Not implemented; engine still refuses. |
-| Real Tor from the Android app | NOT TESTED (curl evidence only, see Phase 6). |
+| Real Tor from the Android app | Done in Session 3 (below). |
+
+## Session 3 — repeated E2E, resilience, Android over real Tor (evidence from GitHub Actions)
+All results are from GitHub-hosted runners (KVM emulator, API 34, software-backed Keystore); nothing ran on a physical device.
+
+**1. Repetition of the two-relay E2E (workflow `e2e-repeat`, run 38082672542, 5 independent jobs, no retries):** 5/5 green, each log 14 PASS / 0 FAIL; job wall time 11 to 16 minutes (including build).
+
+**2. Resilience phases added to the E2E driver** (offline burst of 10 after an app restart; app's relay stopped and restarted on the same database; peer's relay down while the app sends a text and a 300 KB attachment; recovery with exactly-once and byte-for-byte checks; all messages DELIVERED, none FAILED). Final result on commit 731b1c5: **`ci` run 38090565452 all 7 jobs green, direct-route E2E 21/21; instrumented suite 49 tests, 0 failed.**
+Failures found on the way (all in my driver, none in product code): ktlint violations in new androidTest sources (3 CI runs); at ad15f54 the direct E2E scored 18/21 (run 38087638441) because failed sends retry on an exponential backoff (10 s, 20 s, 40 s ... `backoff_ms`, FAILED after 8 attempts) and my driver stopped syncing the peer before the app's retry was due, so no receipt came back. Fixed by keeping the peer syncing while the app recovers; assertions unchanged.
+
+**3. Android over real Tor (workflow `android-tor`; own Tor client on the runner, two relays as hidden services with self-signed certificates and SPKI pins, app uses its SOCKS privacy route, peer uses `curl --socks5-hostname`; 3 repetitions per push):**
+| Run | Commit | Result |
+| --- | --- | --- |
+| 38082923137 | 7d54dc1 | 1 rep, 16/16 (baseline, no resilience phases yet) |
+| 38083099330 | 47493e0 | **FAIL** 9/22: first connection from the app to the other onion service timed out at the 60 s connect limit (`addContactByCard` Offline) |
+| 38084578602 | d121b53 | 3/3 green |
+| 38084625647 | 5bc9edf | 2 green, **1 FAIL** 19/23: `sendAttachment` Offline (circuit timeout during upload; no message left behind) |
+| 38087515662 | cc8c21d | 3/3 green |
+| 38087638416 | ad15f54 | 2 green, **1 FAIL** 18/23: the peer's 900 KB upload through Tor returned Offline |
+| 38090565453 | 731b1c5 | 3/3 green, each 23/23 (no peer-upload retry needed) |
+Total 17 repetitions: **14 green, 3 failed**. All three failures were Tor circuit timeouts surfacing as "offline"; none was a TLS, pin or data-integrity failure. The code under test changed between rows (harness retries were added after the failures), so this is not a clean flake rate; with the bounded retries the last commit was 3/3. Retries are limited to "offline" (never to a TLS refusal) and are printed/recorded.
+The Android-level assertions that held in every run that reached them (class `OnionRelayInstrumentedTest`): correct pin accepted and route `PROTECTED`; wrong pin refused with a TLS fault; a self-signed onion certificate without any pin refused (platform CA validation). The same app-stack flow as the direct E2E (cards across relays, offline messages and attachments, receipts, metadata checks) ran over Tor.
+Product changes made for this: the privacy route's connect timeout is 60 s (was 10 s; circuit building routinely exceeds 10 s). Invariants MR-011 and MR-012 added (status `partial`).
+
+**4. The skipped instrumented tests:** Gradle prints "2 skipped"; the result XML lists 8 `assumeTrue`-gated cases (PrivacyRoute x5, PrivacyTraffic, LiveRelay, MultiRelay phase) plus the 3 new onion tests that need arguments. They are skipped because they need arguments or servers that only a driver provides (a SOCKS endpoint, a live relay URL, a phase name). The multi-relay and onion tests are executed by the E2E and Tor jobs. I did not reconcile Gradle's count of 2 with the XML.
+
+**5. ST-044 (cross-relay groups):** `CROSS_RELAY_GROUPS.md` §7 is a revised design (epoch-derived authentication switched atomically with the commit, hash-chained log with fork/rollback detection, write-ahead Welcome, stated limits for a hostile member and for permanent partitions). It is **design only, unreviewed, with an open feasibility check (§7.1)**; the engine still refuses cross-relay groups.
+
+**Not covered by any of this:** mid-stream network cuts during an upload at the E2E level (only a refused connection; the mid-transfer case is a Rust test), database outage, multi-device, physical devices, Orbot, battery/background behaviour, independent review.
 
 ## Resume checkpoint
-Next actions in dependency order: (1) Repeat the E2E several times in CI to measure flakiness; add restart/airplane-mode/relay-down phases; (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).
+Next actions in dependency order: (1) A mid-stream upload cut (TCP-cutting proxy) and airplane-mode/handover phases; Orbot on a physical device; (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).
