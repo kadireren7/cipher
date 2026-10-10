@@ -154,6 +154,7 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
     }
     var url by rememberSaveable { mutableStateOf(BuildConfig.DEFAULT_RELAY_URL) }
     var invite by remember { mutableStateOf(BuildConfig.DEFAULT_INVITE) }
+    var relayPin by rememberSaveable { mutableStateOf("") }
     var pinOnly by rememberSaveable { mutableStateOf(false) }
     var pinFirst by remember { mutableStateOf<String?>(null) }
     var chosenPin by remember { mutableStateOf<String?>(null) }
@@ -199,18 +200,28 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                     url = it
                 }, label = { Text("Server address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
+                PrivateTextField(relayPin, {
+                    relayPin = it
+                }, label = {
+                    Text("Certificate pin (onion or self-signed servers)")
+                }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                Spacer(Modifier.height(8.dp))
                 PrivateTextField(invite, {
                     invite = it
                 }, label = { Text("Invite code") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Connections always use TLS 1.3. Plain http:// is rejected.",
+                    "Connections always use TLS 1.3. Plain http:// is rejected. An onion (.onion) server needs the certificate pin from its operator; with a pin, ONLY that key is accepted.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(24.dp))
-                PrimaryButton("Continue", enabled = url.startsWith("https://") && invite.length >= 8) {
-                    vm.configureRelay(url)
+                val addr = app.cipher.messenger.net.RelayAddress.parse(url, relayPin)
+                if (addr is app.cipher.messenger.net.RelayAddress.Result.Bad && url.startsWith("https://") && url.length > 12) {
+                    Text(addr.reason, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.labelSmall)
+                }
+                PrimaryButton("Continue", enabled = addr is app.cipher.messenger.net.RelayAddress.Result.Ok && invite.length >= 8) {
+                    vm.configureRelay(url, relayPin)
                     step = Step.MODE
                 }
             }

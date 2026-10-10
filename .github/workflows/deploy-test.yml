@@ -3,6 +3,9 @@ name: self-hosting acceptance
 # the previous release with an old client. Slow (two Rust builds + Docker), so it runs weekly and on demand, not on every push.
 # It uses only actions already pinned in ci.yml; it needs no secrets and creates no external resources.
 on:
+  push:
+    branches: [feat/self-hosted-multi-relay]
+    paths: ["deploy/**", "scripts/test-deploy.py", "scripts/test-upgrade.py", "crates/cipher-relay/**", ".github/workflows/deploy-test.yml"]
   workflow_dispatch:
     inputs:
       previous_ref:

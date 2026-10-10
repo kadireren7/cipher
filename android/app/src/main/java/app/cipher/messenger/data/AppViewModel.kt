@@ -108,6 +108,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val contacts = runCatching { host.call { it.listContacts() } }.getOrDefault(emptyList())
         val settings = runCatching { host.call { it.getSettings() } }.getOrNull()
         _state.update { it.copy(identity = ident, conversations = convs, contacts = contacts, settings = settings) }
+        // Tell the core how other relays' users must name OUR relay (with the pin for onion relays): needed to hand out contact cards and capabilities.
+        host.relayUrl()?.let { u -> runCatching { host.call { it.setOwnRelay(u, host.relayPin()) } } }
         drainEvents()
     }
 
@@ -121,27 +123,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ------------------------------------------------------------------------------------------------ onboarding
 
-    fun configureRelay(url: String) = launchOp {
-        val u = url.trim().removeSuffix("/")
-        if (!u.startsWith("https://")) {
-            toast("The server address must start with https://")
-            return@launchOp
+    /** Validates with the same rules as the Rust core (https only; an onion address needs its certificate pin) and stores it. */
+    fun configureRelay(url: String, pin: String? = null) = launchOp {
+        when (val r = app.cipher.messenger.net.RelayAddress.parse(url, pin)) {
+            is app.cipher.messenger.net.RelayAddress.Result.Bad -> toast(r.reason)
+            is app.cipher.messenger.net.RelayAddress.Result.Ok -> {
+                host.configureRelay(r.address)
+                refreshStatus()
+            }
         }
-        // Only scheme://host[:port] is a valid relay address: no user info, path, query or fragment (and no concatenated URLs).
-        val parsed = runCatching { java.net.URI(u) }.getOrNull()
-        if (parsed == null ||
-            parsed.host.isNullOrEmpty() ||
-            parsed.userInfo != null ||
-            !parsed.rawPath.isNullOrEmpty() ||
-            parsed.rawQuery != null ||
-            parsed.rawFragment != null ||
-            u.indexOf("://") != u.lastIndexOf("://")
-        ) {
-            toast("Enter the address like https://relay.example.org or https://relay.example.org:8443")
-            return@launchOp
+    }
+
+    fun updateRelayPin(pin: String) {
+        val n = app.cipher.messenger.net.RelayAddress.normalisePin(pin)
+        if (n == null) {
+            toast("The certificate pin is not valid (expected a SHA-256 key hash)")
+        } else {
+            host.updateRelayPin(n)
+            toast("Pin saved. Restart Cipher for it to apply.")
         }
-        host.configureRelay(u)
-        refreshStatus()
     }
 
     /** Runs [block] like [launchOp] but ALWAYS reports the outcome, so an onboarding screen can never wait forever on a failure. */
@@ -284,6 +284,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addContactByQr(payload: String, name: String, onDone: (ContactFfi?) -> Unit) = launchOp(busy = true) {
         val c = host.call { it.addContactByQr(payload.trim(), name.trim()) }
+        loadAll()
+        onDone(c)
+    }
+
+    /** Is this scanned/pasted text a contact CARD (as opposed to the identity QR)? Cards start with the base64url of the magic `CCD1`. */
+    fun looksLikeCard(text: String) = text.trim().startsWith("Q0NEMQ")
+
+    /** Creates a fresh signed contact card (valid [days] days) at our relay. Works while unlocked only. */
+    fun createContactCard(days: Int, onDone: (String?) -> Unit) = launchOp(busy = true) {
+        val card = runCatching { host.call { it.createContactCard(days.toUInt()) } }.getOrElse {
+            onDone(null)
+            throw it
+        }
+        onDone(card)
+    }
+
+    /** [scannedInPerson]: the card was read from the other person's screen, so the contact starts VERIFIED. */
+    fun addContactByCard(card: String, name: String, scannedInPerson: Boolean, onDone: (ContactFfi?) -> Unit) = launchOp(busy = true) {
+        val c = runCatching { host.call { it.addContactByCard(card.trim(), name.trim(), scannedInPerson) } }.getOrElse {
+            onDone(null)
+            throw it
+        }
         loadAll()
         onDone(c)
     }

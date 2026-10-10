@@ -31,6 +31,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.cipher.messenger.data.AppViewModel
@@ -51,8 +52,10 @@ fun NewConversationScreen(
     onOpenConversation: (String) -> Unit,
     onScanQr: () -> Unit,
     onNewGroup: () -> Unit,
-    onVerify: (String) -> Unit
+    onVerify: (String) -> Unit,
+    onMyCard: () -> Unit,
 ) {
+    var cardText by remember { mutableStateOf("") }
     var cipherId by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     Scaffold(topBar = {
@@ -86,6 +89,22 @@ fun NewConversationScreen(
                         Icon(Icons.Default.QrCodeScanner, null)
                         Spacer(Modifier.size(8.dp))
                         Text("Scan their code")
+                    }
+                    Spacer(Modifier.size(8.dp))
+                    OutlinedButton(onClick = onMyCard, modifier = Modifier.fillMaxWidth()) { Text("Show my contact card") }
+                    Spacer(Modifier.size(12.dp))
+                    Text("Add from a contact card", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "For someone on another server. Paste the card here, or scan it with the button above.",
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    PrivateTextField(cardText, {
+                        cardText = it
+                    }, label = { Text("Contact card") }, modifier = Modifier.fillMaxWidth().testTag("card_input"))
+                    Spacer(Modifier.size(8.dp))
+                    PrimaryButton("Add card", enabled = vm.looksLikeCard(cardText) && !state.busy) {
+                        // pasted, not scanned in person: starts UNVERIFIED
+                        vm.addContactByCard(cardText, name, false) { c -> if (c != null) cardText = "" }
                     }
                     Spacer(Modifier.size(8.dp))
                     OutlinedButton(onClick = onNewGroup, modifier = Modifier.fillMaxWidth()) {
