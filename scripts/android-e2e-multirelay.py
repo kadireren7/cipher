@@ -21,6 +21,11 @@ APK = os.path.join(ROOT, "android/app/build/outputs/apk/debug/app-debug.apk")
 TAPK = os.path.join(ROOT, "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk")
 HOST = "10.0.2.2"
 PA, PB = 8443, 8444
+# CIPHER_E2E_TOR=1: BOTH relays are Tor onion services (self-signed, pinned); the app uses the real SOCKS privacy route to a real Tor client on the
+# host (10.0.2.2:TOR_SOCKS from the emulator) and the peer reaches them with curl --socks5-hostname. No direct route is involved.
+TOR = os.environ.get("CIPHER_E2E_TOR") == "1"
+TOR_SOCKS = 9150
+LA, LB = 18443, 18444  # local listen ports behind the hidden services
 TOKEN = "e2e-multirelay-registration-token-0123456789abcdef"
 tmp = tempfile.mkdtemp(prefix="cipher-mr-e2e-")
 sfx = str(os.getpid())
@@ -43,9 +48,9 @@ def psql(sql, db="postgres"):
     return sh("docker", "exec", "cipher-pg", "psql", "-U", "postgres", "-d", db, "-tAc", sql).stdout.strip()
 
 
-def start_relay(port, db, cert, key, label):
-    env = dict(os.environ, CIPHER_RELAY_AUDIENCE=f"{HOST}:{port}", CIPHER_RELAY_REGISTRATION_TOKEN=TOKEN,
-               CIPHER_RELAY_PEPPER=f"pepper-{label}-0123456789abcdef0123456789", CIPHER_RELAY_LISTEN=f"0.0.0.0:{port}",
+def start_relay(port, db, cert, key, label, audience=None, listen_host="0.0.0.0"):
+    env = dict(os.environ, CIPHER_RELAY_AUDIENCE=audience or f"{HOST}:{port}", CIPHER_RELAY_TLS_HANDSHAKE_SECS="60", CIPHER_RELAY_REGISTRATION_TOKEN=TOKEN,
+               CIPHER_RELAY_PEPPER=f"pepper-{label}-0123456789abcdef0123456789", CIPHER_RELAY_LISTEN=f"{listen_host}:{port}",
                CIPHER_RELAY_DATABASE_URL=f"postgres://postgres:devonly-not-a-secret@127.0.0.1:55432/{db}",
                CIPHER_RELAY_TLS_CERT=cert, CIPHER_RELAY_TLS_KEY=key)
     p = subprocess.Popen([RELAY], env=env, stdout=open(f"{tmp}/relay-{label}.log", "w"), stderr=subprocess.STDOUT)
@@ -66,7 +71,63 @@ class Peer:
         return self.p.stdout.readline().strip()
 
 
+EXTRA = {}  # added to every phase (Tor mode: socks, ownPin)
+
+
+def self_signed(name, dns):
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", f"{tmp}/{name}.key", "-out", f"{tmp}/{name}.pem",
+                    "-days", "3", "-subj", f"/CN={name}", "-addext", f"subjectAltName={dns}"], capture_output=True, check=True)
+    pub = sh("openssl", "x509", "-in", f"{tmp}/{name}.pem", "-pubkey", "-noout").stdout
+    spki = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "der"], input=pub.encode(), capture_output=True).stdout
+    return base64.urlsafe_b64encode(hashlib.sha256(spki).digest()).decode().rstrip("=")
+
+
+def instrument_class(cls, **kw):
+    a = [ADB, "shell", "am", "instrument", "-w", "-r", "-e", "class", f"app.cipher.messenger.{cls}"]
+    for k, v in kw.items():
+        a += ["-e", k, v]
+    a.append(RUNNER)
+    r = sh(*a, timeout=900)
+    out = r.stdout
+    ok = re.search(r"OK \((\d+) tests?\)", out) is not None and "FAILURES" not in out
+    if not ok:
+        print(f"--- instrumentation class '{cls}' output (tail) ---\n{out[-3000:]}\n---", flush=True)
+    return ok, out
+
+
+def start_tor():
+    """A real Tor client (own DataDirectory, SocksPort on 127.0.0.1) with two hidden services pointing at the local relay ports."""
+    os.makedirs(f"{tmp}/tor", mode=0o700); os.makedirs(f"{tmp}/hsA", mode=0o700); os.makedirs(f"{tmp}/hsB", mode=0o700)
+    open(f"{tmp}/torrc", "w").write(
+        f"DataDirectory {tmp}/tor\nSocksPort 127.0.0.1:{TOR_SOCKS}\nControlPort 0\nLog notice stdout\n"
+        f"HiddenServiceDir {tmp}/hsA\nHiddenServicePort {PA} 127.0.0.1:{LA}\n"
+        f"HiddenServiceDir {tmp}/hsB\nHiddenServicePort {PB} 127.0.0.1:{LB}\n")
+    logf = open(f"{tmp}/tor.log", "w")
+    p = subprocess.Popen(["tor", "-f", f"{tmp}/torrc"], stdout=logf, stderr=subprocess.STDOUT)
+    procs.append(p)
+    for _ in range(360):
+        time.sleep(1)
+        if "Bootstrapped 100%" in open(f"{tmp}/tor.log").read() and os.path.exists(f"{tmp}/hsB/hostname"):
+            return open(f"{tmp}/hsA/hostname").read().strip(), open(f"{tmp}/hsB/hostname").read().strip()
+        if p.poll() is not None:
+            break
+    raise SystemExit("tor did not bootstrap: " + open(f"{tmp}/tor.log").read()[-600:])
+
+
+def onion_reachable(host_port, pin_b64):
+    """From the HOST, through the Tor client: the hidden service answers and presents the pinned key (publishing a descriptor takes 30-180 s)."""
+    std = pin_b64.replace("-", "+").replace("_", "/") + "=" * (-len(pin_b64) % 4)
+    for _ in range(40):
+        r = sh("curl", "-sS", "--max-time", "60", "--socks5-hostname", f"127.0.0.1:{TOR_SOCKS}", "--tlsv1.3", "--insecure", "--pinnedpubkey", f"sha256//{std}",
+               "-o", "/dev/null", "-w", "%{http_code}", f"https://{host_port}/")
+        if r.returncode == 0 and r.stdout.strip().isdigit():
+            return True
+        time.sleep(5)
+    return False
+
+
 def instrument(phase, **kw):
+    kw = {**EXTRA, **kw}
     a = [ADB, "shell", "am", "instrument", "-w", "-r", "-e", "class", "app.cipher.messenger.MultiRelayE2EInstrumentedTest#phase", "-e", "phase", phase]
     for k, v in kw.items():
         a += ["-e", k, v]
@@ -101,19 +162,33 @@ RUNNER = f"{m.group(1)}/androidx.test.runner.AndroidJUnitRunner"
 
 dba, dbb = f"e2e_a_{sfx}", f"e2e_b_{sfx}"
 psql(f"CREATE DATABASE {dba}"); psql(f"CREATE DATABASE {dbb}")
-# relay B: SELF-SIGNED certificate, authenticated only by its pin (the card carries it)
-subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes", "-keyout", f"{tmp}/b.key", "-out", f"{tmp}/b.pem", "-days", "3",
-                "-subj", "/CN=relay-b", "-addext", f"subjectAltName=IP:{HOST},IP:127.0.0.1,DNS:localhost"], capture_output=True, check=True)
-der = sh("openssl", "x509", "-in", f"{tmp}/b.pem", "-pubkey", "-noout").stdout
-spki = subprocess.run(["openssl", "pkey", "-pubin", "-outform", "der"], input=der.encode(), capture_output=True).stdout
-PIN_B = base64.urlsafe_b64encode(hashlib.sha256(spki).digest()).decode().rstrip("=")
+if TOR:
+    onion_a, onion_b = start_tor()
+    PIN_A = self_signed("a", f"DNS:{onion_a}")
+    PIN_B = self_signed("b", f"DNS:{onion_b}")
+    EXTRA.update(socks=f"{HOST}:{TOR_SOCKS}", ownPin=PIN_A)
+else:
+    # relay B: SELF-SIGNED certificate, authenticated only by its pin (the card carries it)
+    PIN_B = self_signed("b", f"IP:{HOST},IP:127.0.0.1,DNS:localhost")
 try:
-    start_relay(PA, dba, f"{CA}/relay-chain.pem", f"{CA}/relay.key", "a")
-    start_relay(PB, dbb, f"{tmp}/b.pem", f"{tmp}/b.key", "b")
-    check("two independent relays are up (separate processes and databases; B is self-signed)", True)
-
-    url_a, url_b = f"https://{HOST}:{PA}", f"https://{HOST}:{PB}"
-    bob = Peer(f"{tmp}/bob", f"{HOST}:{PB}", {"CIPHER_PEER_OWN_PIN": PIN_B})
+    if TOR:
+        start_relay(LA, dba, f"{tmp}/a.pem", f"{tmp}/a.key", "a", audience=f"{onion_a}:{PA}", listen_host="127.0.0.1")
+        start_relay(LB, dbb, f"{tmp}/b.pem", f"{tmp}/b.key", "b", audience=f"{onion_b}:{PB}", listen_host="127.0.0.1")
+        check("two independent relays are up behind two Tor onion services (separate processes and databases; both self-signed, pinned)", True)
+        reach = onion_reachable(f"{onion_a}:{PA}", PIN_A) and onion_reachable(f"{onion_b}:{PB}", PIN_B)
+        check("real Tor: both onion services answer through the Tor client and present the pinned keys", reach)
+        if not reach:
+            raise SystemExit("onion services not reachable through Tor: " + open(f"{tmp}/tor.log").read()[-800:])
+        url_a, url_b = f"https://{onion_a}:{PA}", f"https://{onion_b}:{PB}"
+        ok, out = instrument_class("OnionRelayInstrumentedTest", socks=EXTRA["socks"], onionUrl=url_a, onionPin=PIN_A)
+        check("Android stack over real Tor: pinned onion relay accepted and route PROTECTED; wrong pin and missing pin refused (fail closed)", ok, out[-600:])
+        bob = Peer(f"{tmp}/bob", f"{onion_b}:{PB}", {"CIPHER_PEER_OWN_PIN": PIN_B, "CIPHER_PEER_SOCKS": f"127.0.0.1:{TOR_SOCKS}"})
+    else:
+        start_relay(PA, dba, f"{CA}/relay-chain.pem", f"{CA}/relay.key", "a")
+        start_relay(PB, dbb, f"{tmp}/b.pem", f"{tmp}/b.key", "b")
+        check("two independent relays are up (separate processes and databases; B is self-signed)", True)
+        url_a, url_b = f"https://{HOST}:{PA}", f"https://{HOST}:{PB}"
+        bob = Peer(f"{tmp}/bob", f"{HOST}:{PB}", {"CIPHER_PEER_OWN_PIN": PIN_B})
     bob.cmd("provision")
     check("peer registers on relay B", "Ok" in bob.cmd(f"register {TOKEN}"))
     check("peer names its relay (with pin)", "Ok" in bob.cmd(f"ownrelay {url_b} {PIN_B}"))

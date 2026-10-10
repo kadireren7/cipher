@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import app.cipher.messenger.net.OkHttpCallbacks
+import app.cipher.messenger.net.SocksEndpoint
 import app.cipher.messenger.security.AndroidKeystoreCallbacks
 import app.cipher.messenger.security.BiometricGate
 import java.io.File
@@ -38,7 +39,8 @@ class MultiRelayE2EInstrumentedTest {
 
     private fun engine(): Pair<CipherEngine, OkHttpCallbacks> {
         val url = args.getString("relayUrl")!!
-        val http = TestRoutes.direct(ctx)
+        // `socks` given = the REAL privacy route (SOCKS5 to a real Tor client; relays are onion services); otherwise the debug direct route.
+        val http = args.getString("socks")?.let { TestRoutes.socks(ctx, SocksEndpoint.parse(it)!!).first } ?: TestRoutes.direct(ctx)
         args.getString("ownPin")?.let { http.pinRelay(url, it) }
         val e = CipherEngine(
             EngineSettings(
@@ -61,7 +63,7 @@ class MultiRelayE2EInstrumentedTest {
         e.getHistory(conv, null, 200u).items.reversed().filter { it.attachment == null }.map { it.text }
 
     private fun waitFor(what: String, seconds: Int = 90, cond: () -> Boolean) {
-        val end = System.currentTimeMillis() + seconds * 1000L
+        val end = System.currentTimeMillis() + seconds * 1000L * (if (args.getString("socks") != null) 4 else 1) // Tor circuits are slow
         while (System.currentTimeMillis() < end) {
             if (cond()) return
             Thread.sleep(1000)

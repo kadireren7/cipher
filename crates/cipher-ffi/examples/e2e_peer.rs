@@ -66,6 +66,8 @@ struct Curl {
     ip: String,
     /// base url -> SPKI pin (unpadded base64url); curl is then run with --pinnedpubkey (and --insecure ONLY because the pin replaces the CA chain).
     pins: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// `ip:port` of a Tor SocksPort: onion relays are reached ONLY through it, with the name resolved by the proxy (`--socks5-hostname`); never directly.
+    socks: Option<String>,
 }
 impl Curl {
     #[allow(clippy::too_many_arguments)]
@@ -100,7 +102,10 @@ impl Curl {
         }
         if let Some(rest) = base.strip_prefix("https://") {
             let (h, p) = rest.rsplit_once(':').unwrap_or((rest, "443"));
-            if h == self.alias_host {
+            if h.ends_with(".onion") {
+                let Some(sx) = &self.socks else { return Err(HttpFault::Network) }; // no proxy configured: refuse rather than try a direct connection
+                c.args(["--socks5-hostname", sx]);
+            } else if h == self.alias_host {
                 c.args(["--connect-to", &format!("{h}:{p}:{}:{p}", self.ip)]);
             }
         }
@@ -158,7 +163,7 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (dir, host, ca, ip) = (&a[1], &a[2], &a[3], &a[4]);
     let alias_host = host.rsplit_once(':').map_or(host.as_str(), |(h, _)| h).to_owned();
-    let http = Arc::new(Curl { ca: ca.clone(), alias_host, ip: ip.clone(), pins: Default::default() });
+    let http = Arc::new(Curl { ca: ca.clone(), alias_host, ip: ip.clone(), pins: Default::default(), socks: std::env::var("CIPHER_PEER_SOCKS").ok() });
     // Optional: this peer's OWN relay uses a self-signed certificate and is authenticated by this pin (unpadded base64url SPKI SHA-256).
     if let Ok(pin) = std::env::var("CIPHER_PEER_OWN_PIN") {
         http.pins.lock().unwrap().insert(format!("https://{host}"), pin);

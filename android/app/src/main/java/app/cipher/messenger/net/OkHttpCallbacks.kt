@@ -45,7 +45,8 @@ class OkHttpCallbacks(
         .protocols(listOf(Protocol.HTTP_1_1))
         .followRedirects(false)
         .followSslRedirects(false)
-        .connectTimeout(10, TimeUnit.SECONDS)
+        // Through the SOCKS proxy the handshake includes building a Tor circuit (onion services: rendezvous), which routinely takes 10-30 s.
+        .connectTimeout(if (route.directDevRoute()) 10 else 60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.MINUTES)
