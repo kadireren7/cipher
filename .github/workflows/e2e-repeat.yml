@@ -1,0 +1,52 @@
+# Repeats the two-relay Android emulator E2E on independent runners to measure flakiness. Each repetition is its own job (fresh VM, fresh
+# emulator, fresh databases); failures are NOT retried and NOT hidden (fail-fast is off, results are read per job).
+name: e2e-repeat
+on:
+  workflow_dispatch:
+  push:
+    branches: [feat/self-hosted-multi-relay]
+    paths: [".github/workflows/e2e-repeat.yml"]
+permissions:
+  contents: read
+jobs:
+  repeat:
+    name: two-relay E2E repetition ${{ matrix.n }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        n: [1, 2, 3, 4, 5]
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_PASSWORD: devonly-not-a-secret
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CIPHER_E2E: multirelay
+      CIPHER_E2E_PG_HOST: 127.0.0.1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Emulator + two-relay E2E driver
+        run: bash scripts/ci-emulator-tests.sh
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-repeat-${{ matrix.n }}
+          path: |
+            /tmp/e2e-multirelay.txt
+            /tmp/emulator-logcat.txt
+            /tmp/cipher-mr-e2e-*/*.log
+          if-no-files-found: ignore
