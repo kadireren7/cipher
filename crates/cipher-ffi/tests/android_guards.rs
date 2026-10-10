@@ -420,15 +420,26 @@ fn background_and_screen_off_signal_the_lock_before_queueing_it() {
     }
 }
 
-/// The shell validates the relay address before the engine ever sees it (a misleading "secure storage" error once hid a pasted double URL).
+/// The shell validates the relay address (and pin) before the engine ever sees it (a misleading "secure storage" error once hid a pasted double URL).
+/// The rules live in `RelayAddress` (JVM-unit-tested, mirrors the Rust descriptor); the view model can reach the host only through it.
 #[test]
 fn relay_address_is_validated_in_the_shell() {
+    let ra = read("app/src/main/java/app/cipher/messenger/net/RelayAddress.kt");
+    for needle in
+        ["removePrefix(\"https://\")", "\"/@?# \\\\%\"", "lastIndexOf(\"://\")", ".onion", "need the certificate pin", "size == 32"]
+    {
+        assert!(ra.contains(needle), "RelayAddress must check {needle}");
+    }
     let vm = read("app/src/main/java/app/cipher/messenger/data/AppViewModel.kt");
     let f = &vm[vm.find("fun configureRelay").unwrap()..];
-    let f = &f[..f.find("host.configureRelay").unwrap()];
-    for needle in ["startsWith(\"https://\")", "userInfo", "rawQuery", "rawFragment", "lastIndexOf(\"://\")"] {
-        assert!(f.contains(needle), "configureRelay must check {needle}");
-    }
+    let f = &f[..f.find("fun updateRelayPin").unwrap()];
+    assert!(
+        f.contains("RelayAddress.parse(url, pin)") && f.contains("host.configureRelay(r.address)"),
+        "only a parsed address reaches the host"
+    );
+    let host = read("app/src/main/java/app/cipher/messenger/data/EngineHost.kt");
+    assert!(host.contains("fun configureRelay(address: RelayAddress)") && !host.contains("fun configureRelay(url: String"));
+    assert!(host.contains("require(!address.isOnion || address.pinB64 != null)"));
 }
 
 /// The pinned-TLS component is the only place that may implement a trust manager. Its shape is checked so a "temporary" accept-all cannot slip in.
