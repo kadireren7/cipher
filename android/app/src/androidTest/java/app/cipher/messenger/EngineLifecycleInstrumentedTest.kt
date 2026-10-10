@@ -47,6 +47,9 @@ class EngineLifecycleInstrumentedTest {
             destPath: String,
             maxBytes: ULong,
         ): UShort = throw HttpFault.Network()
+
+        // a dead transport cannot pin: refusing is the fail-closed answer
+        override fun pinRelay(baseUrl: String, spkiSha256B64: String) = throw HttpFault.Tls()
     }
 
     @Before fun setUp() {

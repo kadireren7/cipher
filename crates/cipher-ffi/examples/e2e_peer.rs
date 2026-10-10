@@ -61,7 +61,9 @@ impl KeystoreCallbacks for Ks {
 
 struct Curl {
     ca: String,
-    resolve: String,
+    /// Host name every relay is addressed by (e.g. the emulator's 10.0.2.2) and the real address it maps to; any port is reachable (several relays).
+    alias_host: String,
+    ip: String,
     /// base url -> SPKI pin (unpadded base64url); curl is then run with --pinnedpubkey (and --insecure ONLY because the pin replaces the CA chain).
     pins: std::sync::Mutex<std::collections::HashMap<String, String>>,
 }
@@ -94,7 +96,13 @@ impl Curl {
             }
             c.args(["--insecure", "--pinnedpubkey", &format!("sha256//{std_b64}")]);
         } else {
-            c.args(["--cacert", &self.ca, "--connect-to", &self.resolve]);
+            c.args(["--cacert", &self.ca]);
+        }
+        if let Some(rest) = base.strip_prefix("https://") {
+            let (h, p) = rest.rsplit_once(':').unwrap_or((rest, "443"));
+            if h == self.alias_host {
+                c.args(["--connect-to", &format!("{h}:{p}:{}:{p}", self.ip)]);
+            }
         }
         c.args(["-X", method, "-w", "\n%{http_code}"]);
         if let Some(a) = auth {
@@ -149,8 +157,12 @@ impl HttpCallbacks for Curl {
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (dir, host, ca, ip) = (&a[1], &a[2], &a[3], &a[4]);
-    let port = host.rsplit(':').next().unwrap();
-    let http = Arc::new(Curl { ca: ca.clone(), resolve: format!("{host}:{ip}:{port}"), pins: Default::default() });
+    let alias_host = host.rsplit_once(':').map_or(host.as_str(), |(h, _)| h).to_owned();
+    let http = Arc::new(Curl { ca: ca.clone(), alias_host, ip: ip.clone(), pins: Default::default() });
+    // Optional: this peer's OWN relay uses a self-signed certificate and is authenticated by this pin (unpadded base64url SPKI SHA-256).
+    if let Ok(pin) = std::env::var("CIPHER_PEER_OWN_PIN") {
+        http.pins.lock().unwrap().insert(format!("https://{host}"), pin);
+    }
     let ks = Arc::new(Ks(InMemoryKeyStore::new(ProtectionLevel::OsSoftware)));
     let eng = CipherEngine::new(
         EngineSettings {
@@ -216,6 +228,9 @@ fn main() {
                 }
                 Err(e) => format!("Err({e:?})"),
             },
+            "ownrelay" => format!("{:?}", eng.set_own_relay(p[1].into(), p.get(2).map(|x| (*x).to_owned()))),
+            "card" => format!("{:?}", eng.create_contact_card(p[1].parse().unwrap())),
+            "addcard" => format!("{:?}", eng.add_contact_by_card(p[1].into(), p[2].into(), true)),
             "quit" => break,
             _ => "unknown".into(),
         };
