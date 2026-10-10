@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/self-hosted-multi-relay]
   pull_request:
 
 # Least privilege: CI never needs to write to the repo.

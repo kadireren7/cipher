@@ -30,21 +30,25 @@ import javax.net.ssl.X509TrustManager
 class RelayPins {
     private val pins = ConcurrentHashMap<String, ByteArray>()
 
-    /** `base` is `https://host[:port]`. Returns false (and changes nothing) if the host already has a different pin or the input is malformed. */
+    /** `base` is `https://host[:port]`. Returns false (and changes nothing) if the relay already has a different pin or the input is malformed. */
     fun register(base: String, spkiSha256: ByteArray): Boolean {
         if (spkiSha256.size != 32) return false
-        val host = hostOf(base) ?: return false
-        val prev = pins.putIfAbsent(host, spkiSha256.copyOf())
+        val key = keyOf(base) ?: return false
+        val prev = pins.putIfAbsent(key, spkiSha256.copyOf())
         return prev == null || MessageDigest.isEqual(prev, spkiSha256)
     }
 
-    fun forHost(host: String?): ByteArray? = host?.lowercase()?.let { pins[it] }
+    /** The pin for the relay the TLS handshake is with; the port matters (two relays on one host are two relays). */
+    fun forPeer(host: String?, port: Int): ByteArray? = host?.let { pins["${it.lowercase()}:${if (port > 0) port else 443}"] }
 
     companion object {
-        fun hostOf(base: String): String? {
+        /** `host:port` with the default port made explicit, or null if `base` is not plain `https://host[:port]`. */
+        fun keyOf(base: String): String? {
             val rest = base.removePrefix("https://")
             if (rest == base || rest.isEmpty() || rest.any { it == '/' || it == '@' || it == '?' || it == '#' }) return null
-            return rest.substringBefore(':').lowercase().ifEmpty { null }
+            val host = rest.substringBefore(':').lowercase().ifEmpty { return null }
+            val port = if (rest.contains(':')) rest.substringAfter(':').toIntOrNull() ?: return null else 443
+            return "$host:$port"
         }
     }
 }
@@ -62,13 +66,14 @@ internal class PinningTrustManager(
     }
 
     override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?, socket: Socket?) {
-        val host = (socket as? SSLSocket)?.handshakeSession?.peerHost
-        val pin = pins.forHost(host)
+        val session = (socket as? SSLSocket)?.handshakeSession
+        val pin = pins.forPeer(session?.peerHost, session?.peerPort ?: -1)
         if (pin != null) pinnedCheck(chain, pin) else platform.checkServerTrusted(chain, authType, socket)
     }
 
     override fun checkServerTrusted(chain: Array<X509Certificate>?, authType: String?, engine: SSLEngine?) {
-        val pin = pins.forHost(engine?.handshakeSession?.peerHost)
+        val session = engine?.handshakeSession
+        val pin = pins.forPeer(session?.peerHost, session?.peerPort ?: -1)
         if (pin != null) pinnedCheck(chain, pin) else platform.checkServerTrusted(chain, authType, engine)
     }
 
@@ -78,9 +83,20 @@ internal class PinningTrustManager(
     }
 
     // This app never acts as a TLS server and never asks for client certificates.
-    override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?, socket: Socket?) = throw CertificateException("client auth unsupported")
-    override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?, engine: SSLEngine?) = throw CertificateException("client auth unsupported")
-    override fun checkClientTrusted(chain: Array<X509Certificate>?, authType: String?) = throw CertificateException("client auth unsupported")
+    override fun checkClientTrusted(
+        chain: Array<X509Certificate>?,
+        authType: String?,
+        socket: Socket?
+    ) = throw CertificateException("client auth unsupported")
+    override fun checkClientTrusted(
+        chain: Array<X509Certificate>?,
+        authType: String?,
+        engine: SSLEngine?
+    ) = throw CertificateException("client auth unsupported")
+    override fun checkClientTrusted(
+        chain: Array<X509Certificate>?,
+        authType: String?
+    ) = throw CertificateException("client auth unsupported")
 
     override fun getAcceptedIssuers(): Array<X509Certificate> = platform.acceptedIssuers
 }

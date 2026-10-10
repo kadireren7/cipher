@@ -175,7 +175,8 @@ class PrivacyRouteTest {
             "HttpURLConnection", "HttpsURLConnection", "java.net.Socket", "java.net.URL(", "URL(\"", "WebView", "DownloadManager",
             "InetAddress.getByName(", "InetAddress.getAllByName(", "OkHttpClient", "Retrofit", "Cronet", "cleartextTraffic",
         )
-        val allowed = setOf("net/OkHttpCallbacks.kt", "net/PrivacyRoute.kt")
+        // PinnedTls.kt names java.net.Socket only because X509ExtendedTrustManager's method signatures do; it opens no connection (android_guards.rs checks its shape).
+        val allowed = setOf("net/OkHttpCallbacks.kt", "net/PrivacyRoute.kt", "net/PinnedTls.kt")
         val offenders = mutableListOf<String>()
         main.walkTopDown().filter { it.isFile && it.extension == "kt" }.forEach { f ->
             val rel = f.path.substringAfter("messenger/")
