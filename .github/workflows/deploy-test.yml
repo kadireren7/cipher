@@ -46,6 +46,6 @@ jobs:
           python3 scripts/test-deploy.py localhost:18443
       - name: Upgrade from the previous release (old relay + old client -> this relay, same database)
         run: |
-          git worktree add --detach ../previous "${{ github.event.inputs.previous_ref || 'main' }}"
+          git worktree add --detach ../previous "origin/${{ github.event.inputs.previous_ref || 'main' }}"
           (cd ../previous && cargo build --locked --release -p cipher-relay --target-dir ../previous-target && cargo build --locked --release -p cipher-ffi --example e2e_peer --target-dir ../previous-target)
           python3 scripts/test-upgrade.py ../previous-target/release/cipher-relay target/release/cipher-relay ../previous-target/release/examples/e2e_peer
