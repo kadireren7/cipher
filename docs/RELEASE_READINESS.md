@@ -5,8 +5,8 @@
 | Level | Verdict | Why |
 | --- | --- | --- |
 | Development-ready | **YES** | Automated suites, fault matrix, two-relay tests, Docker acceptance and upgrade scripts pass on one machine. |
-| Self-hosted experimental-ready | **YES, for technical operators who accept the limits below** | Relay can be installed, restarted, backed up, restored and upgraded (tested). Onion relay reachable over live Tor (tested with curl). Operators must understand: unaudited code, no groups across relays, no Android UI for cards/onion pins yet. |
-| Private beta-ready | **NO** | The Android app has **no UI** for contact cards or onion relay pins (ST-048); the pinned-TLS component was never run on a device or against an onion relay; nothing has run on a physical device (ST-028); Orbot untested. |
+| Self-hosted experimental-ready | **YES, for technical operators who accept the limits below** | Relay can be installed, restarted, backed up, restored and upgraded (tested). Onion relay reachable over live Tor (tested with curl). Operators must understand: unaudited code, no groups across relays, the Android card/pin UI exists but has not been exercised end-to-end (see below). |
+| Private beta-ready | **NO** | Card/relay/pin UI is built and unit-tested, but the emulator two-relay E2E is **not green** (10/14 best run, rerun blocked by host memory); pinned TLS is JVM-tested only, never against an onion relay from the app; nothing has run on a physical device (ST-028); Orbot untested. |
 | Public beta-ready | **NO** | Plus: no independent cryptographic review (ST-005), no signed/reproducible release, no push notifications, no background delivery, no key-update commits or groups across relays. |
 | Production-ready | **NO** | Everything above, plus long-run soak, load, HA, and incident process evidence. |
 
@@ -17,13 +17,13 @@ Passing tests are evidence about the behaviours they test. They are not proof of
 Reproducibility of the relay/container was **not measured**. The Android APK was reproducible once on one host (see `FINAL_SECURITY_REVIEW.md`); not re-checked for this branch; no APK was built in this pass.
 
 ## 2. Android
-`ANDROID_SECURITY.md`, `DEVICE_TEST_CHECKLIST.md`. Release builds are unsigned unless `CIPHER_RELEASE_KEY*` are set in the environment of the signing host (`RELEASE_SIGNING.md`, `scripts/sign-release.sh`). **Do not publish an APK as suitable for sensitive use** before ST-001/005/028 are closed. The Kotlin side of this branch (`PinnedTls.kt`, `pinRelay`) has been written but its Gradle build and tests were **not run**.
+`ANDROID_SECURITY.md`, `DEVICE_TEST_CHECKLIST.md`. Release builds are unsigned unless `CIPHER_RELEASE_KEY*` are set in the environment of the signing host (`RELEASE_SIGNING.md`, `scripts/sign-release.sh`). **Do not publish an APK as suitable for sensitive use** before ST-001/005/028 are closed. The Kotlin side (`PinnedTls.kt`, `RelayAddress.kt`, UI) builds and its JVM/ktlint/lint tests pass in GitHub CI; instrumented/emulator results are NOT green yet.
 
 ## 3. SBOM and dependency audit
 `python3 scripts/gen_sbom.py -o sbom.cdx.json` (CycloneDX 1.5; 397 Rust + 575 Android components; hashes from `Cargo.lock` and Gradle verification metadata; reproducible). Licence checks cover Rust only (`cargo deny`). `cargo audit` passes with exceptions listed and justified in `.cargo/audit.toml` (RUSTSEC-2026-0173, -0330, -0331 — ST-045).
 
 ## 4. CI gates
-`ci.yml`: fmt, clippy `-D warnings`, full tests with PostgreSQL, invariants registry, relay dependency guard, `cargo deny`, `cargo audit`, SBOM determinism, secret scan, Android build/lint. `fuzz.yml`: 13 targets. `deploy-test.yml` (weekly/manual): Docker acceptance + upgrade — **written, never run on GitHub.** Branch pushes have not been verified by CI at the time of writing.
+`ci.yml`: fmt, clippy `-D warnings`, full tests with PostgreSQL, invariants registry, relay dependency guard, `cargo deny`, `cargo audit`, SBOM determinism, secret scan, Android build/lint. `fuzz.yml`: 13 targets. `deploy-test.yml` (weekly/manual): Docker acceptance + upgrade — **ran green on GitHub for `84448b1`.** On `84448b1` rust, audit, secrets, invariants, android unit/lint/build and `deploy-test` passed on GitHub; the emulator job hung (AVD not created) and was fixed but its rerun was unconfirmed at writing.
 
 ## 5. Server compatibility and version policy
 * Wire protocol: JSON, additive fields only (`#[serde(default)]`), unknown fields rejected on requests. Cards carry `v`; unknown `v` is refused.

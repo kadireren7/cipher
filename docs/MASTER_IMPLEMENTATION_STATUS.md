@@ -52,5 +52,17 @@ See `NETWORK_ADVERSARY_MODEL.md`. Not tested: Orbot, the Android `PinnedTls` aga
 ## Commands and results (this machine)
 `cargo test --workspace` (PostgreSQL on 127.0.0.1:55432) — last full run: 39 suites; the one failure (a static guard flagging my negative-test URL literals) was fixed and re-run green; `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` clean; `scripts/check_invariants.py` 75 invariants; `scripts/test-deploy.py localhost:18443` 17/17; `scripts/test-upgrade.py` 10/10; `scripts/public_release_scan.py` 0 findings.
 
+## Session 2 (Android UI, pinning, CI) — evidence as of HEAD after `84448b1`
+| Item | Result |
+| --- | --- |
+| Android UI: contact card create/QR/paste, QR-scan routing, relay URL + onion pin settings, onboarding pin field | **Written; compiled and ktlint/lint/unit tests green in GitHub CI** (`android` job). Never viewed on a physical device. |
+| Kotlin TLS pinning (`PinnedTls`, `RelayAddress`) | **TESTED**: JVM tests incl. real TLS 1.3 handshakes (right pin accepted, wrong pin/expired refused); static guard against accept-all trust managers. Not run against a real onion relay from the app. |
+| Complete Rust suite | **TESTED locally**: `cargo test --workspace --no-fail-fast`, PostgreSQL up, exit 0, 40 suites `ok`, 0 failed. (A first attempt failed 8 relay tests only because I exported an empty `CIPHER_TEST_DATABASE_URL`: harness error, not product.) Also green in CI (`build / lint / tests`). |
+| CI on GitHub (run on `84448b1`) | Green: rust, dependency audit, secret scan, invariants, android unit/ktlint/lint/build, **self-hosting acceptance (deploy-test + upgrade)**. Earlier failures (upgrade step ref, history secret scan) fixed. |
+| CI `android-instrumented` (emulator) | **FAILED/HUNG, genuine finding**: the job ran >1 h with no result because `avdmanager` did not create the AVD (`Unknown AVD name [ci34]`) and `adb wait-for-device` waited forever. This job had never run before. Fixed in the next commit (verify AVD, bounded waits, 60 min timeout); **the corrected run had not finished when this was written** — not claimed green. |
+| Emulator E2E `scripts/android-e2e-multirelay.py` (two relays, offline, attachments) | **NOT green / NOT rerun**: best earlier run 10/14; the fix for the rest (comma separator for `expectTexts`) is unverified. Rerun **BLOCKED by memory**: 5.7 GB host, ~0.7 GB available (Firefox + other containers); Gradle (2.2 GB) + emulator cannot run. No interrupted run is counted as a pass. |
+| Cross-relay groups (ST-044) | Design **reviewed and found not yet defensible** (`CROSS_RELAY_GROUPS.md` §5a: commit-cap liveness attack, removal window, read-cap linkage, undefined equivocation detection, welcome ordering). Not implemented; engine still refuses. |
+| Real Tor from the Android app | NOT TESTED (curl evidence only, see Phase 6). |
+
 ## Resume checkpoint
-Next actions in dependency order: (1) Kotlin: UI for card create/scan + relay/pin settings, call `set_own_relay` after unlock, build and run JVM tests for `PinnedTls` (ST-048); (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).
+Next actions in dependency order: (1) With >=4 GB free RAM: build APKs, rerun `scripts/android-e2e-multirelay.py` until 14/14, confirm the fixed `android-instrumented` CI job; (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).
