@@ -1,7 +1,7 @@
 package app.cipher.messenger
 
-import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.core.app.ApplicationProvider
+import androidx.test.platform.app.InstrumentationRegistry
 import app.cipher.messenger.net.RouteStatus
 import app.cipher.messenger.net.SocksEndpoint
 import org.junit.Assert.assertEquals
@@ -26,11 +26,12 @@ class OnionRelayInstrumentedTest {
         return """{"deliveries":[{"cap":"$cap","message_id":"$id","ciphertext":"AAAA"}]}""".toByteArray()
     }
 
-    private fun params(): Triple<SocksEndpoint, String, String>? {
-        val socks = args.getString("socks") ?: return null
-        val url = args.getString("onionUrl") ?: return null
-        val pin = args.getString("onionPin") ?: return null
-        return Triple(SocksEndpoint.parse(socks)!!, url, pin)
+    private fun params(): Triple<SocksEndpoint, String, String> {
+        val socks = args.getString("socks")
+        val url = args.getString("onionUrl")
+        val pin = args.getString("onionPin")
+        assumeTrue("onion arguments not provided", socks != null && url != null && pin != null)
+        return Triple(SocksEndpoint.parse(socks!!)!!, url!!, pin!!)
     }
 
     /** First connection to a hidden service can take a while (descriptor fetch + rendezvous): retry on transport errors only, never on a TLS refusal. */
@@ -50,7 +51,7 @@ class OnionRelayInstrumentedTest {
     }
 
     @Test fun theCorrectPinIsAcceptedAndTheRouteIsReportedProtected() {
-        val (socks, url, pin) = params() ?: run { assumeTrue("onion arguments not provided", false); return }
+        val (socks, url, pin) = params()
         val (cb, tracker) = TestRoutes.socks(ctx, socks)
         cb.pinRelay(url, pin)
         val r = eventually("pinned request") { cb.execute(url, "POST", "/v1/deliver", null, probe()) }
@@ -60,8 +61,8 @@ class OnionRelayInstrumentedTest {
     }
 
     @Test fun aWrongPinIsRefusedFailClosed() {
-        val (socks, url, pin) = params() ?: run { assumeTrue("onion arguments not provided", false); return }
-        // make sure the service is reachable at all, so a refusal below is the pin and not a dead circuit
+        val (socks, url, pin) = params()
+        // reachable first, so a refusal below is the pin and not a dead circuit
         val (ok, _) = TestRoutes.socks(ctx, socks)
         ok.pinRelay(url, pin)
         eventually("reachability") { ok.execute(url, "POST", "/v1/deliver", null, probe()) }
@@ -77,11 +78,12 @@ class OnionRelayInstrumentedTest {
     }
 
     @Test fun aSelfSignedOnionRelayWithoutAnyPinIsRefused() {
-        val (socks, url, pin) = params() ?: run { assumeTrue("onion arguments not provided", false); return }
+        val (socks, url, pin) = params()
         val (ok, _) = TestRoutes.socks(ctx, socks)
         ok.pinRelay(url, pin)
         eventually("reachability") { ok.execute(url, "POST", "/v1/deliver", null, probe()) }
-        val (cb, _) = TestRoutes.socks(ctx, socks) // no pin registered: the platform CA validation applies and must reject a self-signed certificate
+        // no pin registered: the platform CA validation applies and must reject a self-signed certificate
+        val (cb, _) = TestRoutes.socks(ctx, socks)
         try {
             cb.execute(url, "POST", "/v1/deliver", null, probe())
             fail("a self-signed certificate was accepted without a pin")
