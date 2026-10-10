@@ -163,7 +163,13 @@ fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (dir, host, ca, ip) = (&a[1], &a[2], &a[3], &a[4]);
     let alias_host = host.rsplit_once(':').map_or(host.as_str(), |(h, _)| h).to_owned();
-    let http = Arc::new(Curl { ca: ca.clone(), alias_host, ip: ip.clone(), pins: Default::default(), socks: std::env::var("CIPHER_PEER_SOCKS").ok() });
+    let http = Arc::new(Curl {
+        ca: ca.clone(),
+        alias_host,
+        ip: ip.clone(),
+        pins: Default::default(),
+        socks: std::env::var("CIPHER_PEER_SOCKS").ok(),
+    });
     // Optional: this peer's OWN relay uses a self-signed certificate and is authenticated by this pin (unpadded base64url SPKI SHA-256).
     if let Ok(pin) = std::env::var("CIPHER_PEER_OWN_PIN") {
         http.pins.lock().unwrap().insert(format!("https://{host}"), pin);
