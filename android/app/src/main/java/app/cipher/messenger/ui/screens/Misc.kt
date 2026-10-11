@@ -247,6 +247,7 @@ private fun eventText(k: SecurityEventKind): String = when (k) {
     SecurityEventKind.GROUP_MEMBER_REMOVED -> "A member was removed from a group; the group keys were rotated"
     SecurityEventKind.GROUP_ACCESS_REVOKED -> "You were removed from a group; its history is no longer available here"
     SecurityEventKind.REMOVED_MEMBER_MESSAGE_REJECTED -> "A message from a removed group member was rejected"
+    SecurityEventKind.GROUP_FORK_DETECTED -> "A group's home relay gave members inconsistent histories; the group is frozen"
 }
 
 @Composable
