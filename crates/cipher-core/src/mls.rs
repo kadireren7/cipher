@@ -812,6 +812,12 @@ impl MlsClient {
 
 /// Authentication secrets for a group's home relay, derived from one MLS epoch with the RFC 9420 exporter. Only members of that epoch can compute
 /// them; a member removed by the commit that created the epoch cannot (docs/CROSS_RELAY_GROUPS.md §7.1).
+impl std::fmt::Debug for HomeKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HomeKeys(redacted)")
+    }
+}
+
 pub struct HomeKeys {
     pub commit: Zeroizing<[u8; 32]>,
     pub read: Zeroizing<[u8; 32]>,

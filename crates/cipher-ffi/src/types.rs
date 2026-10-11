@@ -375,6 +375,7 @@ pub enum SecurityEventKind {
     StorageCorruptionDetected,
     GroupMemberRemoved,
     GroupAccessRevoked,
+    GroupForkDetected,
     RemovedMemberMessageRejected,
 }
 
@@ -402,6 +403,7 @@ impl From<&SecurityEvent> for SecurityEventFfi {
             E::StorageCorruptionDetected => (SecurityEventKind::StorageCorruptionDetected, None),
             E::GroupMemberRemoved { conversation_id } => (SecurityEventKind::GroupMemberRemoved, Some(conversation_id.clone())),
             E::GroupAccessRevoked { conversation_id } => (SecurityEventKind::GroupAccessRevoked, Some(conversation_id.clone())),
+            E::GroupForkDetected { conversation_id, .. } => (SecurityEventKind::GroupForkDetected, Some(conversation_id.clone())),
             E::RemovedMemberMessageRejected { conversation_id } => {
                 (SecurityEventKind::RemovedMemberMessageRejected, Some(conversation_id.clone()))
             }

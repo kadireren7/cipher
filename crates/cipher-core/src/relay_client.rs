@@ -66,6 +66,21 @@ pub enum GroupCommitResult {
     Gone,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub enum HomeCommitResult {
+    Accepted {
+        seq: u64,
+        chain: [u8; 32],
+    },
+    /// Another commit took the slot (or this relay's log is shorter/longer than assumed): rebase on `head_seq`.
+    Stale {
+        head_seq: u64,
+        head_chain: [u8; 32],
+    },
+    /// The relay's log or storage budget for this group is exhausted.
+    Full,
+}
+
 #[derive(Debug)]
 pub struct HttpRequest {
     pub method: &'static str,
@@ -376,6 +391,49 @@ impl RelayApi<'_> {
             410 => Ok(GroupCommitResult::Gone),
             _ => check(resp).map(|_| GroupCommitResult::Gone),
         }
+    }
+
+    /// Append a commit to a cross-relay group's home log. Authenticated by the group credential, not by this device (the relay never learns which
+    /// member or account is calling). `creds` belong to epoch `req.expected_seq` (for a creation: to the NEW epoch 1, which the request announces).
+    pub fn home_commit(
+        &self,
+        tag: &Id16,
+        creds: &crate::home::HomeCreds,
+        req: &cipher_wire::home::HomeCommitRequest,
+    ) -> Result<HomeCommitResult> {
+        use cipher_wire::home::{HomeCommitResponse, HomeStaleResponse};
+        req.validate().map_err(|_| SecurityError::Malformed("home commit"))?;
+        let path = format!("/v1/home/{tag}/commit");
+        let body = enc(req)?;
+        let authorization = Some(creds.sign_commit("POST", &path, &body));
+        let resp = self.transport.execute(self.endpoint, HttpRequest { method: "POST", path_and_query: path, authorization, body })?;
+        let chain32 = |v: &[u8]| -> Result<[u8; 32]> { v.try_into().map_err(|_| SecurityError::Transport("malformed response")) };
+        match resp.status {
+            200..=299 => {
+                let r: HomeCommitResponse = json(&resp)?;
+                Ok(HomeCommitResult::Accepted { seq: r.seq, chain: chain32(&r.chain)? })
+            }
+            409 => {
+                let r: HomeStaleResponse = json(&resp)?;
+                Ok(HomeCommitResult::Stale { head_seq: r.head_seq, head_chain: chain32(&r.head_chain)? })
+            }
+            429 if json::<serde_json::Value>(&resp).ok().and_then(|v| v["error"].as_str().map(str::to_owned)).as_deref()
+                == Some("queue full") =>
+            {
+                Ok(HomeCommitResult::Full)
+            }
+            _ => check(resp).map(|_| HomeCommitResult::Full),
+        }
+    }
+
+    /// Read entries after `after` with the read key of `creds.epoch` (see `cipher_wire::home`: a key reads up to the entry after its own epoch).
+    pub fn home_log(&self, tag: &Id16, creds: &crate::home::HomeCreds, after: u64) -> Result<cipher_wire::home::HomeLogResponse> {
+        let path = format!("/v1/home/{tag}/log?after={after}");
+        let authorization = Some(creds.sign_read("GET", &path, &[]));
+        let resp = check(
+            self.transport.execute(self.endpoint, HttpRequest { method: "GET", path_and_query: path, authorization, body: Vec::new() })?,
+        )?;
+        json(&resp)
     }
 
     pub fn download_blob(&self, id: &Id16) -> Result<Vec<u8>> {

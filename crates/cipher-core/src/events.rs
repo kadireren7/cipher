@@ -57,6 +57,12 @@ pub enum SecurityEvent {
     GroupMemberRemoved {
         conversation_id: String,
     },
+    /// The home relay of a cross-relay group returned a log that is not a log (gap, rewrite, rollback, substituted keys): the group is frozen
+    /// for sending until the user decides. `reason` is a static category.
+    GroupForkDetected {
+        conversation_id: String,
+        reason: String,
+    },
     /// THIS device was removed from the group: its history keys were deleted and the group state dropped.
     GroupAccessRevoked {
         conversation_id: String,

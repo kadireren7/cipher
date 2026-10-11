@@ -10,6 +10,7 @@ pub mod contact_card;
 pub mod error;
 pub mod events;
 pub mod history;
+pub mod home;
 pub mod kdf;
 pub mod keystore;
 pub mod mls;
