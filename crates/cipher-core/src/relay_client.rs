@@ -146,6 +146,11 @@ pub(crate) fn is_transient(e: &SecurityError) -> bool {
 
 pub(crate) const TRANSFER_ATTEMPTS: u32 = 4;
 
+/// Wall-clock budget of ONE logical transfer, measured from its first attempt: once it is spent no further attempt is started. Attempts are bounded by
+/// the platform's per-call deadline (the Android client allows at most 5 minutes), so the worst case is this budget plus one such attempt, never
+/// `TRANSFER_ATTEMPTS` times the per-call deadline. Failing early is the right outcome: the message stays queued and the user (or the outbox) tries again.
+pub(crate) const TRANSFER_BUDGET_MS: u64 = 150_000;
+
 /// Delay before retry number `attempt` (1-based): 1 s, 2 s, 4 s ... capped at 15 s, with up to 50 % random jitter so that many clients (or a
 /// client and the circuits Tor is rebuilding) do not retry in lockstep.
 pub(crate) fn retry_delay_ms(attempt: u32, entropy: u32) -> u64 {
@@ -153,9 +158,12 @@ pub(crate) fn retry_delay_ms(attempt: u32, entropy: u32) -> u64 {
     base + (base / 2) * u64::from(entropy % 1000) / 1000
 }
 
-/// Runs `op` up to `attempts` times, sleeping `retry_delay_ms` between transient failures. `sleep` is injected so tests do not wait.
+/// Runs `op` up to `attempts` times, sleeping `retry_delay_ms` between transient failures, and starts no new attempt once `budget_ms` of `elapsed_ms()` has
+/// passed (or would pass during the backoff). `sleep` and the clock are injected so tests neither wait nor depend on real time.
 pub(crate) fn retry_transient<T>(
     attempts: u32,
+    budget_ms: u64,
+    mut elapsed_ms: impl FnMut() -> u64,
     mut sleep: impl FnMut(u64),
     mut entropy: impl FnMut() -> u32,
     mut op: impl FnMut() -> Result<T>,
@@ -164,7 +172,11 @@ pub(crate) fn retry_transient<T>(
     loop {
         match op() {
             Err(e) if is_transient(&e) && n < attempts => {
-                sleep(retry_delay_ms(n, entropy()));
+                let delay = retry_delay_ms(n, entropy());
+                if elapsed_ms().saturating_add(delay) >= budget_ms {
+                    return Err(e);
+                }
+                sleep(delay);
                 n += 1;
             }
             other => return other,
@@ -348,8 +360,11 @@ impl RelayApi<'_> {
     /// that references a blob is only created after a successful upload, so nothing is delivered twice. Only real (https) endpoints sleep.
     fn transfer_retrying<T>(&self, op: impl FnMut() -> Result<T>) -> Result<T> {
         let real = self.endpoint.base().starts_with("https://");
+        let started = std::time::Instant::now();
         retry_transient(
             TRANSFER_ATTEMPTS,
+            TRANSFER_BUDGET_MS,
+            || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             |ms| {
                 if real {
                     std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -562,6 +577,8 @@ mod retry_tests {
             let mut slept = Vec::new();
             let r: Result<()> = retry_transient(
                 4,
+                u64::MAX,
+                || 0,
                 |ms| slept.push(ms),
                 || 0,
                 || {
@@ -580,6 +597,8 @@ mod retry_tests {
         let mut calls = 0;
         let r = retry_transient(
             4,
+            u64::MAX,
+            || 0,
             |_| {},
             || 0,
             || {
@@ -592,6 +611,27 @@ mod retry_tests {
             },
         );
         assert_eq!(r.unwrap(), 3);
+    }
+
+    #[test]
+    fn the_time_budget_stops_retries_even_with_attempts_left() {
+        // every attempt "takes" 100 s on the injected clock and the budget is 150 s
+        let clock = std::cell::Cell::new(0u64);
+        let mut calls = 0;
+        let r: Result<()> = retry_transient(
+            4,
+            150_000,
+            || clock.get(),
+            |ms| clock.set(clock.get() + ms),
+            || 0,
+            || {
+                calls += 1;
+                clock.set(clock.get() + 100_000);
+                Err(t("timeout"))
+            },
+        );
+        assert!(matches!(r, Err(SecurityError::Transport("timeout"))), "the last transient error is returned, not masked");
+        assert_eq!(calls, 2, "100 s + backoff fits the budget, so a second attempt runs; after 200 s no third attempt may start");
     }
 
     #[test]

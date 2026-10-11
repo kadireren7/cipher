@@ -2543,7 +2543,7 @@
     },
     {
       "id": "MR-015",
-      "statement": "Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts, with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message.",
+      "statement": "Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts and a 150 s wall-clock budget per logical transfer (no new attempt after it, so retries cannot multiply the per-call deadline), with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message.",
       "status": "partial",
       "threats": [
         "A2",
@@ -2562,6 +2562,10 @@
         {
           "kind": "rust",
           "name": "success_after_a_transient_failure_stops_retrying"
+        },
+        {
+          "kind": "rust",
+          "name": "the_time_budget_stops_retries_even_with_attempts_left"
         },
         {
           "kind": "rust",

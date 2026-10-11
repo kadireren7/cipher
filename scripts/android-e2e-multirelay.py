@@ -181,6 +181,11 @@ def onion_reachable(host_port, pin_b64):
     return False
 
 
+def net_diag():
+    """The app's debug-build network log: one content-free line per HTTP call (kind, bytes, duration, outcome, consecutive failures)."""
+    return sh(ADB, "logcat", "-d", "-v", "time", "CipherNet:I", "*:S").stdout.strip()[-6000:]
+
+
 def instrument(phase, **kw):
     kw = {**EXTRA, **kw}
     a = [ADB, "shell", "am", "instrument", "-w", "-r", "-e", "class", "app.cipher.messenger.MultiRelayE2EInstrumentedTest#phase", "-e", "phase", phase]
@@ -188,8 +193,18 @@ def instrument(phase, **kw):
         a += ["-e", k, v]
     a.append(RUNNER)
     sh(ADB, "logcat", "-c")
-    r = sh(*a, timeout=600)
+    t0 = time.monotonic()
+    try:
+        r = sh(*a, timeout=600)
+    except subprocess.TimeoutExpired:
+        # the limit is deliberately not raised: report WHERE the time went (structured, content-free CipherNet lines) and fail
+        print(f"--- phase '{phase}' exceeded 600 s; network diagnostics (CipherNet) ---\n{net_diag()}\n---", flush=True)
+        raise
     out = r.stdout
+    print(f"phase '{phase}' took {time.monotonic() - t0:.0f} s", flush=True)
+    diag = net_diag()
+    if diag and (EXTRA.get("socks") or "okhttp" in out.lower()):
+        print(f"network diagnostics for '{phase}':\n{diag}", flush=True)
     ok = "OK (1 test)" in out and "FAILURES" not in out and "INSTRUMENTATION_RESULT: shortMsg" not in out
     vals = dict(re.findall(r"INSTRUMENTATION_STATUS: (\w+)=(\S+)", out))
     if not ok:

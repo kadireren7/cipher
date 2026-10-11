@@ -95,7 +95,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | GR-008 | The home relay is part of the MLS-authenticated group metadata and cannot change, appear or disappear after creation; ordinary groups encode byte-identically to before; a cross-relay group cannot be created unless the creator's relay is named. | partial | 2 |
 | MR-013 | A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once; one device (or one capability) may have at most 2 uploads in flight. | automated | 3 |
 | MR-014 | On a relay whose clients all arrive from one local address (onion service behind Tor, reverse proxy; or any loopback peer) failed authentication from any client never blocks other clients' valid requests, and per-address buckets are pooled and scaled instead of shared at ordinary size; where the address identifies a client the failed-authentication lockout is unchanged. | automated | 2 |
-| MR-015 | Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts, with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message. | partial | 4 |
+| MR-015 | Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts and a 150 s wall-clock budget per logical transfer (no new attempt after it, so retries cannot multiply the per-call deadline), with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message. | partial | 5 |
 | GR-009 | The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged. | automated | 1 |
 | GR-010 | When the home relay of a cross-relay group stays unreachable or no longer recognises the group, the user is told once per streak (sooner for 'does not recognise'), membership changes are refused with a specific reason, messages keep flowing, and a successor group (new id, new home, every member must accept again) can be created; nothing is migrated or re-pointed silently, and a healthy group cannot be 'replaced'. | partial | 1 |
 
@@ -1140,7 +1140,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
   * `garbage_requests_cannot_lock_legitimate_users_out_of_a_shared_source_relay` (Rust)
   * `an_attributable_source_still_gets_the_failed_auth_lockout` (Rust)
 
-## MR-015 — Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts, with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message.
+## MR-015 — Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts and a 150 s wall-clock budget per logical transfer (no new attempt after it, so retries cannot multiply the per-call deadline), with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message.
 
 * **Status:** partial
 * **Threats (docs/THREAT_MODEL.md):** A2, A4
@@ -1150,6 +1150,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
   * `only_transient_failures_are_retried_and_only_a_bounded_number_of_times` (Rust)
   * `delays_grow_are_capped_and_jittered` (Rust)
   * `success_after_a_transient_failure_stops_retrying` (Rust)
+  * `the_time_budget_stops_retries_even_with_attempts_left` (Rust)
   * `statuses_are_classified` (Rust)
 
 ## GR-009 — The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged.

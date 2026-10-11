@@ -1,6 +1,7 @@
 package app.cipher.messenger
 
 import android.os.Bundle
+import android.util.Log
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.platform.app.InstrumentationRegistry
 import app.cipher.messenger.net.OkHttpCallbacks
@@ -65,11 +66,15 @@ class MultiRelayE2EInstrumentedTest {
      */
     private fun <T> retryOnTorOffline(what: String, block: () -> T): T {
         var attempt = 1
+        val start = System.currentTimeMillis()
         while (true) {
+            val t0 = System.currentTimeMillis()
             try {
-                return block().also { status("retries_$what" to (attempt - 1).toString()) }
+                return block().also { status("retries_$what" to (attempt - 1).toString(), "ms_$what" to (System.currentTimeMillis() - start).toString()) }
             } catch (e: CipherException.Offline) {
-                if (args.getString("socks") == null || attempt >= 4) throw e
+                // the core already retries with its own budget; this outer loop is bounded in TIME too, so attempts can never multiply into the driver's phase limit
+                Log.i("CipherNet", "test-retry what=$what attempt=$attempt ms=${System.currentTimeMillis() - t0} totalMs=${System.currentTimeMillis() - start}")
+                if (args.getString("socks") == null || attempt >= 4 || System.currentTimeMillis() - start > 240_000) throw e
                 attempt++
             }
         }
