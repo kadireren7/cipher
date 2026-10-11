@@ -91,7 +91,14 @@ class MultiRelayE2EInstrumentedTest {
     private fun waitFor(what: String, seconds: Int = 90, cond: () -> Boolean) {
         val end = System.currentTimeMillis() + seconds * 1000L * (if (args.getString("socks") != null) 4 else 1) // Tor circuits are slow
         while (System.currentTimeMillis() < end) {
-            if (cond()) return
+            try {
+                if (cond()) return
+            } catch (e: CipherException.Offline) {
+                // Over Tor a single poll can fail transiently (an onion connect that does not complete). The app's own sync loop just polls again, so do we;
+                // the deadline above still bounds the wait, and the asserted end state is unchanged.
+                if (args.getString("socks") == null) throw e
+                Log.i("CipherNet", "test-poll-offline what=$what")
+            }
             Thread.sleep(1000)
         }
         throw AssertionError("timed out waiting for: $what")

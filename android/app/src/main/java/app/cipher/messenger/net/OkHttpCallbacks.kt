@@ -4,7 +4,6 @@ import app.cipher.messenger.BuildConfig
 import app.cipher.messenger.util.SafeLog
 import java.io.File
 import java.io.IOException
-import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 import okhttp3.CertificatePinner
@@ -142,7 +141,8 @@ class OkHttpCallbacks(
             is SSLException -> HttpFault.Tls()
             // The proxy refused/was unreachable, or spoke malformed SOCKS: the privacy route is unavailable. The message stays queued; nothing else is tried.
             is java.net.ConnectException, is java.net.NoRouteToHostException, is java.net.SocketException -> HttpFault.RouteUnavailable()
-            is SocketTimeoutException -> HttpFault.Timeout()
+            // includes SocketTimeoutException AND the call deadline (OkHttp reports that one as a plain InterruptedIOException("timeout"))
+            is java.io.InterruptedIOException -> HttpFault.Timeout()
             is java.net.UnknownHostException -> HttpFault.Network()
             else -> HttpFault.Io()
         }
