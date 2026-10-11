@@ -398,7 +398,13 @@ try:
         gdata = bytes((i * 11 + 5) % 247 for i in range(150_000))
         gpath = f"{tmp}/g-carol.bin"
         open(gpath, "wb").write(gdata)
-        r = carol.cmd(f"file {gids['carol']} {gpath} application/octet-stream")
+        # A file in a group needs every member's mailbox; until the members have introduced themselves the engine refuses (and the caller retries).
+        r = ""
+        for _ in range(30):
+            r = carol.cmd(f"file {gids['carol']} {gpath} application/octet-stream")
+            if "Ok" in r:
+                break
+            bob.cmd("sync"); carol.cmd("sync"); time.sleep(2)
         pumps = [Pump(bob), Pump(carol)]
         for pm in pumps:
             pm.start()

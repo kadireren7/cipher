@@ -936,7 +936,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 * **Known gap:** A relay that silently withholds after answering `queued` is still undetectable except by missing receipts (ST-032).
 * **Tests:**
   * `when_the_peers_relay_is_down_messages_stay_pending_and_are_delivered_after_it_returns` (Rust)
-  * `groups_and_commits_with_a_peer_on_another_relay_are_refused_not_improvised` (Rust)
+  * `a_one_to_one_conversation_on_another_relay_performs_no_commits_but_groups_use_a_home_relay` (Rust)
 
 ## MR-006 — Cross-relay attachments (image, PDF, video, voice, arbitrary file, thumbnails) are encrypted before upload, stored by both relays as ciphertext only, downloaded by the recipient from his own relay, and fail closed when tampered, truncated, swapped or missing; uploads need a live capability and respect per-capability and global quotas.
 

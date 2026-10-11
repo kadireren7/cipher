@@ -2068,7 +2068,7 @@
         },
         {
           "kind": "rust",
-          "name": "groups_and_commits_with_a_peer_on_another_relay_are_refused_not_improvised"
+          "name": "a_one_to_one_conversation_on_another_relay_performs_no_commits_but_groups_use_a_home_relay"
         }
       ],
       "gap": "A relay that silently withholds after answering `queued` is still undetectable except by missing receipts (ST-032)."
