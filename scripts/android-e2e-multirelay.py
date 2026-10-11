@@ -132,7 +132,7 @@ def start_tor():
     """A real Tor client (own DataDirectory, SocksPort on 127.0.0.1) with two hidden services pointing at the local relay ports."""
     os.makedirs(f"{tmp}/tor", mode=0o700); os.makedirs(f"{tmp}/hsA", mode=0o700); os.makedirs(f"{tmp}/hsB", mode=0o700)
     open(f"{tmp}/torrc", "w").write(
-        f"DataDirectory {tmp}/tor\nSocksPort 127.0.0.1:{TOR_SOCKS}\nControlPort 0\nLog notice stdout\nLog [rend,hs,circ]info file {tmp}/tor-hs.log\n"
+        f"DataDirectory {tmp}/tor\nSocksPort 127.0.0.1:{TOR_SOCKS}\nControlPort 0\nLog notice stdout\nLog [rend,circ]info file {tmp}/tor-hs.log\n"
         f"HiddenServiceDir {tmp}/hsA\nHiddenServicePort {PA} 127.0.0.1:{LA}\n"
         f"HiddenServiceDir {tmp}/hsB\nHiddenServicePort {PB} 127.0.0.1:{LB}\n")
     logf = open(f"{tmp}/tor.log", "w")
