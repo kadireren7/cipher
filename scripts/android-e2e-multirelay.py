@@ -183,7 +183,8 @@ def onion_reachable(host_port, pin_b64):
 
 def net_diag():
     """The app's debug-build network log: one content-free line per HTTP call (kind, bytes, duration, outcome, consecutive failures)."""
-    return sh(ADB, "logcat", "-d", "-v", "time", "CipherNet:I", "*:S").stdout.strip()[-6000:]
+    lines = sh(ADB, "logcat", "-d", "-v", "time", "Cipher:I", "CipherNet:I", "*:S").stdout.strip().splitlines()
+    return "\n".join(l for l in lines if " NET " in l or "test-retry" in l)[-6000:]
 
 
 def instrument(phase, **kw):

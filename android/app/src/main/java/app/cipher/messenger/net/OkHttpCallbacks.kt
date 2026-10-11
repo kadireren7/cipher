@@ -1,6 +1,7 @@
 package app.cipher.messenger.net
 
 import app.cipher.messenger.BuildConfig
+import app.cipher.messenger.util.SafeLog
 import java.io.File
 import java.io.IOException
 import java.net.SocketTimeoutException
@@ -21,35 +22,38 @@ import uniffi.cipher_ffi.HttpFault
 import uniffi.cipher_ffi.HttpReply
 
 /**
- * Privacy-preserving network diagnostics (debug builds only; release builds log nothing). One line per HTTP call: a per-process sequence number, a coarse
- * kind (`api` or `blob`, never a path, id or host), the method, the byte count, the duration, the outcome class and the number of consecutive failures of
- * that kind. No bodies, keys, identities, tokens or URLs. Retries are visible as consecutive `fail` lines with a growing `failsInRow`.
+ * Privacy-preserving network diagnostics (debug builds only; R8 also strips them from release). One line per HTTP call through [SafeLog.net]:
+ * closed enums and integers only (sequence number, kind api/blob, byte count, duration, outcome class, consecutive failures of that kind).
+ * No bodies, keys, identities, tokens, paths or hosts. Retries are visible as consecutive failing lines with a growing `failsInRow`.
  */
 internal object NetDiag {
-    private val seq = java.util.concurrent.atomic.AtomicLong()
-    private val failsInRow = java.util.concurrent.ConcurrentHashMap<String, Int>()
+    private val seq = java.util.concurrent.atomic.AtomicInteger()
+    private val failsInRow = java.util.concurrent.ConcurrentHashMap<SafeLog.NetKind, Int>()
 
-    fun kind(pathAndQuery: String) = if (pathAndQuery.startsWith("/v1/blobs")) "blob" else "api"
+    fun kind(pathAndQuery: String) = if (pathAndQuery.startsWith("/v1/blobs")) SafeLog.NetKind.BLOB else SafeLog.NetKind.API
 
-    fun <T> track(kind: String, method: String, bytes: Long, timeoutS: Long, block: () -> T): T {
+    fun <T> track(kind: SafeLog.NetKind, bytes: Long, block: () -> T): T {
         val id = seq.incrementAndGet()
         val t0 = System.nanoTime()
-        var outcome = "ok"
+        var outcome = SafeLog.NetOutcome.OK
         try {
             return block()
         } catch (e: HttpFault) {
-            outcome = e.javaClass.simpleName.lowercase()
+            outcome = when (e) {
+                is HttpFault.Timeout -> SafeLog.NetOutcome.TIMEOUT
+                is HttpFault.RouteUnavailable -> SafeLog.NetOutcome.ROUTE_UNAVAILABLE
+                is HttpFault.Tls -> SafeLog.NetOutcome.TLS
+                is HttpFault.Network -> SafeLog.NetOutcome.NETWORK
+                else -> SafeLog.NetOutcome.IO
+            }
             throw e
         } catch (e: Throwable) {
-            outcome = "error"
+            outcome = SafeLog.NetOutcome.OTHER
             throw e
         } finally {
-            val ms = (System.nanoTime() - t0) / 1_000_000
-            val n = if (outcome == "ok") 0.also { failsInRow[kind] = 0 } else failsInRow.merge(kind, 1, Int::plus) ?: 1
-            if (BuildConfig.DEBUG) {
-                android.util.Log.i("CipherNet", "req=$id kind=$kind method=$method bytes=$bytes limitS=$timeoutS ms=$ms " +
-                        "outcome=$outcome failsInRow=$n")
-            }
+            val ms = ((System.nanoTime() - t0) / 1_000_000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val n = if (outcome == SafeLog.NetOutcome.OK) 0.also { failsInRow[kind] = 0 } else failsInRow.merge(kind, 1, Int::plus) ?: 1
+            if (BuildConfig.DEBUG) SafeLog.net(kind, outcome, id, bytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), ms, n)
         }
     }
 
@@ -150,7 +154,7 @@ class OkHttpCallbacks(
 
     override fun execute(baseUrl: String, method: String, pathAndQuery: String, authorization: String?, body: ByteArray): HttpReply {
         val rb = if (method == "GET") null else body.toRequestBody("application/octet-stream".toMediaType())
-        return NetDiag.track(NetDiag.kind(pathAndQuery), method, body.size.toLong(), NetDiag.callLimitSeconds(body.size.toLong())) {
+        return NetDiag.track(NetDiag.kind(pathAndQuery), body.size.toLong()) {
             try {
                 call(request(baseUrl, pathAndQuery, authorization, method, rb), body.size.toLong()).execute().use { r ->
                     val bytes = r.body.bytes()
@@ -168,7 +172,7 @@ class OkHttpCallbacks(
     override fun uploadFile(baseUrl: String, pathAndQuery: String, authorization: String?, filePath: String): HttpReply {
         val file = File(filePath)
         val size = file.length()
-        return NetDiag.track("blob", "POST", size, NetDiag.callLimitSeconds(size)) {
+        return NetDiag.track(SafeLog.NetKind.BLOB, size) {
             try {
                 val rb = file.asRequestBody("application/octet-stream".toMediaType())
                 call(request(baseUrl, pathAndQuery, authorization, "POST", rb), size).execute().use { r ->
@@ -185,7 +189,7 @@ class OkHttpCallbacks(
 
     override fun downloadFile(baseUrl: String, pathAndQuery: String, authorization: String?, destPath: String, maxBytes: ULong): UShort {
         val limit = maxBytes.toLong().coerceAtLeast(0)
-        return NetDiag.track("blob", "GET", limit, NetDiag.callLimitSeconds(limit)) {
+        return NetDiag.track(SafeLog.NetKind.BLOB, limit) {
             try {
                 call(request(baseUrl, pathAndQuery, authorization, "GET", null), limit).execute().use { r ->
                     if (r.code == 200) {
