@@ -36,7 +36,8 @@ PATTERNS = {
     "jwt": re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),
     "credential in url": re.compile(r"[a-z]+://[^/\s:@]+:[^/\s:@]{4,}@[^/\s]+"),
     "credential assignment": re.compile(r"(?i)\b(password|passwd|secret|api[_-]?key|auth[_-]?token|bearer)\b\s*[:=]\s*[\"']?[A-Za-z0-9+/_\-]{16,}"),
-    "absolute home path": re.compile(r"/(?:home|Users)/[A-Za-z0-9._-]+/"),
+    # A real absolute path starts at a path boundary; the relay's own URL path segment (/v1/home/{tag}/...) is not a user directory.
+    "absolute home path": re.compile(r"(?<![A-Za-z0-9_.-])/(?:home|Users)/[A-Za-z0-9._-]+/"),
     "e-mail address": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b"),
     "ipv4": re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
 }
