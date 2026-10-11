@@ -57,13 +57,17 @@ fn stalled_authenticated_upload_is_cut_off_and_frees_its_slot() {
 #[test]
 fn many_stalled_uploads_do_not_starve_a_good_one() {
     let w = World::new();
-    let alice = new_client();
-    w.register(&alice);
+    let good_dev = new_client();
+    w.register(&good_dev);
+    // Ten different devices (more than the 8 slots) each stall one upload.
+    let stallers: Vec<_> = (0..10).map(|_| new_client()).collect();
+    for c in &stallers {
+        w.register(c);
+    }
     let app = w.instance_with_body_idle(1);
     let blob = valid_blob();
-    let mk = |body: Body| {
-        let h =
-            sign_announced(&alice, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), &blob);
+    let mk = |who: &cipher_core::mls::MlsClient, body: Body| {
+        let h = sign_announced(who, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), &blob);
         Request::builder()
             .method("POST")
             .uri("/v1/blobs")
@@ -72,9 +76,8 @@ fn many_stalled_uploads_do_not_starve_a_good_one() {
             .body(body)
             .unwrap()
     };
-    // 12 stalled uploads at once (more than the 8 slots), then a good one right behind them.
-    let stalled: Vec<_> = (0..12).map(|_| mk(stalling_body(blob[..4].to_vec()))).collect();
-    let good = mk(Body::from(blob.clone()));
+    let stalled: Vec<_> = stallers.iter().map(|c| mk(c, stalling_body(blob[..4].to_vec()))).collect();
+    let good = mk(&good_dev, Body::from(blob.clone()));
     let (statuses, good_status) = w.rt.block_on(async {
         let handles: Vec<_> = stalled.into_iter().map(|r| tokio::spawn(app.clone().oneshot(r))).collect();
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -90,4 +93,44 @@ fn many_stalled_uploads_do_not_starve_a_good_one() {
         "stalled uploads end in 408 (or 503 when they could not even queue): {statuses:?}"
     );
     assert_eq!(good_status, 201, "the good upload waited for a slot instead of failing at once");
+}
+
+#[test]
+fn one_device_cannot_hold_more_than_its_share_of_upload_slots() {
+    let w = World::new();
+    let (alice, bob) = (new_client(), new_client());
+    w.register(&alice);
+    w.register(&bob);
+    let app = w.instance_with_body_idle(2);
+    let blob = valid_blob();
+    let mk = |who: &cipher_core::mls::MlsClient, body: Body| {
+        let h = sign_announced(who, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), &blob);
+        Request::builder()
+            .method("POST")
+            .uri("/v1/blobs")
+            .header("content-length", blob.len().to_string())
+            .header("authorization", h)
+            .body(body)
+            .unwrap()
+    };
+    // Alice opens four stalling uploads: two are admitted, the other two are refused at once (429) instead of occupying more slots.
+    let stalled: Vec<_> = (0..4).map(|_| mk(&alice, stalling_body(blob[..4].to_vec()))).collect();
+    let bob_ok = mk(&bob, Body::from(blob.clone()));
+    let (alice_statuses, bob_status) = w.rt.block_on(async {
+        let handles: Vec<_> = stalled.into_iter().map(|r| tokio::spawn(app.clone().oneshot(r))).collect();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let b = app.clone().oneshot(bob_ok).await.unwrap().status().as_u16();
+        let mut v = Vec::new();
+        for h in handles {
+            v.push(h.await.unwrap().unwrap().status().as_u16());
+        }
+        v.sort_unstable();
+        (v, b)
+    });
+    assert_eq!(
+        alice_statuses,
+        [408, 408, 429, 429],
+        "two stalled uploads were admitted (and cut off), two were refused: {alice_statuses:?}"
+    );
+    assert_eq!(bob_status, 201, "another device is unaffected");
 }

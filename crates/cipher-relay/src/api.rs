@@ -67,6 +67,41 @@ const MAX_CONCURRENT_UPLOADS: usize = 8;
 /// Multiplier for per-address buckets when many clients share one source address (an onion service sees only its local Tor daemon).
 const SHARED_SOURCE_SCALE: f64 = 25.0;
 
+/// One device (authenticated uploads) or one capability (capability uploads) may have this many uploads in flight at once. Together with the
+/// body-idle deadline this keeps a single credential from occupying all `MAX_CONCURRENT_UPLOADS` slots by trickling bytes.
+const MAX_UPLOADS_PER_PRINCIPAL: u8 = 2;
+
+/// Counts in-flight uploads per principal (a device id or a capability, as bytes); released on drop. In-memory and per relay instance: a limit
+/// on resource use, not a security boundary, so it need not be shared between instances.
+#[derive(Default)]
+struct UploadCounts(std::sync::Mutex<std::collections::HashMap<[u8; 16], u8>>);
+
+struct UploadTicket<'a>(&'a UploadCounts, [u8; 16]);
+
+impl UploadCounts {
+    fn enter(&self, principal: [u8; 16]) -> Option<UploadTicket<'_>> {
+        let mut m = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = m.entry(principal).or_insert(0);
+        if *n >= MAX_UPLOADS_PER_PRINCIPAL {
+            return None;
+        }
+        *n += 1;
+        Some(UploadTicket(self, principal))
+    }
+}
+
+impl Drop for UploadTicket<'_> {
+    fn drop(&mut self) {
+        let mut m = self.0 .0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = m.get_mut(&self.1) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.remove(&self.1);
+            }
+        }
+    }
+}
+
 /// How long a new upload may wait for a free slot before it is told to retry (503). A short queue absorbs the bursts of a multi-file send without
 /// letting waiting requests pile up.
 const UPLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
@@ -101,6 +136,7 @@ pub struct AppState {
     inflight: Semaphore,
     /// Large uploads that may be buffered at the same time: bounds worst-case memory to `MAX_CONCURRENT_UPLOADS * MAX_BLOB_BYTES`.
     uploads: Semaphore,
+    upload_counts: UploadCounts,
 }
 
 impl std::fmt::Debug for AppState {
@@ -113,7 +149,17 @@ impl AppState {
     pub fn new(store: Arc<PgStore>, cfg: Arc<Config>, clock: Arc<dyn Clock>, push: Arc<dyn PushNotifier>, limits: Limits) -> Self {
         let keys = KeyHasher::new(cfg.pepper);
         let inflight = Semaphore::new(cfg.max_inflight.max(1));
-        Self { store, cfg, clock, push, limits, keys, inflight, uploads: Semaphore::new(MAX_CONCURRENT_UPLOADS) }
+        Self {
+            store,
+            cfg,
+            clock,
+            push,
+            limits,
+            keys,
+            inflight,
+            uploads: Semaphore::new(MAX_CONCURRENT_UPLOADS),
+            upload_counts: UploadCounts::default(),
+        }
     }
 
     /// True when the connection's peer address does not identify the client (see `Config::shared_source`). `None` (in-process tests) is unknown,
@@ -405,6 +451,7 @@ async fn upload_blob(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     let (dev, announced) =
         crate::auth::authenticate_body(&st, "POST", &path_and_query, authorization.as_deref(), crate::auth::BodyAuth::Announced, ip)
             .await?;
+    let _ticket = st.upload_counts.enter(dev.0).ok_or(ApiError::RateLimited)?;
     let _slot = match tokio::time::timeout(UPLOAD_SLOT_WAIT, st.uploads.acquire()).await {
         Ok(Ok(p)) => p,
         _ => return Err(ApiError::Overloaded),
@@ -463,6 +510,7 @@ async fn upload_blob_by_cap(State(st): S, req: Request<Body>) -> Result<Response
     if !st.store.cap_is_live(&cap, now).await? {
         return Err(ApiError::NotFound); // unknown, revoked, expired: one outcome, before any body is buffered
     }
+    let _ticket = st.upload_counts.enter(cap.0).ok_or(ApiError::RateLimited)?;
     let _slot = match tokio::time::timeout(UPLOAD_SLOT_WAIT, st.uploads.acquire()).await {
         Ok(Ok(p)) => p,
         _ => return Err(ApiError::Overloaded),

@@ -2497,7 +2497,7 @@
     },
     {
       "id": "MR-013",
-      "statement": "A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once.",
+      "statement": "A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once; one device (or one capability) may have at most 2 uploads in flight.",
       "status": "automated",
       "threats": [
         "A2",
@@ -2512,9 +2512,13 @@
         {
           "kind": "rust",
           "name": "many_stalled_uploads_do_not_starve_a_good_one"
+        },
+        {
+          "kind": "rust",
+          "name": "one_device_cannot_hold_more_than_its_share_of_upload_slots"
         }
       ],
-      "gap": "A client that sends slowly but steadily enough to stay inside the idle deadline can still hold upload slots (ST-057); there is no per-device concurrent-upload limit. Not measured against real Tor stalls except through repeated CI runs."
+      "gap": "A principal that opens many credentials (many devices) can still occupy the 8 slots; slow-but-steady uploads inside the idle deadline are admitted. The per-principal counter is per relay instance. Not measured against real Tor stalls except through repeated CI runs."
     },
     {
       "id": "MR-014",

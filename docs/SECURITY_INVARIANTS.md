@@ -93,7 +93,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | GR-006 | Delivery in cross-relay groups: messages from an offline member's peers arrive complete and in order after it returns; one unreachable member relay does not stall the others (outbox ordering is per recipient device); a Welcome for an unreachable relay waits without blocking the group and is delivered before anything else for that device; a member added later reaches and is reached by every member; commits continue after a home-relay restart. | partial | 7 |
 | GR-007 | Least knowledge: the home relay stores no account, device or member identifier for a cross-relay group (opaque tag, ciphertext, public keys); other relays never see the log; every relay holds only ciphertext of attachments (one copy per member relay); bounds protect the home relay (per-group bytes/entries, per-relay group count, per-source and per-tag rate limits). | partial | 5 |
 | GR-008 | The home relay is part of the MLS-authenticated group metadata and cannot change, appear or disappear after creation; ordinary groups encode byte-identically to before; a cross-relay group cannot be created unless the creator's relay is named. | partial | 2 |
-| MR-013 | A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once. | automated | 2 |
+| MR-013 | A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once; one device (or one capability) may have at most 2 uploads in flight. | automated | 3 |
 | MR-014 | On a relay whose clients all arrive from one local address (onion service behind Tor, reverse proxy; or any loopback peer) failed authentication from any client never blocks other clients' valid requests, and per-address buckets are pooled and scaled instead of shared at ordinary size; where the address identifies a client the failed-authentication lockout is unchanged. | automated | 2 |
 | MR-015 | Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts, with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message. | partial | 4 |
 | GR-009 | The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged. | automated | 1 |
@@ -1119,15 +1119,16 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
   * `ordinary_groups_encode_exactly_as_before_and_the_home_relay_is_immutable_and_validated` (Rust)
   * `a_cross_relay_group_cannot_be_created_unless_this_relay_is_named` (Rust)
 
-## MR-013 — A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once.
+## MR-013 — A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once; one device (or one capability) may have at most 2 uploads in flight.
 
 * **Status:** automated
 * **Threats (docs/THREAT_MODEL.md):** A2, A4
 * **Scope tested:** Real router + PostgreSQL, streaming request bodies that stall; idle deadline set to 1 s in the test (20 s default, 90 s on the onion profile).
-* **Known gap:** A client that sends slowly but steadily enough to stay inside the idle deadline can still hold upload slots (ST-057); there is no per-device concurrent-upload limit. Not measured against real Tor stalls except through repeated CI runs.
+* **Known gap:** A principal that opens many credentials (many devices) can still occupy the 8 slots; slow-but-steady uploads inside the idle deadline are admitted. The per-principal counter is per relay instance. Not measured against real Tor stalls except through repeated CI runs.
 * **Tests:**
   * `stalled_authenticated_upload_is_cut_off_and_frees_its_slot` (Rust)
   * `many_stalled_uploads_do_not_starve_a_good_one` (Rust)
+  * `one_device_cannot_hold_more_than_its_share_of_upload_slots` (Rust)
 
 ## MR-014 — On a relay whose clients all arrive from one local address (onion service behind Tor, reverse proxy; or any loopback peer) failed authentication from any client never blocks other clients' valid requests, and per-address buckets are pooled and scaled instead of shared at ordinary size; where the address identifies a client the failed-authentication lockout is unchanged.
 
