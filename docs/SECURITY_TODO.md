@@ -104,11 +104,6 @@ CAN COMPLETE NOW = done in this environment (see status column above). REQUIRES 
 | ST-048 | CAN COMPLETE (not done) | Kotlin UI |
 | ST-049 | REQUIRES PHYSICAL DEVICE | |
 | ST-050 | CAN COMPLETE (not done) | with ST-048 |
-| ST-051 | H | **New.** Any current member of a cross-relay group can freeze membership changes (an invalid commit consumes a home-log position and captures the next epoch's credentials; the relay cannot validate MLS commits). Detected and reported, not prevented; recovery = a new group | OPEN — DESIGN LIMIT | Needs relay-side MLS validation (breaks the untrusted-relay model) or a recovery commit signed by owners (not designed). Weaker than single-relay groups |
-| ST-052 | M | **New.** A cross-relay group's home relay cannot be migrated or replaced; if it is lost, membership changes stop (messages continue). No log pruning/retention policy beyond hard bounds | OPEN | `CROSS_RELAY_GROUPS.md` §8.3 |
-| ST-053 | M | **New.** Cross-relay groups were verified only with in-process transports (3–4 relays, real PostgreSQL). Not tested: real TLS/Tor between processes, Android emulator or device, large groups, multi-device accounts, interrupted group-file uploads | OPEN | add a group phase to `android-e2e-multirelay.py` and an `e2e_peer` group command over real TLS |
-| ST-054 | L | **New.** Capability introductions in cross-relay groups are hearsay from owners/admins (a malicious member can misdirect others' messages to a relay it controls); the home relay sees poll timing and source addresses (group size/online pattern) unless polled over Tor; after a removal remaining members keep old capabilities for a 1 h grace | OPEN — DOCUMENTED | `CROSS_RELAY_GROUPS.md` §8.1 items 5–6, §8.3 |
-| ST-055 | L | **New.** Tor circuit timeouts make the Android-over-Tor E2E flaky (3 of 17 repetitions failed on timeouts, none on TLS/pin/data). Causes are not yet attributed (hidden-service logging added to the driver) | OPEN — INVESTIGATING | see MASTER_IMPLEMENTATION_STATUS.md Session 4 |
 | ST-051 | DESIGN LIMIT | member can freeze membership |
 | ST-052 | CAN COMPLETE (not done) | home migration / retention |
 | ST-053 | CAN COMPLETE (not done) | real-transport group tests |
