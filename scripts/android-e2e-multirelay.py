@@ -9,7 +9,7 @@ Needs: a booted emulator reachable by adb (host = 10.0.2.2 from inside), built A
 target/release/cipher-relay, target/release/examples/e2e_peer, android/build/test-ca (scripts/make-test-ca.sh), docker container cipher-pg.
 Usage: scripts/android-e2e-multirelay.py
 """
-import base64, hashlib, os, re, subprocess, sys, tempfile, threading, time
+import base64, hashlib, os, re, shutil, subprocess, sys, tempfile, threading, time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SDK = os.environ.get("ANDROID_HOME", os.path.expanduser("~/android-sdk"))
@@ -151,22 +151,41 @@ def instrument_class(cls, **kw):
 
 
 def start_tor():
-    """A real Tor client (own DataDirectory, SocksPort on 127.0.0.1) with two hidden services pointing at the local relay ports."""
-    os.makedirs(f"{tmp}/tor", mode=0o700); os.makedirs(f"{tmp}/hsA", mode=0o700); os.makedirs(f"{tmp}/hsB", mode=0o700)
+    """A real Tor client (own DataDirectory, SocksPort on 127.0.0.1) with two hidden services pointing at the local relay ports.
+
+    Bootstrap is infrastructure, not product: a normal one takes ~10 s, but a public directory mirror can serve corrupt microdescriptors ("Bogus ntor-onion-key",
+    CI run 38149005445 rep 1 sat at 50% for 5 minutes). So each attempt gets 90 s; on a stall Tor is stopped, its DataDirectory (cached directory data only; the
+    hidden-service keys are kept) is wiped and it is started again, at most 3 times. Every attempt and its outcome is printed. The app phases are untouched.
+    """
+    for d in ("tor", "hsA", "hsB"):
+        os.makedirs(f"{tmp}/{d}", mode=0o700, exist_ok=True)
     open(f"{tmp}/torrc", "w").write(
         f"DataDirectory {tmp}/tor\nSocksPort 127.0.0.1:{TOR_SOCKS}\nControlPort 0\nLog notice stdout\nLog [rend,circ]info file {tmp}/tor-hs.log\n"
         f"HiddenServiceDir {tmp}/hsA\nHiddenServicePort {PA} 127.0.0.1:{LA}\n"
         f"HiddenServiceDir {tmp}/hsB\nHiddenServicePort {PB} 127.0.0.1:{LB}\n")
-    logf = open(f"{tmp}/tor.log", "w")
-    p = subprocess.Popen(["tor", "-f", f"{tmp}/torrc"], stdout=logf, stderr=subprocess.STDOUT)
-    procs.append(p)
-    for _ in range(360):
-        time.sleep(1)
-        if "Bootstrapped 100%" in open(f"{tmp}/tor.log").read() and os.path.exists(f"{tmp}/hsB/hostname"):
-            return open(f"{tmp}/hsA/hostname").read().strip(), open(f"{tmp}/hsB/hostname").read().strip()
-        if p.poll() is not None:
-            break
-    raise SystemExit("tor did not bootstrap: " + open(f"{tmp}/tor.log").read()[-600:])
+    for attempt in range(1, 4):
+        logf = open(f"{tmp}/tor.log", "a")
+        p = subprocess.Popen(["tor", "-f", f"{tmp}/torrc"], stdout=logf, stderr=subprocess.STDOUT)
+        procs.append(p)
+        t0 = time.monotonic()
+        for _ in range(90):
+            time.sleep(1)
+            log = open(f"{tmp}/tor.log").read()
+            if "Bootstrapped 100%" in log and os.path.exists(f"{tmp}/hsB/hostname"):
+                print(f"tor bootstrap attempt {attempt}: ok after {time.monotonic() - t0:.0f} s", flush=True)
+                return open(f"{tmp}/hsA/hostname").read().strip(), open(f"{tmp}/hsB/hostname").read().strip()
+            if p.poll() is not None:
+                break
+        tail = open(f"{tmp}/tor.log").read()[-300:].replace("\n", " | ")
+        print(f"tor bootstrap attempt {attempt}: NOT bootstrapped after {time.monotonic() - t0:.0f} s; restarting with a fresh DataDirectory. Last log: {tail}", flush=True)
+        p.terminate()
+        try:
+            p.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            p.kill()
+        shutil.rmtree(f"{tmp}/tor", ignore_errors=True)
+        os.makedirs(f"{tmp}/tor", mode=0o700)
+    raise SystemExit("tor did not bootstrap in 3 attempts: " + open(f"{tmp}/tor.log").read()[-600:])
 
 
 def onion_reachable(host_port, pin_b64):
