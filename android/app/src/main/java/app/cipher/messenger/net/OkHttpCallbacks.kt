@@ -45,9 +45,6 @@ class OkHttpCallbacks(
         .protocols(listOf(Protocol.HTTP_1_1))
         .followRedirects(false)
         .followSslRedirects(false)
-        // No silent transport-level re-sends: OkHttp would replay the SAME signed request (same nonce) on a stale connection, which the relay must
-        // treat as a replay. The core retries transient failures itself, with a fresh signature, bounded backoff and jitter.
-        .retryOnConnectionFailure(false)
         // Through the SOCKS proxy the handshake includes building a Tor circuit (onion services: rendezvous). Typical 10-30 s; CI logs show Tor itself abandoning
         // stalled circuits after ~60 s and retrying, so a shorter limit would cut off a retry that is about to succeed. Still fail-closed: no fallback route.
         .connectTimeout(if (route.directDevRoute()) 10 else 120, TimeUnit.SECONDS)
