@@ -331,6 +331,47 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_groups_encode_exactly_as_before_and_the_home_relay_is_immutable_and_validated() {
+        // byte-identical to the pre-home encoding: an ordinary group carries no `home` field at all
+        let (m, members) = group();
+        let json = String::from_utf8(m.encode().unwrap()).unwrap();
+        assert!(!json.contains("home"), "{json}");
+        assert_eq!(GroupMeta::decode(json.as_bytes()).unwrap(), m);
+
+        let relay = cipher_wire::RelayDescriptor::new("https://relay-a.test", None).unwrap();
+        let homed = m.clone().with_home(relay.clone());
+        let b = homed.encode().unwrap();
+        assert_eq!(GroupMeta::decode(&b).unwrap(), homed);
+        // an owner's rename keeps the home; any attempt to change or drop it is refused, even by the owner
+        let mut renamed = homed.clone();
+        renamed.name = "Renamed".into();
+        assert!(authorize_commit(&homed, &members, &CommitInfo { new_meta: Some(renamed), ..commit(1) }).is_ok());
+        let mut moved = homed.clone();
+        moved.home = Some(cipher_wire::RelayDescriptor::new("https://elsewhere.test", None).unwrap());
+        assert_eq!(
+            authorize_commit(&homed, &members, &CommitInfo { new_meta: Some(moved), ..commit(1) }),
+            Err(Violation::MetaChangeNotAllowed)
+        );
+        let mut dropped = homed.clone();
+        dropped.home = None;
+        assert_eq!(
+            authorize_commit(&homed, &members, &CommitInfo { new_meta: Some(dropped), ..commit(1) }),
+            Err(Violation::MetaChangeNotAllowed)
+        );
+        let mut added = m.clone();
+        added.home = Some(relay);
+        assert_eq!(
+            authorize_commit(&m, &members, &CommitInfo { new_meta: Some(added), ..commit(1) }),
+            Err(Violation::MetaChangeNotAllowed)
+        );
+        // a DM never has a home relay, and an onion relay without a pin is not a valid descriptor
+        let mut dm = GroupMeta::new_dm(id(1));
+        dm.home = homed.home.clone();
+        assert!(dm.validate_shape().is_err());
+        assert!(cipher_wire::RelayDescriptor::new("https://abcdefghijklmnop.onion", None).is_err());
+    }
+
+    #[test]
     fn shape_invariants() {
         let (mut m, _) = group();
         m.roles.push(RoleEntry { account: id(9), role: Role::Owner });

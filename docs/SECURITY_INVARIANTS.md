@@ -85,6 +85,14 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | MR-010 | Under seeded fault injection (network flaps, responses lost after the relay executed the request, device restarts, relay restarts, clock jumps, same-tick sends) every message reaches the recipient exactly once, in send order, and ends Delivered; messages queued offline leave in encryption order so no generation is lost to MLS out-of-order limits. | automated | 3 |
 | MR-011 | The Android app stack reaches a self-signed onion relay through a real Tor client over the SOCKS privacy route only if the relay presents the pinned SPKI: the correct pin is accepted and the route is reported PROTECTED; a wrong pin and a missing pin (platform CA validation of a self-signed certificate) are refused with a TLS failure, never retried and never downgraded to a direct connection. | partial | 4 |
 | MR-012 | Across app restarts, a restart of the app's relay, an outage of the peer's relay while the app sends, and a burst of messages sent while the app is not running, every message arrives exactly once and in order, an attachment sent around an outage either fails leaving no message or is delivered once and decrypts byte-for-byte, and every message ends DELIVERED by end-to-end receipts with none FAILED; neither relay learns the other relay's user. | partial | 3 |
+| GR-001 | Commits of a cross-relay group are totally ordered by its home relay: a commit is accepted only at the current head by a holder of the head epoch's credentials, exactly one of two concurrent commits wins and the loser rebases, and a retry after a lost response is answered as already accepted (never appended twice). | partial | 4 |
+| GR-002 | Authentication to the home relay is by Ed25519 keys derived from the MLS exporter of one epoch: only members of that epoch can derive them, the relay stores public keys only, a key of epoch e can read entries only up to e+1 and append only at e, a removed member can read its own removal commit and nothing after it, and every authentication failure is indistinguishable. | partial | 5 |
+| GR-003 | A hostile home relay cannot make members accept a rewritten, reordered, replayed, truncated-and-renumbered or rolled-back log, nor substitute the epoch keys: every deviation freezes the group and raises GroupForkDetected; members shown different histories detect it as soon as they exchange one message; withholding the log costs liveness only. | partial | 10 |
+| GR-004 | A malicious member cannot forge membership: receivers re-authorize every commit; an invalid commit consumes a log position and therefore BLOCKS further membership changes (detected, reported, group stays readable), it never changes membership or roles; message delivery does not depend on the home relay. | partial | 3 |
+| GR-005 | Removing a member cuts it off: it loses access, reads nothing sent afterwards, cannot send, and the removal succeeds even when the removed member wins the race for a commit slot. | partial | 1 |
+| GR-006 | Delivery in cross-relay groups: messages from an offline member's peers arrive complete and in order after it returns; one unreachable member relay does not stall the others (outbox ordering is per recipient device); a Welcome for an unreachable relay waits without blocking the group and is delivered before anything else for that device; a member added later reaches and is reached by every member; commits continue after a home-relay restart. | partial | 7 |
+| GR-007 | Least knowledge: the home relay stores no account, device or member identifier for a cross-relay group (opaque tag, ciphertext, public keys); other relays never see the log; every relay holds only ciphertext of attachments (one copy per member relay); bounds protect the home relay (per-group bytes/entries, per-relay group count, per-source and per-tag rate limits). | partial | 5 |
+| GR-008 | The home relay is part of the MLS-authenticated group metadata and cannot change, appear or disappear after creation; ordinary groups encode byte-identically to before; a cross-relay group cannot be created unless the creator's relay is named. | partial | 2 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -1004,3 +1012,104 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
   * `scripts/android-e2e-multirelay.py` (script)
   * `single_relay_delivery_matrix` (Rust)
   * `many_messages_queued_offline_all_arrive_after_reconnecting` (Rust)
+
+## GR-001 — Commits of a cross-relay group are totally ordered by its home relay: a commit is accepted only at the current head by a holder of the head epoch's credentials, exactly one of two concurrent commits wins and the loser rebases, and a retry after a lost response is answered as already accepted (never appended twice).
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real engines on three independent relays + PostgreSQL; home relay = creator's relay.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). Ordering availability depends on one relay; a dead home relay blocks membership changes (messages continue); there is no home migration.
+* **Tests:**
+  * `concurrent_commits_from_two_admins_are_ordered_by_the_home_log_and_the_loser_rebases` (Rust)
+  * `concurrent_commits_one_wins_the_loser_learns_the_head_and_a_lost_response_retry_is_idempotent` (Rust)
+  * `a_lost_response_to_a_commit_that_adds_a_member_is_resolved_and_the_welcome_still_arrives` (Rust)
+  * `creation_then_ordered_appends_form_a_hash_chain_every_member_can_recompute` (Rust)
+
+## GR-002 — Authentication to the home relay is by Ed25519 keys derived from the MLS exporter of one epoch: only members of that epoch can derive them, the relay stores public keys only, a key of epoch e can read entries only up to e+1 and append only at e, a removed member can read its own removal commit and nothing after it, and every authentication failure is indistinguishable.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay API on the real router + PostgreSQL; exporter derivation on real MLS state.
+* **Known gap:** Credentials are shared by all members of an epoch: the home relay can count distinct source addresses polling a group (group size/online pattern) unless the client uses Tor. A member removed between two commits can still race one commit (see GR-004).
+* **Tests:**
+  * `next_epoch_credentials_equal_the_ones_every_member_derives_after_the_commit` (Rust)
+  * `a_removed_member_cannot_derive_the_credentials_of_the_epoch_that_removed_it` (Rust)
+  * `a_key_reads_only_up_to_the_next_entry_so_a_removed_member_cannot_follow_the_group` (Rust)
+  * `requests_are_authenticated_by_epoch_credentials_and_every_failure_looks_the_same` (Rust)
+  * `the_first_writer_owns_a_tag_and_creation_cannot_be_replayed_or_hijacked` (Rust)
+
+## GR-003 — A hostile home relay cannot make members accept a rewritten, reordered, replayed, truncated-and-renumbered or rolled-back log, nor substitute the epoch keys: every deviation freezes the group and raises GroupForkDetected; members shown different histories detect it as soon as they exchange one message; withholding the log costs liveness only.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Verifier unit tests + engines against a rewriting transport.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). A permanent partition whose members never exchange a message cannot be detected by any single-sequencer design. A joiner trusts the chain value at its own add entry on first use (it verifies the epoch keys, not the history before it).
+* **Tests:**
+  * `an_honest_log_verifies_page_by_page_and_resumes_from_any_verified_head` (Rust)
+  * `a_dropped_entry_is_a_gap` (Rust)
+  * `reordered_or_repeated_entries_are_refused` (Rust)
+  * `a_stale_log_is_a_rollback_not_news` (Rust)
+  * `rewritten_commits_or_swapped_epoch_keys_break_the_chain` (Rust)
+  * `two_members_shown_different_histories_disagree_as_soon_as_they_compare_heads` (Rust)
+  * `a_home_relay_that_tampers_with_a_commit_is_caught_and_freezes_membership_changes` (Rust)
+  * `a_home_relay_that_drops_reorders_or_rolls_back_the_log_is_caught` (Rust)
+  * `a_relay_that_only_withholds_the_log_costs_liveness_never_safety` (Rust)
+  * `members_shown_different_histories_by_the_home_relay_detect_it_as_soon_as_they_exchange_a_message` (Rust)
+
+## GR-004 — A malicious member cannot forge membership: receivers re-authorize every commit; an invalid commit consumes a log position and therefore BLOCKS further membership changes (detected, reported, group stays readable), it never changes membership or roles; message delivery does not depend on the home relay.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Engines with forged commits submitted with real credentials.
+* **Known gap:** NOT PREVENTED: any current member can freeze membership changes of a cross-relay group (the relay cannot validate MLS commits); recovery is a new group. This is weaker than a single-relay group, where a stale commit only costs a retry.
+* **Tests:**
+  * `a_malicious_member_cannot_forge_membership_and_invalid_commits_only_block_membership_changes` (Rust)
+  * `garbage_with_attacker_chosen_keys_blocks_membership_changes_and_is_reported_but_messages_flow` (Rust)
+  * `the_home_relay_being_down_blocks_membership_changes_but_not_messages` (Rust)
+
+## GR-005 — Removing a member cuts it off: it loses access, reads nothing sent afterwards, cannot send, and the removal succeeds even when the removed member wins the race for a commit slot.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Engines on three relays with an injected race.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). After a removal, remaining members keep their old inbox capabilities for a grace period (default 1 h) so the new ones can be exchanged; the removed member can deposit undecryptable ciphertext at their relays until then.
+* **Tests:**
+  * `removing_a_member_cuts_it_off_even_when_the_removed_member_commits_first` (Rust)
+
+## GR-006 — Delivery in cross-relay groups: messages from an offline member's peers arrive complete and in order after it returns; one unreachable member relay does not stall the others (outbox ordering is per recipient device); a Welcome for an unreachable relay waits without blocking the group and is delivered before anything else for that device; a member added later reaches and is reached by every member; commits continue after a home-relay restart.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real engines, separate databases, injected outages, restarts and lost responses.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). Capability introductions are hearsay relayed by owners/admins: a malicious member can misdirect messages to other members to a relay it controls (it can already read them); the real recipient then does not get them. Large groups (>~30) send many introduction frames.
+* **Tests:**
+  * `a_member_who_was_offline_receives_everything_in_order_after_returning` (Rust)
+  * `one_unreachable_member_relay_does_not_stall_the_others_and_that_member_catches_up_later` (Rust)
+  * `the_welcome_for_a_member_on_an_unreachable_relay_waits_without_blocking_the_group` (Rust)
+  * `a_member_added_later_learns_everyone_and_can_exchange_messages_with_all_of_them` (Rust)
+  * `commits_continue_after_the_home_relay_restarts_and_members_on_other_relays_follow` (Rust)
+  * `a_group_across_three_relays_carries_text_between_every_pair_of_members` (Rust)
+  * `single_relay_delivery_matrix` (Rust)
+
+## GR-007 — Least knowledge: the home relay stores no account, device or member identifier for a cross-relay group (opaque tag, ciphertext, public keys); other relays never see the log; every relay holds only ciphertext of attachments (one copy per member relay); bounds protect the home relay (per-group bytes/entries, per-relay group count, per-source and per-tag rate limits).
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay database and wire inspection in tests.
+* **Known gap:** The home relay still sees timing, volume and the source addresses that poll a group. Group co-membership is visible to a member's own relay only through the member's own traffic. Not a claim of anonymity.
+* **Tests:**
+  * `the_database_holds_no_account_device_or_member_identifier_for_a_home_group` (Rust)
+  * `members_talk_only_to_their_own_relay_and_the_home_relay_and_no_other_relay_sees_the_group_log` (Rust)
+  * `an_encrypted_attachment_reaches_members_on_every_relay_byte_for_byte_and_relays_hold_only_ciphertext` (Rust)
+  * `bounds_oversized_commits_malformed_bodies_and_a_per_relay_group_budget` (Rust)
+  * `a_group_budget_caps_the_bytes_one_log_may_hold` (Rust)
+
+## GR-008 — The home relay is part of the MLS-authenticated group metadata and cannot change, appear or disappear after creation; ordinary groups encode byte-identically to before; a cross-relay group cannot be created unless the creator's relay is named.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Metadata unit test + engine.
+* **Known gap:** A home relay cannot be migrated; if it is lost the group can no longer change membership (messages continue) and must be replaced.
+* **Tests:**
+  * `ordinary_groups_encode_exactly_as_before_and_the_home_relay_is_immutable_and_validated` (Rust)
+  * `a_cross_relay_group_cannot_be_created_unless_this_relay_is_named` (Rust)

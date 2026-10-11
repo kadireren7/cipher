@@ -81,14 +81,9 @@ Same as `DELIVERY_CAPABILITIES.md` with one addition: the `DeliveryCap` frame ca
 Server-to-server federation would make relays learn each other's users and require relay authentication and trust between operators. Client-mediated delivery keeps the relay purely a
 mailbox. Cost: the sender (via her privacy transport) connects to every recipient's relay, so **relay B sees a connection from Alice's network address** (hidden if she uses Tor).
 
-## 9. Groups and commit ordering — BLOCKED, with reasons
-MLS commits (membership changes, key updates) must be applied in one agreed order. Today the relay holding the group's tag is the sequencer (`/v1/groups/{tag}/commit`), and every member is
-authenticated *there*. With members on different relays there is no authenticated path for a visitor and no single sequencer. Options (none implemented, none safe to improvise):
-1. **Home-relay groups**: every member registers at the group's home relay. Works today; not cross-relay.
-2. **Capability-gated sequencer on the home relay** with commit capabilities handed out inside the group. Needs a security design for who can mint/revoke commit capabilities and for fan-out.
-3. **Deterministic tie-break without a sequencer** (2-member only): not suitable for groups.
-Until option 2 is designed and reviewed, **cross-relay groups are not supported**, and **cross-relay 1:1 conversations do not perform MLS key-update commits** (so no automatic post-compromise
-security refresh; ST-044). Welcome-only creation needs no sequencer.
+## 9. Groups and commit ordering — implemented through a HOME relay (experimental)
+Groups whose members live on different relays are ordered by the log of a **home relay** (the creator's relay, named in the MLS-authenticated group metadata): `docs/CROSS_RELAY_GROUPS.md` §7–§8, invariants GR-001…GR-008. Application messages and files still travel client-mediated to each member's own relay through capabilities; only commits go through the home relay, authenticated by keys derived from the MLS epoch (the relay learns no account). Known limits: any member can freeze membership changes, the home relay cannot migrate, and the design is self-reviewed only.
+**1:1 conversations with a peer on another relay still perform no MLS key-update commits** (no sequencer for two parties; ST-044 remains open for them): no automatic post-compromise refresh. Welcome-only creation needs no sequencer.
 
 ## 10. Attachments across relays
 Files are uploaded to the **recipient's** relay with a *blob capability* (Phase 4), so the recipient downloads from the relay he already authenticates to. See `MULTI_RELAY_ATTACHMENTS` section in

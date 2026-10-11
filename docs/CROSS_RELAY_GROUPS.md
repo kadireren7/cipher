@@ -1,6 +1,6 @@
 # Cross-relay MLS groups and commits — sequencing and consistency design (ST-044)
 
-**Status: DESIGN ONLY (v2 in §7 supersedes the shared-cap proposal of §3). Nothing here is implemented. It needs independent review before code (ST-005).**
+**Status: v2 of this design (§7, as corrected by §8) is IMPLEMENTED as an experimental feature (2026-10-11) with the limits in §8. Self-reviewed only; it still needs an independent review (ST-005) before it is relied on.** §3–§5a record the earlier proposal and its review.
 Cross-relay 1:1 conversations today perform no commits and groups with members on another relay are refused (`MULTI_RELAY_PROTOCOL.md` §9). This document says what a safe lift of that restriction would require.
 
 ## 1. What must hold
@@ -64,7 +64,7 @@ Re-reading §3–§4 as an attacker found these gaps. Each must be closed in the
 ## 6. What changes in the code (estimate, not done)
 Relay: two endpoints + `group_caps` table + log retention + tests (`delivery_caps.rs`-style). Core: group metadata `home`, `GroupCaps` frame, polling of `H`, client-mediated fan-out of application messages for groups, per-relay Welcome delivery, removal rotation. Tests: extend `delivery_matrix.rs` with 3 members on 3 relays, concurrent admins, home-relay outage, removal races, malicious-`H` equivocation (expect detection, not prevention).
 
-**Until this is reviewed, the engine keeps refusing groups with members on another relay.**
+**(Superseded: see §8. The engine now creates cross-relay groups through a home relay.)**
 
 ## 7. Revised design v2 (2026-10-10) — answers to §5a, still NOT implemented
 The §3 proposal used long-lived random "commit"/"read" capabilities handed around in application frames. §5a showed that this makes removal racy and leaks a liveness attack. v2 replaces them with **epoch-derived authentication**, which needs no separate rotation message.
@@ -104,3 +104,26 @@ Extend `delivery_matrix.rs` (seeded) and `multi_relay.rs` with: 3 members on 3 r
 
 ### 7.8 What is still open (needs the independent review)
 (a) the feasibility check in §7.1; (b) whether hashing the whole commit blob in the chain is sufficient or the epoch authenticator should also be bound; (c) exact UI semantics of a fork alarm; (d) retention: a member offline longer than the log retention must be re-added — the rule and the re-add flow are not specified; (e) interaction with scheduled PCS updates under a hostile member (rate rules). **Conclusion: v2 closes the specific defects found in §5a on paper, but it is untested and unreviewed; ST-044 stays open and the engine keeps refusing cross-relay groups.**
+
+## 8. What was built, what changed from §7 while building it, and what is NOT solved (2026-10-11)
+Code: `crates/cipher-wire/src/home.rs` (wire format, hash chain, request signing message), `crates/cipher-relay` (migration 0009, `/v1/home/{tag}/commit|log`), `crates/cipher-core/src/home.rs` (credentials, verifier, ledger), `app/engine_home.rs` (creation, commits, polling, introductions), changes in `engine_msg.rs` (per-device outbox, Welcome gating, frames carrying the log head) and `engine_att.rs` (one ciphertext copy per member relay). Invariants GR-001…GR-008; tests: `cipher-relay/tests/{home_log,cross_relay_groups}.rs`, `cipher-core/tests/{home_keys,home_client}.rs`.
+
+### 8.1 Corrections to §7 found while implementing
+1. **Public keys instead of verifiers.** The relay stores, per epoch, two Ed25519 PUBLIC keys; a request is signed with the secret derived from the MLS exporter (label `cipher/home/commit/v1` or `…/read/v1`). A hash "verifier" could not be checked without handing the relay the secret. `seq` equals the MLS epoch the commit creates.
+2. **A key reads only up to the next entry.** §7 let any current-epoch key read the whole log, which would lock out a member that was offline for more than one commit. A key of epoch *e* appends only at head *e* and reads entries up to *e+1*; a member catches up one entry at a time (each applied commit yields the next key); a removed member can read its own removal commit and nothing after it.
+3. **Garbage commits are worse than §5a/§7.2 said.** A member who submits a commit the relay cannot validate also chooses the *next epoch's public keys*, so the commit channel is captured, not just a slot burned: honest members hold keys for an older epoch and can no longer sign. This cannot be fixed without the relay validating MLS state. The implementation detects it (the commit is rejected by every receiver, the log position is recorded, the group is marked *blocked*), reports `GroupForkDetected`/`UnauthorizedGroupChange`, **blocks membership changes and keeps messaging working**. Recovery = a new group. **Any current member can therefore freeze membership changes of a cross-relay group.** Ordinary single-relay groups do not have this weakness.
+4. **Joiner anchor.** A joiner cannot know the chain value before its own add entry. It reads the entry that added it, requires that entry's public keys to equal the ones it derived itself, and takes its chain value on first use. Equivocation about earlier history is outside what it can check; later equivocation is caught by head comparison.
+5. **Capability bootstrap** was missing from §7. Members who only meet through the creator cannot learn each other's relay and capability from MLS. Owners/admins broadcast a *directory* (`GroupCaps`: every capability they know, including their own) when they learn a device's capability for the first time and when members are added; every member re-announces its own capability when the group grows; a device's own announcement always overrides hearsay. A malicious member can misdirect other members' messages to a relay it controls (it can already read them); the real recipient then does not receive them.
+6. **Capability grace.** In single-relay groups a removal revokes the remaining members' old inbox capabilities at once. In a cross-relay group that deadlocks (each side needs the other's new capability, deliverable only through the revoked one), so cross-relay groups keep the normal grace (1 h). The removed member can deposit undecryptable ciphertext at remaining members' relays until it ends.
+7. **Outbox ordering is per recipient device**, not per conversation: an unreachable member relay must not stall everyone else (`single_relay_delivery_matrix` and the two-relay matrix still pass). Devices of a cross-relay group whose location is unknown wait for their capability and consume no retry attempts; a device is never assumed to be on our relay.
+8. **Held messages.** A message of epoch *n+1* can reach a member's mailbox before the commit reaches it through the log; it is held and retried when the commit has been applied.
+9. **Group files.** One ciphertext copy is stored on every member relay (uploaded with a member's capability there, plus the sender's own relay); the message carries a per-relay table and each member reads the copy on its own relay.
+
+### 8.2 Implemented and tested
+Creation with members on other relays; Welcome delivery through cards' intro capabilities (write-ahead, per device, retried); joining and anchoring; text between all members; offline members; one dead member relay; home-relay restart and outage; concurrent commits (CAS, loser rebases); lost responses (idempotent by commit id); adding and removing members including a removed member winning a slot first; hostile home relay (tamper, renumber, roll back, replay, equivocate, withhold); forged and garbage commits; encrypted attachments to every relay; minimal knowledge of the home relay.
+
+### 8.3 NOT built / NOT solved
+* **Any member can freeze membership changes** (8.1-3). **A dead home relay blocks membership changes** (messages continue). **No home migration** (the home relay is immutable metadata); no log pruning or retention policy beyond hard bounds (4096 entries, 8 MiB per group, 20 000 groups per relay).
+* **The home relay sees** timing, volume and the source address of every member's polls (all members share one credential per epoch); over Tor that address is hidden, on public TLS it is not. Polls are one request per group per sync.
+* **Not tested:** real TLS or Tor between processes for groups, an Android emulator or physical device for groups, large groups (>~30 members: many introduction frames), mid-stream upload interruption of group files, multi-device accounts in cross-relay groups, relay databases restored from backup (rollback is detected by members, not repaired).
+* **Not reviewed** by anyone other than the author; ST-005 stays open.
