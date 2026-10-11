@@ -3,6 +3,7 @@ pub mod cipher_id;
 pub mod codec;
 pub mod engine;
 mod engine_att;
+mod engine_home;
 mod engine_msg;
 mod engine_remote;
 pub mod groupmeta;

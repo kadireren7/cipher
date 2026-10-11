@@ -67,7 +67,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn text(n: usize) -> Frame {
-        Frame { v: 1, id: Id16([1; 16]), ts_ms: 5, reply_to: None, content: Content::Text { body: "a".repeat(n) } }
+        Frame { v: 1, id: Id16([1; 16]), ts_ms: 5, reply_to: None, content: Content::Text { body: "a".repeat(n) }, head: None }
     }
 
     #[test]
@@ -85,10 +85,22 @@ mod tests {
 
     #[test]
     fn receipts_control_frames_and_short_texts_share_one_size_class() {
-        let receipt =
-            Frame { v: 1, id: Id16([2; 16]), ts_ms: 5, reply_to: None, content: Content::Receipt { ids: vec![Id16([3; 16]); 8] } };
-        let cap =
-            Frame { v: 1, id: Id16([4; 16]), ts_ms: 5, reply_to: None, content: Content::DeliveryCap { cap: Id16([5; 16]), relay: None } };
+        let receipt = Frame {
+            v: 1,
+            id: Id16([2; 16]),
+            ts_ms: 5,
+            reply_to: None,
+            content: Content::Receipt { ids: vec![Id16([3; 16]); 8] },
+            head: None,
+        };
+        let cap = Frame {
+            v: 1,
+            id: Id16([4; 16]),
+            ts_ms: 5,
+            reply_to: None,
+            content: Content::DeliveryCap { cap: Id16([5; 16]), relay: None },
+            head: None,
+        };
         let sizes: std::collections::BTreeSet<usize> = [
             encode(&receipt).unwrap().len(),
             encode(&cap).unwrap().len(),

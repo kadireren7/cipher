@@ -116,10 +116,11 @@ pub struct HomedGroup {
     pub relay: cipher_wire::RelayDescriptor,
     /// What this device has verified of the log. `None` until a joiner has anchored itself at the entry that added it.
     pub ledger: Option<crate::home::HomeLedger>,
-    /// Devices known to live on another relay: they are reached only through their capability, never through the authenticated path of our relay
-    /// (which would answer `not_found` and look like a delivery).
+    /// Devices known to live on OUR relay (reachable through its authenticated path). Every other device of a cross-relay group is reached ONLY
+    /// through its capability and waits for it: guessing "local" would hand a ciphertext to a relay that has never heard of the device, which answers
+    /// `not_found` and looks like a delivery.
     #[serde(default)]
-    pub remote_devices: Vec<Id16>,
+    pub local_devices: Vec<Id16>,
     /// Membership changes are blocked: the log was tampered with or a member submitted invalid commits. Messages keep flowing; commits do not
     /// until the user replaces the group. A static category, never free text.
     #[serde(default)]
@@ -160,6 +161,11 @@ pub enum Content {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         relay: Option<cipher_wire::RelayDescriptor>,
     },
+    /// Cross-relay groups: the capabilities one member knows for the OTHER members, so two members that have never been in contact can reach each other.
+    /// Sent by owners/admins when they learn a new device's capability. A device's own announcement always wins over this hearsay.
+    GroupCaps {
+        entries: Vec<GroupCapEntry>,
+    },
 }
 
 /// Wire/plaintext message frame (padded before MLS encryption; see `codec`).
@@ -171,6 +177,28 @@ pub struct Frame {
     pub ts_ms: u64,
     pub reply_to: Option<Id16>,
     pub content: Content,
+    /// Cross-relay groups only: the sender's verified position in the home relay's log. Members compare it with their own (equivocation
+    /// detection, docs/CROSS_RELAY_GROUPS.md §7.3). Absent everywhere else, so other frames are byte-identical to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<LogHead>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogHead {
+    pub seq: u64,
+    #[serde(with = "cipher_wire::b64")]
+    pub chain: Vec<u8>,
+}
+
+/// One member device's inbox capability as relayed by another member (cross-relay groups: introduces members to each other).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupCapEntry {
+    pub device: Id16,
+    pub cap: Id16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<cipher_wire::RelayDescriptor>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -168,6 +168,7 @@ impl Engine {
             ts_ms: self.next_ts_ms(),
             reply_to,
             content: Content::Attachment { caption: caption.to_owned(), att },
+            head: None,
         };
         let mut m = self.queue_app_message(conv, frame, true, false)?.ok_or(SecurityError::InvalidState)?;
         if let Some(own) = own_blob_id {

@@ -84,6 +84,7 @@ pub struct VerifiedEntry {
 pub const FORK_GAP: &str = "home log has a gap or is out of order";
 pub const FORK_CHAIN: &str = "home log hash chain does not match";
 pub const FORK_ROLLBACK: &str = "home log is behind what this device already verified";
+pub const FORK_EQUIVOCATION: &str = "members were shown different histories by the home relay";
 pub const FORK_KEYS: &str = "home log public keys differ from the ones the members derived";
 
 /// Verify a page of entries that should directly follow `head`. Entries older than `head` are tolerated only if they equal what was already
