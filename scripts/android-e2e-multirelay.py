@@ -63,7 +63,7 @@ def restart_relay(label):
 
 
 def start_relay(port, db, cert, key, label, audience=None, listen_host="0.0.0.0"):
-    env = dict(os.environ, CIPHER_RELAY_AUDIENCE=audience or f"{HOST}:{port}", CIPHER_RELAY_TLS_HANDSHAKE_SECS="60", CIPHER_RELAY_REQUEST_TIMEOUT_SECS="120" if TOR else "30", CIPHER_RELAY_REGISTRATION_TOKEN=TOKEN,
+    env = dict(os.environ, CIPHER_RELAY_AUDIENCE=audience or f"{HOST}:{port}", CIPHER_RELAY_TLS_HANDSHAKE_SECS="60", CIPHER_RELAY_REQUEST_TIMEOUT_SECS="120" if TOR else "30", CIPHER_RELAY_BODY_IDLE_SECS="90" if TOR else "20", CIPHER_RELAY_SHARED_SOURCE="1" if TOR else "0", CIPHER_RELAY_REGISTRATION_TOKEN=TOKEN,
                CIPHER_RELAY_PEPPER=f"pepper-{label}-0123456789abcdef0123456789", CIPHER_RELAY_LISTEN=f"{listen_host}:{port}",
                CIPHER_RELAY_DATABASE_URL=f"postgres://postgres:devonly-not-a-secret@127.0.0.1:55432/{db}",
                CIPHER_RELAY_TLS_CERT=cert, CIPHER_RELAY_TLS_KEY=key)

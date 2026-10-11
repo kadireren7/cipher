@@ -24,6 +24,9 @@ pub enum ApiError {
     QueueFull,
     #[error("overloaded")]
     Overloaded,
+    /// A body stopped arriving (no data for the idle deadline): the upload slot is released instead of being held by a stalled peer.
+    #[error("timeout")]
+    Timeout,
     #[error("internal error")]
     Internal,
 }
@@ -40,6 +43,7 @@ impl ApiError {
             ApiError::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             ApiError::RateLimited | ApiError::QueueFull => StatusCode::TOO_MANY_REQUESTS,
             ApiError::Overloaded => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::Timeout => StatusCode::REQUEST_TIMEOUT,
             ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }

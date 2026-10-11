@@ -357,6 +357,12 @@ impl CipherEngine {
         self.with(|e| e.create_group(&name, &m).map(|c| c.to_hex()))
     }
 
+    /// Replace a cross-relay group whose commit channel is blocked or lost by a new group with the same members (they must accept again).
+    pub fn create_successor_group(&self, conversation_id: String) -> R<String> {
+        let c = v::id(&conversation_id, "conversation id")?;
+        self.with(|e| e.create_successor_group(&c).map(|n| n.to_hex()))
+    }
+
     pub fn add_group_member(&self, conversation_id: String, account_id: String) -> R<()> {
         let (c, a) = (v::id(&conversation_id, "conversation id")?, v::id(&account_id, "account id")?);
         self.with(|e| e.add_group_members(&c, &[a]))

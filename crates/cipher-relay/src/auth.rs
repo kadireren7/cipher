@@ -55,7 +55,11 @@ pub async fn authenticate_body(
     let now = state.clock.now();
     let ip_key = state.keys.key("ip", ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string().as_bytes());
     let l = &state.limits;
-    if !state.store.bucket_available(&ip_key, f64::from(l.auth_fail_burst), l.auth_fail_refill_per_sec, now).await? {
+    // A failed-authentication lockout keyed by source address is only sound when the address identifies a client. Behind an onion service or a
+    // proxy every client shares one address, and the lockout would let anybody without credentials lock out every user with a handful of
+    // garbage requests. For such sources the signature is verified first and only the failing request pays (no pre-check, no shared failure bucket).
+    let shared = state.is_shared_source(ip);
+    if !shared && !state.store.bucket_available(&ip_key, f64::from(l.auth_fail_burst), l.auth_fail_refill_per_sec, now).await? {
         return Err(ApiError::RateLimited);
     }
     let result: Result<(Id16, [u8; 32]), ApiError> = async {
@@ -103,7 +107,9 @@ pub async fn authenticate_body(
             Ok((d, hash))
         }
         Err(e) => {
-            let _ = state.store.take_tokens(&ip_key, 1.0, f64::from(l.auth_fail_burst), l.auth_fail_refill_per_sec, now).await;
+            if !shared {
+                let _ = state.store.take_tokens(&ip_key, 1.0, f64::from(l.auth_fail_burst), l.auth_fail_refill_per_sec, now).await;
+            }
             Err(e)
         }
     }

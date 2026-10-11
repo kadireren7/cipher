@@ -20,6 +20,13 @@ pub struct Config {
     /// Cap on simultaneously open client connections.
     pub max_connections: usize,
     pub request_timeout_secs: u64,
+    /// A request body must make progress: this long without a single byte and the upload is aborted and its slot released. Separate from the overall
+    /// request deadline, which a stalled (e.g. abandoned Tor circuit) peer could otherwise consume in full while holding one of the few upload slots.
+    pub body_idle_secs: u64,
+    /// The peer address of every connection is the same local process (a Tor daemon in front of an onion service, or a reverse proxy), so it says
+    /// nothing about the client. Per-address limits then become shared buckets (scaled up) and failed authentication never locks anybody out.
+    /// Connections from a loopback address are treated this way even without the flag.
+    pub shared_source: bool,
     pub listen: SocketAddr,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
@@ -93,6 +100,8 @@ impl Config {
             max_inflight: num("CIPHER_RELAY_MAX_INFLIGHT", 512),
             max_connections: num("CIPHER_RELAY_MAX_CONNECTIONS", 2048),
             request_timeout_secs: num("CIPHER_RELAY_REQUEST_TIMEOUT_SECS", 30) as u64,
+            body_idle_secs: (num("CIPHER_RELAY_BODY_IDLE_SECS", 20) as u64).clamp(1, 300),
+            shared_source: get("CIPHER_RELAY_SHARED_SOURCE").is_some_and(|v| v == "1"),
             listen,
             tls_cert,
             tls_key,
@@ -143,6 +152,8 @@ mod tests {
             max_inflight: 1,
             max_connections: 1,
             request_timeout_secs: 1,
+            body_idle_secs: 20,
+            shared_source: false,
             listen: "0.0.0.0:443".parse().unwrap_or_else(|_| unreachable_addr()),
             tls_cert: None,
             tls_key: None,

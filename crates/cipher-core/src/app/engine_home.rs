@@ -72,6 +72,77 @@ impl Engine {
         Ok(())
     }
 
+    /// Hours of continuous failure before the user is told. A relay that does not recognise the group is a stronger signal than one that is
+    /// merely unreachable (maintenance, a phone without coverage), so it is reported sooner.
+    const UNRECOGNIZED_ALERT_SECS: u64 = 3_600;
+    const UNREACHABLE_ALERT_SECS: u64 = 72 * 3_600;
+
+    /// Records one failed poll of the home log. Persists only on a change of state, and raises `HomeRelayUnavailable` once per streak.
+    fn note_home_failure(&mut self, conv_id: &Id16, err: &SecurityError) -> Result<()> {
+        let kind = match err {
+            SecurityError::Transport("unauthorized" | "not found") => "unrecognized",
+            SecurityError::Transport(_) => "unreachable",
+            _ => return Ok(()), // local problems (locked, corrupt ...) are reported elsewhere and say nothing about the home relay
+        };
+        let now = self.clock.unix_secs();
+        let mut conv = self.conversation(conv_id)?;
+        let Some(h) = conv.home.as_mut() else { return Ok(()) };
+        let limit = if kind == "unrecognized" { Self::UNRECOGNIZED_ALERT_SECS } else { Self::UNREACHABLE_ALERT_SECS };
+        let mut raise = false;
+        match h.issue.as_mut() {
+            Some(i) if i.kind == kind => {
+                if !i.alerted && now.saturating_sub(i.since) >= limit {
+                    i.alerted = true;
+                    raise = true;
+                } else {
+                    return Ok(());
+                }
+            }
+            _ => h.issue = Some(crate::app::model::HomeIssue { kind: kind.to_owned(), since: now, alerted: false }),
+        }
+        self.commit_state(|s| put_json(s, NS_CONV, &conv.id.to_hex(), &conv))?;
+        if raise {
+            self.push_event(SecurityEvent::HomeRelayUnavailable { conversation_id: conv_id.to_hex(), kind: kind.to_owned() });
+        }
+        Ok(())
+    }
+
+    fn clear_home_issue(&mut self, conv_id: &Id16) -> Result<()> {
+        let mut conv = self.conversation(conv_id)?;
+        if conv.home.as_mut().is_some_and(|h| h.issue.take().is_some()) {
+            self.commit_state(|s| put_json(s, NS_CONV, &conv.id.to_hex(), &conv))?;
+        }
+        Ok(())
+    }
+
+    /// Replace a group whose commit channel is lost or blocked by a NEW group with the same members and name (docs/CROSS_RELAY_GROUPS.md §9).
+    /// Nothing is migrated silently: the new group has a new MLS group id, a new home relay (this device's own) and fresh membership, and every
+    /// member must accept the invitation again (a new Welcome, delivered the same authenticated way as any invitation). The old group stays
+    /// readable and keeps working for messages.
+    pub fn create_successor_group(&mut self, conv_id: &Id16) -> Result<Id16> {
+        self.guard()?;
+        let conv = self.conversation(conv_id)?;
+        let home = conv.home.as_ref().ok_or(SecurityError::Denied("not a cross-relay group"))?;
+        let broken = home.frozen.is_some() || home.issue.as_ref().is_some_and(|i| i.alerted);
+        if conv.kind != ConvKind::Group || conv.state != ConvState::Active || conv.access_revoked || !broken {
+            return Err(SecurityError::Denied("only an active group whose commit channel is blocked or lost can be replaced"));
+        }
+        if home.superseded_by.is_some() {
+            return Err(SecurityError::Denied("this group has already been replaced"));
+        }
+        let members: Vec<Id16> = self.members(conv_id)?.into_iter().filter(|m| !m.is_me).map(|m| m.account).collect();
+        if members.is_empty() {
+            return Err(SecurityError::Denied("no other members to invite"));
+        }
+        let new_id = self.create_group(&conv.title, &members)?;
+        let mut conv = self.conversation(conv_id)?;
+        if let Some(h) = conv.home.as_mut() {
+            h.superseded_by = Some(new_id.to_hex());
+        }
+        self.commit_state(|s| put_json(s, NS_CONV, &conv.id.to_hex(), &conv))?;
+        Ok(new_id)
+    }
+
     fn save_ledger(&mut self, conv_id: &Id16, ledger: &HomeLedger) -> Result<()> {
         let mut conv = self.conversation(conv_id)?;
         if let Some(h) = conv.home.as_mut() {
@@ -155,7 +226,14 @@ impl Engine {
             sent_since_update: 0,
             access_revoked: false,
             remote: false,
-            home: Some(HomedGroup { relay, ledger: Some(HomeLedger::new(HomeHead::at(1, chain))), local_devices: local, frozen: None }),
+            home: Some(HomedGroup {
+                relay,
+                ledger: Some(HomeLedger::new(HomeHead::at(1, chain))),
+                local_devices: local,
+                frozen: None,
+                issue: None,
+                superseded_by: None,
+            }),
         };
         let hk = self.current_epoch_key(&id)?;
         let item = self.welcome_item(id, welcome, new_devices)?;
@@ -235,6 +313,11 @@ impl Engine {
             let home = conv.home.clone().ok_or(SecurityError::Denied("not a cross-relay group"))?;
             if home.frozen.is_some() {
                 return Err(SecurityError::Denied("membership changes are blocked: the home log of this group is no longer trustworthy"));
+            }
+            if home.issue.as_ref().is_some_and(|i| i.alerted && i.kind == "unrecognized") {
+                return Err(SecurityError::Denied(
+                    "membership changes are blocked: the home relay no longer recognises this group (create a successor group)",
+                ));
             }
             let ledger = home.ledger.clone().ok_or(SecurityError::Transport("this device has not caught up with the home log yet"))?;
             let group = GroupRef(conv.id.0.to_vec());
@@ -460,8 +543,15 @@ impl Engine {
             let after = home.ledger.as_ref().map_or(creds.epoch.saturating_sub(1), |l| l.head.seq);
             let ep = RelayEndpoint::from_descriptor(&home.relay)?;
             let resp = match self.api_at(&ep)?.home_log(&htag, &creds, after) {
-                Ok(r) => r,
-                Err(_) => return Ok(()), // home relay unreachable: try again next sync
+                Ok(r) => {
+                    self.clear_home_issue(conv_id)?;
+                    r
+                }
+                Err(e) => {
+                    // Try again next sync, but do not let a lost or unreachable commit channel stay invisible for ever.
+                    self.note_home_failure(conv_id, &e)?;
+                    return Ok(());
+                }
             };
             let mut entries = resp.entries.clone();
             let mut ledger = home.ledger.clone();

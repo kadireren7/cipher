@@ -10,6 +10,8 @@
 | Public beta-ready | **NO** | Plus: no independent cryptographic review (ST-005), no signed/reproducible release, no push notifications, no background delivery, no key-update commits in 1:1 conversations across relays, and the cross-relay group protocol is experimental and self-reviewed only (any member can freeze membership changes; no home-relay migration). |
 | Production-ready | **NO** | Everything above, plus long-run soak, load, HA, and incident process evidence. |
 
+**Hardening pass (2026-10-11, Session 5 in `MASTER_IMPLEMENTATION_STATUS.md`):** fixed a lock-out of whole onion relays by invalid requests (ST-056), upload-slot exhaustion (ST-057), non-retried transient failures in file transfer (ST-055), silent purge of live groups' home logs (ST-058), and made a lost home relay visible with a successor-group path (ST-052). **The release gates are unchanged and not met:** the physical-device matrix (ST-001/028), independent review (ST-005), push (ST-017), signed reproducible release (ST-014), chunked uploads (ST-046), group UI (ST-048) and a clean, repeated Tor CI record are all still open, so Cipher is **not** private-beta-ready. Whether the Tor changes reduce failures is a CI measurement, recorded in Session 5, not an assumption.
+
 Passing tests are evidence about the behaviours they test. They are not proof of security or anonymity.
 
 ## 1. Build instructions (Rust, relay)
@@ -23,7 +25,7 @@ Reproducibility of the relay/container was **not measured**. The Android APK was
 `python3 scripts/gen_sbom.py -o sbom.cdx.json` (CycloneDX 1.5; 397 Rust + 575 Android components; hashes from `Cargo.lock` and Gradle verification metadata; reproducible). Licence checks cover Rust only (`cargo deny`). `cargo audit` passes with exceptions listed and justified in `.cargo/audit.toml` (RUSTSEC-2026-0173, -0330, -0331 — ST-045).
 
 ## 4. CI gates
-`ci.yml`: fmt, clippy `-D warnings`, full tests with PostgreSQL, invariants registry, relay dependency guard, `cargo deny`, `cargo audit`, SBOM determinism, secret scan, Android build/lint. `fuzz.yml`: 13 targets. `deploy-test.yml` (weekly/manual): Docker acceptance + upgrade — **ran green on GitHub for `84448b1`.** On `84448b1` rust, audit, secrets, invariants, android unit/lint/build and `deploy-test` passed on GitHub; the emulator jobs initially failed (corrupt system image, missing Gradle checksum, build-script bug), were fixed, and all jobs are green on runs 38077466094 and (with resilience phases and Tor) 38090565452 / 38090565453.
+`ci.yml`: fmt, clippy `-D warnings`, full tests with PostgreSQL, invariants registry, relay dependency guard, `cargo deny`, `cargo audit`, SBOM determinism, secret scan, Android build/lint. `fuzz.yml`: 14 targets (`home_log` added; no campaign run). `deploy-test.yml` (weekly/manual): Docker acceptance + upgrade — **ran green on GitHub for `84448b1`.** On `84448b1` rust, audit, secrets, invariants, android unit/lint/build and `deploy-test` passed on GitHub; the emulator jobs initially failed (corrupt system image, missing Gradle checksum, build-script bug), were fixed, and all jobs are green on runs 38077466094 and (with resilience phases and Tor) 38090565452 / 38090565453.
 
 ## 5. Server compatibility and version policy
 * Wire protocol: JSON, additive fields only (`#[serde(default)]`), unknown fields rejected on requests. Cards carry `v`; unknown `v` is refused.

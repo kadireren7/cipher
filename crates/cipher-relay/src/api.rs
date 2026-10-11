@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use cipher_wire::limits::*;
 use cipher_wire::messages::*;
 use cipher_wire::Id16;
+use futures_util::StreamExt as _;
 use sha2::Digest as _;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -63,6 +64,33 @@ impl Default for Limits {
 /// At most this many blob uploads are buffered at once (8 x 101 MiB worst case ~ 808 MiB).
 const MAX_CONCURRENT_UPLOADS: usize = 8;
 
+/// Multiplier for per-address buckets when many clients share one source address (an onion service sees only its local Tor daemon).
+const SHARED_SOURCE_SCALE: f64 = 25.0;
+
+/// How long a new upload may wait for a free slot before it is told to retry (503). A short queue absorbs the bursts of a multi-file send without
+/// letting waiting requests pile up.
+const UPLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Reads exactly the announced body. Unlike `to_bytes` this enforces progress: a peer that stops sending (a dead mobile network, an abandoned Tor
+/// circuit, or an attacker holding the connection) is cut off after `idle` instead of keeping one of the few upload slots until the overall deadline.
+async fn read_body_progress(body: Body, declared: usize, idle: std::time::Duration) -> Result<Bytes, ApiError> {
+    let mut stream = body.into_data_stream();
+    let mut buf = bytes::BytesMut::with_capacity(declared.min(1 << 20));
+    loop {
+        match tokio::time::timeout(idle, stream.next()).await {
+            Err(_) => return Err(ApiError::Timeout),
+            Ok(None) => return Ok(buf.freeze()),
+            Ok(Some(Err(_))) => return Err(ApiError::BadRequest),
+            Ok(Some(Ok(chunk))) => {
+                if buf.len() + chunk.len() > declared {
+                    return Err(ApiError::TooLarge);
+                }
+                buf.extend_from_slice(&chunk);
+            }
+        }
+    }
+}
+
 pub struct AppState {
     pub store: Arc<PgStore>,
     pub cfg: Arc<Config>,
@@ -86,6 +114,20 @@ impl AppState {
         let keys = KeyHasher::new(cfg.pepper);
         let inflight = Semaphore::new(cfg.max_inflight.max(1));
         Self { store, cfg, clock, push, limits, keys, inflight, uploads: Semaphore::new(MAX_CONCURRENT_UPLOADS) }
+    }
+
+    /// True when the connection's peer address does not identify the client (see `Config::shared_source`). `None` (in-process tests) is unknown,
+    /// not shared.
+    pub fn is_shared_source(&self, ip: Option<IpAddr>) -> bool {
+        self.cfg.shared_source || ip.is_some_and(|i| i.is_loopback() || i.is_unspecified())
+    }
+
+    /// A per-source-address limit. For a shared source the bucket pools many clients: its size and refill are multiplied so that one client
+    /// cannot exhaust it for everybody on ordinary use, while it still bounds abuse; the global in-flight cap remains the backstop.
+    async fn take_ip(&self, class: &str, ip: Option<IpAddr>, cost: f64, cap: f64, rate: f64) -> Result<bool, ApiError> {
+        let (cap, rate) = if self.is_shared_source(ip) { (cap * SHARED_SOURCE_SCALE, rate * SHARED_SOURCE_SCALE) } else { (cap, rate) };
+        let key = ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
+        self.take(class, key.as_bytes(), cost, cap, rate).await
     }
 
     async fn take(&self, class: &str, id: &[u8], cost: f64, cap: f64, rate: f64) -> Result<bool, ApiError> {
@@ -211,8 +253,7 @@ fn validate_new_device(account: &Id16, rec: &DeviceRecord) -> Result<(), ApiErro
 async fn register(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
     let inc = read(req, MAX_JSON_BODY_BYTES).await?;
     let l = st.limits;
-    let ipk = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
-    if !st.take("register", ipk.as_bytes(), 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
+    if !st.take_ip("register", inc.ip, 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
         return Err(ApiError::RateLimited);
     }
     let r: RegisterRequest = parse(&inc.body)?;
@@ -230,8 +271,7 @@ async fn register(State(st): S, req: Request<Body>) -> Result<Response, ApiError
 async fn add_device(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
     let inc = read(req, MAX_JSON_BODY_BYTES).await?;
     let l = st.limits;
-    let ipk = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
-    if !st.take("register", ipk.as_bytes(), 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
+    if !st.take_ip("register", inc.ip, 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
         return Err(ApiError::RateLimited);
     }
     let r: AddDeviceRequest = parse(&inc.body)?;
@@ -365,8 +405,11 @@ async fn upload_blob(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     let (dev, announced) =
         crate::auth::authenticate_body(&st, "POST", &path_and_query, authorization.as_deref(), crate::auth::BodyAuth::Announced, ip)
             .await?;
-    let _slot = st.uploads.try_acquire().map_err(|_| ApiError::Overloaded)?;
-    let body = to_bytes(req.into_body(), declared).await.map_err(|_| ApiError::TooLarge)?;
+    let _slot = match tokio::time::timeout(UPLOAD_SLOT_WAIT, st.uploads.acquire()).await {
+        Ok(Ok(p)) => p,
+        _ => return Err(ApiError::Overloaded),
+    };
+    let body = read_body_progress(req.into_body(), declared, std::time::Duration::from_secs(st.cfg.body_idle_secs)).await?;
     let actual: [u8; 32] = sha2::Sha256::digest(&body).into();
     if !bool::from(actual.ct_eq(&announced)) {
         return Err(ApiError::BadRequest); // the body is not what the (valid) signature covered
@@ -408,10 +451,10 @@ async fn upload_blob_by_cap(State(st): S, req: Request<Body>) -> Result<Response
         .and_then(|v| v.strip_prefix("Cap "))
         .and_then(|v| Id16::parse(v).ok())
         .ok_or(ApiError::BadRequest)?;
-    let ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip()).unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
+    let ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
     let l = st.limits;
     let kib = declared as f64 / 1024.0;
-    if !st.take("blob-ip", ip.as_bytes(), kib, f64::from(l.blob_bytes_burst), l.blob_bytes_refill_per_sec).await?
+    if !st.take_ip("blob-ip", ip, kib, f64::from(l.blob_bytes_burst), l.blob_bytes_refill_per_sec).await?
         || !st.take("blob-cap", &cap.0, kib, f64::from(l.blob_bytes_burst), l.blob_bytes_refill_per_sec).await?
     {
         return Err(ApiError::RateLimited);
@@ -420,8 +463,11 @@ async fn upload_blob_by_cap(State(st): S, req: Request<Body>) -> Result<Response
     if !st.store.cap_is_live(&cap, now).await? {
         return Err(ApiError::NotFound); // unknown, revoked, expired: one outcome, before any body is buffered
     }
-    let _slot = st.uploads.try_acquire().map_err(|_| ApiError::Overloaded)?;
-    let body = to_bytes(req.into_body(), declared).await.map_err(|_| ApiError::TooLarge)?;
+    let _slot = match tokio::time::timeout(UPLOAD_SLOT_WAIT, st.uploads.acquire()).await {
+        Ok(Ok(p)) => p,
+        _ => return Err(ApiError::Overloaded),
+    };
+    let body = read_body_progress(req.into_body(), declared, std::time::Duration::from_secs(st.cfg.body_idle_secs)).await?;
     if body.len() != declared || body.get(..4) != Some(ATTACHMENT_MAGIC.as_slice()) {
         return Err(ApiError::BadRequest);
     }
@@ -530,8 +576,7 @@ async fn revoke_caps(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
 /// Shared front of the two unauthenticated intro calls: bounded per source address and per capability, one `NotFound` for every invalid capability.
 async fn intro_gate(st: &AppState, inc: &Incoming) -> Result<(IntroRequest, Id16), ApiError> {
     let r: IntroRequest = parse(&inc.body)?;
-    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
-    if !st.take("intro-ip", ip.as_bytes(), 1.0, 60.0, 2.0).await? {
+    if !st.take_ip("intro-ip", inc.ip, 1.0, 60.0, 2.0).await? {
         return Err(ApiError::RateLimited);
     }
     if !st.take("intro-cap", &r.cap.0, 1.0, 30.0, 30.0 / 3600.0).await? {
@@ -575,9 +620,8 @@ async fn anon_deliver(State(st): S, req: Request<Body>) -> Result<Response, ApiE
     let inc = read(req, 4 * MAX_JSON_BODY_BYTES).await?;
     let r: AnonDeliverRequest = parse(&inc.body)?;
     let ttl = r.validate().map_err(|_| ApiError::BadRequest)?;
-    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
     // Source addresses behind a privacy network are shared by many users: generous, but bounded.
-    if !st.take("deliver-ip", ip.as_bytes(), r.deliveries.len() as f64, 600.0, 20.0).await? {
+    if !st.take_ip("deliver-ip", inc.ip, r.deliveries.len() as f64, 600.0, 20.0).await? {
         return Err(ApiError::RateLimited);
     }
     let now = st.clock.now();
@@ -623,8 +667,7 @@ async fn home_commit(State(st): S, Path(tag): Path<String>, req: Request<Body>) 
     use cipher_wire::home::{HomeCommitRequest, HomeCommitResponse, HomeStaleResponse};
     let inc = read(req, 4 * MAX_JSON_BODY_BYTES).await?;
     let tag = id_param(&tag)?;
-    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
-    if !st.take("home-ip", ip.as_bytes(), 1.0, 120.0, 4.0).await? {
+    if !st.take_ip("home-ip", inc.ip, 1.0, 120.0, 4.0).await? {
         return Err(ApiError::RateLimited);
     }
     let r: HomeCommitRequest = parse(&inc.body)?;
@@ -637,7 +680,7 @@ async fn home_commit(State(st): S, Path(tag): Path<String>, req: Request<Body>) 
         // Creation: there is no earlier epoch to authenticate against. The request is signed with the NEW commit key it announces (proof that the
         // creator knows it); the tag is a secret derived from the group id, and the first writer wins.
         home_verify(&inc, epoch, &next.0)?;
-        if !st.take("home-new-ip", ip.as_bytes(), 1.0, 6.0, 6.0 / 3600.0).await? {
+        if !st.take_ip("home-new-ip", inc.ip, 1.0, 6.0, 6.0 / 3600.0).await? {
             return Err(ApiError::RateLimited);
         }
     } else {
@@ -661,8 +704,7 @@ async fn home_log(State(st): S, Path(tag): Path<String>, req: Request<Body>) -> 
     use cipher_wire::home::{HomeLogResponse, MAX_HOME_PAGE};
     let inc = read(req, 0).await?;
     let tag = id_param(&tag)?;
-    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
-    if !st.take("home-ip", ip.as_bytes(), 1.0, 120.0, 4.0).await? {
+    if !st.take_ip("home-ip", inc.ip, 1.0, 120.0, 4.0).await? {
         return Err(ApiError::RateLimited);
     }
     let epoch = inc.home_epoch.ok_or(ApiError::Unauthorized)?;
@@ -677,6 +719,7 @@ async fn home_log(State(st): S, Path(tag): Path<String>, req: Request<Body>) -> 
         .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("after=")))
         .and_then(|v| v.parse::<u64>().ok())
         .ok_or(ApiError::BadRequest)?;
-    let (entries, head) = st.store.home_log(&tag, after, epoch.saturating_add(1), MAX_HOME_PAGE).await?.ok_or(ApiError::Unauthorized)?;
+    let (entries, head) =
+        st.store.home_log(&tag, after, epoch.saturating_add(1), MAX_HOME_PAGE, st.clock.now()).await?.ok_or(ApiError::Unauthorized)?;
     Ok(Json(HomeLogResponse { entries, head }).into_response())
 }

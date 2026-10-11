@@ -93,6 +93,11 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | GR-006 | Delivery in cross-relay groups: messages from an offline member's peers arrive complete and in order after it returns; one unreachable member relay does not stall the others (outbox ordering is per recipient device); a Welcome for an unreachable relay waits without blocking the group and is delivered before anything else for that device; a member added later reaches and is reached by every member; commits continue after a home-relay restart. | partial | 7 |
 | GR-007 | Least knowledge: the home relay stores no account, device or member identifier for a cross-relay group (opaque tag, ciphertext, public keys); other relays never see the log; every relay holds only ciphertext of attachments (one copy per member relay); bounds protect the home relay (per-group bytes/entries, per-relay group count, per-source and per-tag rate limits). | partial | 5 |
 | GR-008 | The home relay is part of the MLS-authenticated group metadata and cannot change, appear or disappear after creation; ordinary groups encode byte-identically to before; a cross-relay group cannot be created unless the creator's relay is named. | partial | 2 |
+| MR-013 | A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once. | automated | 2 |
+| MR-014 | On a relay whose clients all arrive from one local address (onion service behind Tor, reverse proxy; or any loopback peer) failed authentication from any client never blocks other clients' valid requests, and per-address buckets are pooled and scaled instead of shared at ordinary size; where the address identifies a client the failed-authentication lockout is unchanged. | automated | 2 |
+| MR-015 | Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts, with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message. | partial | 4 |
+| GR-009 | The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged. | automated | 1 |
+| GR-010 | When the home relay of a cross-relay group stays unreachable or no longer recognises the group, the user is told once per streak (sooner for 'does not recognise'), membership changes are refused with a specific reason, messages keep flowing, and a successor group (new id, new home, every member must accept again) can be created; nothing is migrated or re-pointed silently, and a healthy group cannot be 'replaced'. | partial | 1 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -1113,3 +1118,53 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 * **Tests:**
   * `ordinary_groups_encode_exactly_as_before_and_the_home_relay_is_immutable_and_validated` (Rust)
   * `a_cross_relay_group_cannot_be_created_unless_this_relay_is_named` (Rust)
+
+## MR-013 — A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real router + PostgreSQL, streaming request bodies that stall; idle deadline set to 1 s in the test (20 s default, 90 s on the onion profile).
+* **Known gap:** A client that sends slowly but steadily enough to stay inside the idle deadline can still hold upload slots (ST-057); there is no per-device concurrent-upload limit. Not measured against real Tor stalls except through repeated CI runs.
+* **Tests:**
+  * `stalled_authenticated_upload_is_cut_off_and_frees_its_slot` (Rust)
+  * `many_stalled_uploads_do_not_starve_a_good_one` (Rust)
+
+## MR-014 — On a relay whose clients all arrive from one local address (onion service behind Tor, reverse proxy; or any loopback peer) failed authentication from any client never blocks other clients' valid requests, and per-address buckets are pooled and scaled instead of shared at ordinary size; where the address identifies a client the failed-authentication lockout is unchanged.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real router + PostgreSQL; the shared-source mode is switched by configuration in the test (in production also by a loopback peer address).
+* **Known gap:** In shared-source mode the relay cannot rate-limit one abusive client by address (ST-056); keyed limits and the global in-flight cap remain. Loopback detection assumes the front process is local.
+* **Tests:**
+  * `garbage_requests_cannot_lock_legitimate_users_out_of_a_shared_source_relay` (Rust)
+  * `an_attributable_source_still_gets_the_failed_auth_lockout` (Rust)
+
+## MR-015 — Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts, with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Unit tests of the classification, delay and attempt bound; the end-to-end effect over real Tor is only observable in the android-tor workflow.
+* **Known gap:** A lost response to a successful upload leaves an unreferenced blob until its TTL (ST-046). Whether the changes reduce Tor failures is measured only by repeated CI runs (MASTER_IMPLEMENTATION_STATUS.md, Session 5).
+* **Tests:**
+  * `only_transient_failures_are_retried_and_only_a_bounded_number_of_times` (Rust)
+  * `delays_grow_are_capped_and_jittered` (Rust)
+  * `success_after_a_transient_failure_stops_retrying` (Rust)
+  * `statuses_are_classified` (Rust)
+
+## GR-009 — The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real router + PostgreSQL with a manual clock advanced by 240 days.
+* **Known gap:** A removed member that keeps polling with its old key keeps the log alive within its read range (ST-059). Single-relay `groups` rows are not refreshed by polls (they are refreshed by the scheduled key-update commits).
+* **Tests:**
+  * `a_group_that_is_still_polled_keeps_its_log_even_without_commits_for_over_six_months` (Rust)
+
+## GR-010 — When the home relay of a cross-relay group stays unreachable or no longer recognises the group, the user is told once per streak (sooner for 'does not recognise'), membership changes are refused with a specific reason, messages keep flowing, and a successor group (new id, new home, every member must accept again) can be created; nothing is migrated or re-pointed silently, and a healthy group cannot be 'replaced'.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Engines on three relays with the home log deleted from the home relay's database.
+* **Known gap:** The home relay cannot be told apart from a hostile one that denies the group, so the response is notification + replacement, not repair. The successor group has no cryptographic link to the old one (members trust the inviting contact). Not tested on a device; no UI exists for the new event or action (ST-048).
+* **Tests:**
+  * `a_home_relay_that_lost_the_group_is_reported_and_a_successor_group_needs_every_member_to_accept_again` (Rust)

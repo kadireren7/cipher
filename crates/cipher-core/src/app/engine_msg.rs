@@ -1392,7 +1392,14 @@ impl Engine {
             // A DM Welcome that was not stamped by a sequencer came through a capability, i.e. from a peer on another relay.
             remote: kind == ConvKind::Dm && env.group_seq.is_none(),
             // The home relay comes ONLY from the MLS-authenticated group metadata; the Welcome's carrier cannot choose it.
-            home: meta.home.clone().map(|relay| HomedGroup { relay, ledger: None, local_devices: Vec::new(), frozen: None }),
+            home: meta.home.clone().map(|relay| HomedGroup {
+                relay,
+                ledger: None,
+                local_devices: Vec::new(),
+                frozen: None,
+                issue: None,
+                superseded_by: None,
+            }),
         };
         // History keys exist only from the epoch this device joined at: no pre-join history, and nothing from a previous membership era.
         let hk = if kind == ConvKind::Group { Some((joined.epoch, self.session()?.mls.export_epoch_key(&joined.group)?)) } else { None };

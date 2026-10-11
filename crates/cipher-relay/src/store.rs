@@ -870,11 +870,18 @@ impl PgStore {
         after: u64,
         limit_seq: u64,
         limit: usize,
+        now: u64,
     ) -> Result<Option<(Vec<cipher_wire::home::HomeLogEntry>, Option<cipher_wire::home::HomeHead>)>, ApiError> {
         let c = self.conn().await?;
         let Some(g) = c.query_opt("SELECT head_seq FROM home_groups WHERE tag=$1", &[&tag.0.as_slice()]).await.map_err(internal)? else {
             return Ok(None);
         };
+        // The caller has verified a member's read credential: the group is alive. Application messages never reach the home relay, so a quiet
+        // group has no commits for months; without this its log was purged 180 days after the last COMMIT and its commit channel vanished.
+        // At most one write per group and day.
+        c.execute("UPDATE home_groups SET touched_day=$2 WHERE tag=$1 AND touched_day<$2", &[&tag.0.as_slice(), &((now / 86_400) as i32)])
+            .await
+            .map_err(internal)?;
         let head = g.get::<_, i64>(0) as u64;
         let rows = c
             .query(

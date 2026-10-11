@@ -27,6 +27,13 @@ Linux, Docker Engine with the Compose plugin, `openssl`, ~1 GB RAM free, a few G
 * **Quotas and abuse limits** are in the relay: bounded queues per recipient/capability, per-source token buckets, a global in-flight cap
   (503 when overloaded), a total attachment-storage cap (`CIPHER_RELAY_MAX_BLOB_BYTES`, default 2 GiB in the compose file), message/attachment TTL purge.
 
+* **Deadlines and shared sources** (set for the onion profile in `compose.onion.yaml`): `CIPHER_RELAY_REQUEST_TIMEOUT_SECS` (default 30, blobs get 4x),
+  `CIPHER_RELAY_BODY_IDLE_SECS` (default 20: a request body that sends nothing for this long is aborted and its upload slot freed; 90 on the onion
+  profile because Tor can stall a circuit for ~60 s before rebuilding it), `CIPHER_RELAY_TLS_HANDSHAKE_SECS` (default 10, 60 on the onion profile).
+  `CIPHER_RELAY_SHARED_SOURCE=1` tells the relay that every client arrives from one local address (a Tor daemon, a reverse proxy): per-address buckets
+  are then pooled and scaled up and failed authentication from one client can no longer lock out the others. Connections from a loopback address are
+  treated the same way automatically. **Without it an onion relay can be locked out by anyone who sends a few invalid requests.**
+
 ## Profile B — public TLS relay
 1. `cd deploy && ./cipherctl.sh init --audience relay.example.org` (audience = the host, optionally `:port`, exactly as clients will type it).
 2. Obtain a certificate for that name (for example with `certbot certonly --standalone`) and copy the **full chain** to `deploy/data/secrets/tls-cert.pem`

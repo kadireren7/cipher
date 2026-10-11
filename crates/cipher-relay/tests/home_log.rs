@@ -304,3 +304,23 @@ fn the_database_holds_no_account_device_or_member_identifier_for_a_home_group() 
     }
     assert_eq!(names.len(), 10 + 1, "unexpected extra column: {names:?}"); // 'tag' appears in both tables
 }
+
+/// Regression: a group's log was purged 180 days after its last COMMIT, although members polled it every day (application messages never touch
+/// the home relay, so a quiet-but-alive group has no commits for months). The commit channel then vanished silently and membership changes were
+/// impossible for ever. A successful authenticated read now counts as activity.
+#[test]
+fn a_group_that_is_still_polled_keeps_its_log_even_without_commits_for_over_six_months() {
+    let w = World::new();
+    let (alive, dead) = (tag_of(20), tag_of(21));
+    let (a1, d1) = (epoch(20, 1), epoch(21, 1));
+    assert_eq!(commit(&w, &alive, &a1, &req(0, 1, &a1)).0, 200);
+    assert_eq!(commit(&w, &dead, &d1, &req(0, 1, &d1)).0, 200);
+    let store = &w.state.store;
+    for _ in 0..4 {
+        w.clock.0.advance(60 * 86_400); // 240 days in total, polled every 60 days
+        assert_eq!(read_log(&w, &alive, &a1, 0).0, 200, "members keep polling");
+        w.rt.block_on(store.purge(cipher_core::clock::Clock::unix_secs(&w.clock.0))).unwrap();
+    }
+    assert_eq!(read_log(&w, &alive, &a1, 0).0, 200, "a polled group is not purged");
+    assert_eq!(read_log(&w, &dead, &d1, 0).0, 401, "a group nobody touches for the idle period is still purged");
+}

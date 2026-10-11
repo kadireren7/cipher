@@ -125,6 +125,24 @@ pub struct HomedGroup {
     /// until the user replaces the group. A static category, never free text.
     #[serde(default)]
     pub frozen: Option<String>,
+    /// The home relay could not be used for a while (see `HomeIssue`). Messages keep flowing; membership changes cannot be made.
+    #[serde(default)]
+    pub issue: Option<HomeIssue>,
+    /// Hex id of the group that replaces this one (`Engine::create_successor_group`); this group stays readable.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+}
+
+/// Why the commit channel of a cross-relay group is not available, observed over time. Static categories only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeIssue {
+    /// `"unreachable"`: the home relay did not answer (outage, network). `"unrecognized"`: it answered but does not know this group or our
+    /// credentials (log purged, database lost or rolled back, or a hostile relay).
+    pub kind: String,
+    /// Unix seconds of the first failure in the current streak.
+    pub since: u64,
+    /// The user has been told (one event per streak).
+    pub alerted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

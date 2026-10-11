@@ -137,6 +137,8 @@ impl World {
             max_inflight,
             max_connections: 64,
             request_timeout_secs,
+            body_idle_secs: 20,
+            shared_source: false,
             listen: "127.0.0.1:0".parse().unwrap(),
             tls_cert: None,
             tls_key: None,
@@ -169,6 +171,23 @@ impl World {
     pub fn instance(&self, limits: Limits) -> Router {
         let store = Arc::new(PgStore::new(self.pool.clone()));
         let st = Arc::new(AppState::new(store, self.state.cfg.clone(), self.clock.clone(), self.push.clone(), limits));
+        cipher_relay::build_app(st)
+    }
+
+    /// A relay router sharing this world's database but with a short body-idle deadline (stalled-upload tests).
+    pub fn instance_shared_source(&self, limits: Limits) -> Router {
+        let store = Arc::new(PgStore::new(self.pool.clone()));
+        let mut cfg = (*self.state.cfg).clone();
+        cfg.shared_source = true;
+        let st = Arc::new(AppState::new(store, Arc::new(cfg), self.clock.clone(), self.push.clone(), limits));
+        cipher_relay::build_app(st)
+    }
+
+    pub fn instance_with_body_idle(&self, secs: u64) -> Router {
+        let store = Arc::new(PgStore::new(self.pool.clone()));
+        let mut cfg = (*self.state.cfg).clone();
+        cfg.body_idle_secs = secs;
+        let st = Arc::new(AppState::new(store, Arc::new(cfg), self.clock.clone(), self.push.clone(), generous_limits()));
         cipher_relay::build_app(st)
     }
 

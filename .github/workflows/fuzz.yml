@@ -30,6 +30,7 @@ jobs:
           - privacy_wire
           - history_unseal
           - multi_relay_wire
+          - home_log
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

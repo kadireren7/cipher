@@ -127,3 +127,54 @@ Creation with members on other relays; Welcome delivery through cards' intro cap
 * **The home relay sees** timing, volume and the source address of every member's polls (all members share one credential per epoch); over Tor that address is hidden, on public TLS it is not. Polls are one request per group per sync.
 * **Not tested:** real TLS or Tor between processes for groups, an Android emulator or physical device for groups, large groups (>~30 members: many introduction frames), mid-stream upload interruption of group files, multi-device accounts in cross-relay groups, relay databases restored from backup (rollback is detected by members, not repaired).
 * **Not reviewed** by anyone other than the author; ST-005 stays open.
+
+## 9. Recovery from a lost or blocked commit channel (hardening pass, 2026-10-11)
+Situations: the home relay is gone for good, restored from an older backup, has purged the log, or denies the group (indistinguishable from the previous
+cases for a member); or a member captured the commit channel with an invalid commit (§8.1-3, ST-051).
+
+**Options evaluated**
+| Option | Verdict |
+| --- | --- |
+| Members switch to another home relay on their own (re-point the group) | **Rejected.** The home relay is part of the MLS-authenticated metadata (GR-008). Letting members, or the relay, change it would let a hostile relay or a malicious member steer the group to infrastructure they control, and there is no consensus mechanism among mostly-offline members to agree on the switch. This is the "silent change of the authoritative relay" the design must not allow. |
+| A `MoveHome` commit through the old home relay (§7.6) | Works only while the old home relay is alive and honest, which is exactly the case that does not need recovery. Not built. |
+| Re-create the group: a **successor group** with a new MLS group id, a new home relay (the creator's own), the same members | **Implemented** (`Engine::create_successor_group`, FFI `create_successor_group`). Every member receives a normal invitation (Welcome) from the creator over the creator's contact relationship and must accept it explicitly; nothing is accepted on their behalf. The old group stays readable and keeps carrying messages; the old conversation records `superseded_by`. |
+| Automatic detection of "my commit channel is gone" | **Implemented** as a state, not as a repair (below). |
+
+**What a member now sees.** Every sync polls the home log. A failed poll is classified as *unreachable* (no answer: outage, network) or *unrecognized* (the relay
+answered 401/404: it does not know this group or our epoch credentials). A streak that lasts 72 h (unreachable) or 1 h (unrecognized) raises one
+`HomeRelayUnavailable` event; the state is cleared by the next successful poll. While the state is *unrecognized*, membership changes are refused
+with a specific message instead of timing out ("create a successor group"); messages are unaffected (they never touch the home relay).
+
+**Explicit re-verification.** The successor carries no cryptographic proof of continuity with the old group. A recipient trusts the invitation exactly as much
+as the inviter's contact (the inviter's identity key was verified when the contact was added); a new member list is shown before acceptance. Members who
+want certainty compare the member list out of band. This is a weaker statement than "the same group", on purpose.
+
+**What this does not solve**
+* A malicious member can still freeze a group's membership changes (ST-051) and, after a successor is created, can do it again to the successor if
+  they are invited to it. The answer is to not invite them, which is a human decision.
+* Nothing prevents a *hostile home relay* from causing the "unrecognized" state at will (it can always deny a group). The cost to the group is the same as
+  any denial of service by that relay: one successor group.
+* The successor needs every member's contact data on the creator's device. Members who are not contacts of the creator (known only through the group)
+  cannot be re-invited by them until they are added by card.
+* No UI exists yet for the event or the action (ST-048).
+
+**Home-log retention (found in this pass, fixed).** The relay purged a home log 180 days after the last *commit*, although members poll it daily and
+application messages never reach the home relay. A quiet but active group therefore lost its commit channel silently after six months. A successful
+authenticated read now counts as activity (`GR-009`). The side effect is one more coarse timing fact for the relay (the day a group was last polled),
+which it already derives from the polls themselves. A removed member who keeps polling with its old key keeps the log alive for its remaining read range;
+storage per group stays bounded (§8.3).
+
+**Scenario review (what each listed threat now relies on)**
+| Scenario | Handling | Evidence |
+| --- | --- | --- |
+| Malicious member blocks progress | detected, reported, membership frozen, messages continue, successor possible; **not preventable** | `garbage_with_attacker_chosen_keys_…`, `a_malicious_member_cannot_forge_membership_…`, new successor test |
+| Home relay down / permanently lost | messages continue; commits refused with a reason; after 1 h / 72 h an event; successor group | `the_home_relay_being_down_…`, `a_home_relay_that_lost_the_group_…` |
+| Membership change during an outage | refused locally, nothing changes (title unchanged), applies after recovery | `the_home_relay_being_down_…` |
+| Concurrent commits / epoch divergence | CAS, loser rebases; divergence freezes the group | `concurrent_commits_from_two_admins_…`, `members_shown_different_histories_…` |
+| Forked histories | hash chain + head gossip in every frame; permanent partitions between members who never exchange a message are **not** detectable | `a_home_relay_that_drops_reorders_or_rolls_back_the_log_is_caught` |
+| Removed member keeps capabilities | 1 h grace in cross-relay groups (deadlock avoidance, §8.1-6), then revoked; the removed member can deposit undecryptable ciphertext in that window | `removing_a_member_cuts_it_off_even_when_the_removed_member_commits_first` |
+| Welcome delivery failure | write-ahead, per device, retried; a ghost leaf waits | `the_welcome_for_a_member_on_an_unreachable_relay_waits_…`, `a_lost_response_to_a_commit_that_adds_a_member_…` |
+| Delayed / reordered messages | held until the commit is applied, then retried | `a_member_who_was_offline_receives_everything_in_order_…` |
+| Compromised capability | introductions are hearsay from owners/admins (ST-054); a leaked read/commit credential is epoch-bound | `home_log.rs` auth tests |
+| Replay | commit idempotent by commit id; creation cannot be replayed; signed requests carry the epoch | `the_first_writer_owns_a_tag_and_creation_cannot_be_replayed_or_hijacked` |
+| Malicious relay | tamper / renumber / roll back / replay / equivocate / withhold are detected or cost liveness only | `a_home_relay_that_tampers_…`, `a_relay_that_only_withholds_the_log_…` |

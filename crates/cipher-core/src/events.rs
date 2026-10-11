@@ -63,6 +63,12 @@ pub enum SecurityEvent {
         conversation_id: String,
         reason: String,
     },
+    /// The home relay of a cross-relay group has been unusable for a long time (`kind`: `unreachable` or `unrecognized`). Messages still flow;
+    /// membership changes cannot be made. A successor group can be created (`Engine::create_successor_group`).
+    HomeRelayUnavailable {
+        conversation_id: String,
+        kind: String,
+    },
     /// THIS device was removed from the group: its history keys were deleted and the group state dropped.
     GroupAccessRevoked {
         conversation_id: String,

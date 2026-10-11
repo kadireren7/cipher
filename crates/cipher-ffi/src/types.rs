@@ -376,6 +376,7 @@ pub enum SecurityEventKind {
     GroupMemberRemoved,
     GroupAccessRevoked,
     GroupForkDetected,
+    HomeRelayUnavailable,
     RemovedMemberMessageRejected,
 }
 
@@ -404,6 +405,7 @@ impl From<&SecurityEvent> for SecurityEventFfi {
             E::GroupMemberRemoved { conversation_id } => (SecurityEventKind::GroupMemberRemoved, Some(conversation_id.clone())),
             E::GroupAccessRevoked { conversation_id } => (SecurityEventKind::GroupAccessRevoked, Some(conversation_id.clone())),
             E::GroupForkDetected { conversation_id, .. } => (SecurityEventKind::GroupForkDetected, Some(conversation_id.clone())),
+            E::HomeRelayUnavailable { conversation_id, .. } => (SecurityEventKind::HomeRelayUnavailable, Some(conversation_id.clone())),
             E::RemovedMemberMessageRejected { conversation_id } => {
                 (SecurityEventKind::RemovedMemberMessageRejected, Some(conversation_id.clone()))
             }

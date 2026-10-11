@@ -127,11 +127,48 @@ fn check(resp: HttpResponse) -> Result<HttpResponse> {
         200..=299 => Ok(resp),
         401 | 403 => Err(SecurityError::Transport("unauthorized")),
         404 => Err(SecurityError::Transport("not found")),
+        408 => Err(SecurityError::Transport("timeout")),
         409 => Err(SecurityError::Transport("conflict")),
         413 => Err(SecurityError::Transport("payload too large")),
         429 => Err(SecurityError::Transport("rate limited")),
+        // Overload / upstream trouble is transient and says nothing about the request: retryable, unlike a plain 500.
+        502..=504 => Err(SecurityError::Transport("unavailable")),
         500..=599 => Err(SecurityError::Transport("server error")),
         _ => Err(SecurityError::Transport("request rejected")),
+    }
+}
+
+/// Failures worth another attempt: the request may never have been processed (timeout, overload, a Tor circuit that died, a dropped link).
+/// NOT retried: TLS/pin failures (fail closed at once), authorisation, rate limits, malformed input, anything the relay decided.
+pub(crate) fn is_transient(e: &SecurityError) -> bool {
+    matches!(e, SecurityError::Transport("timeout" | "unavailable" | "network unavailable" | "io failure"))
+}
+
+pub(crate) const TRANSFER_ATTEMPTS: u32 = 4;
+
+/// Delay before retry number `attempt` (1-based): 1 s, 2 s, 4 s ... capped at 15 s, with up to 50 % random jitter so that many clients (or a
+/// client and the circuits Tor is rebuilding) do not retry in lockstep.
+pub(crate) fn retry_delay_ms(attempt: u32, entropy: u32) -> u64 {
+    let base = (1_000u64 << attempt.saturating_sub(1).min(4)).min(15_000);
+    base + (base / 2) * u64::from(entropy % 1000) / 1000
+}
+
+/// Runs `op` up to `attempts` times, sleeping `retry_delay_ms` between transient failures. `sleep` is injected so tests do not wait.
+pub(crate) fn retry_transient<T>(
+    attempts: u32,
+    mut sleep: impl FnMut(u64),
+    mut entropy: impl FnMut() -> u32,
+    mut op: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut n = 1;
+    loop {
+        match op() {
+            Err(e) if is_transient(&e) && n < attempts => {
+                sleep(retry_delay_ms(n, entropy()));
+                n += 1;
+            }
+            other => return other,
+        }
     }
 }
 
@@ -295,12 +332,35 @@ impl RelayApi<'_> {
     }
 
     pub fn upload_blob(&self, ciphertext: Vec<u8>) -> Result<Id16> {
-        let r: BlobCreated = json(&check(self.send_signed_raw_inner("POST", "/v1/blobs", ciphertext, true)?)?)?;
-        Ok(r.blob_id)
+        self.transfer_retrying(|| {
+            let r: BlobCreated = json(&check(self.send_signed_raw_inner("POST", "/v1/blobs", ciphertext.clone(), true)?)?)?;
+            Ok(r.blob_id)
+        })
     }
 
     /// Upload an already-encrypted blob file; the body hash is computed by streaming (the file is not loaded into memory).
     pub fn upload_blob_file(&self, path: &str) -> Result<Id16> {
+        self.transfer_retrying(|| self.upload_blob_file_once(path))
+    }
+
+    /// Bounded retries with backoff and jitter for transient failures of one transfer. Every attempt is a complete, freshly signed request, so a
+    /// retry can never be mistaken for a replay; a lost response can at worst leave an unreferenced blob that expires by TTL (ST-046) — the message
+    /// that references a blob is only created after a successful upload, so nothing is delivered twice. Only real (https) endpoints sleep.
+    fn transfer_retrying<T>(&self, op: impl FnMut() -> Result<T>) -> Result<T> {
+        let real = self.endpoint.base().starts_with("https://");
+        retry_transient(
+            TRANSFER_ATTEMPTS,
+            |ms| {
+                if real {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            },
+            || crate::rng::array::<4>().map(u32::from_be_bytes).unwrap_or(0),
+            op,
+        )
+    }
+
+    fn upload_blob_file_once(&self, path: &str) -> Result<Id16> {
         use sha2::{Digest, Sha256};
         use std::io::Read;
         let mut f = std::fs::File::open(path).map_err(|_| SecurityError::Transport("cannot read upload file"))?;
@@ -326,6 +386,10 @@ impl RelayApi<'_> {
 
     /// UNAUTHENTICATED upload of an encrypted blob file into the mailbox the capability belongs to (`self.endpoint` is that mailbox's relay).
     pub fn upload_blob_file_by_cap(&self, path: &str, cap: &Id16) -> Result<Id16> {
+        self.transfer_retrying(|| self.upload_blob_file_by_cap_once(path, cap))
+    }
+
+    fn upload_blob_file_by_cap_once(&self, path: &str, cap: &Id16) -> Result<Id16> {
         let resp = check(self.transport.upload_file(
             self.endpoint,
             HttpRequest {
@@ -341,30 +405,36 @@ impl RelayApi<'_> {
 
     /// Same for an in-memory blob (thumbnails).
     pub fn upload_blob_by_cap(&self, ciphertext: Vec<u8>, cap: &Id16) -> Result<Id16> {
-        let resp = check(self.transport.execute(
-            self.endpoint,
-            HttpRequest {
-                method: "POST",
-                path_and_query: "/v1/blobs/by-cap".to_owned(),
-                authorization: Some(format!("Cap {cap}")),
-                body: ciphertext,
-            },
-        )?)?;
-        Ok(json::<BlobCreated>(&resp)?.blob_id)
+        self.transfer_retrying(|| {
+            let resp = check(self.transport.execute(
+                self.endpoint,
+                HttpRequest {
+                    method: "POST",
+                    path_and_query: "/v1/blobs/by-cap".to_owned(),
+                    authorization: Some(format!("Cap {cap}")),
+                    body: ciphertext.clone(),
+                },
+            )?)?;
+            Ok(json::<BlobCreated>(&resp)?.blob_id)
+        })
     }
 
     pub fn download_blob_file(&self, id: &Id16, dest: &str, max_bytes: u64) -> Result<()> {
         use sha2::{Digest, Sha256};
         let path = format!("/v1/blobs/{id}");
-        let hash: [u8; 32] = Sha256::digest(b"").into();
-        let authorization = self.signed_header_for_hash("GET", &path, &hash)?;
-        let status = self.transport.download_file(
-            self.endpoint,
-            HttpRequest { method: "GET", path_and_query: path, authorization: Some(authorization), body: Vec::new() },
-            dest,
-            max_bytes,
-        )?;
-        check(HttpResponse { status, body: Vec::new() }).map(|_| ())
+        // A retry re-signs and rewrites `dest` from the start (the platform layer truncates it), so a half-written file is never completed by a
+        // second attempt; the caller verifies the container's integrity after the download regardless.
+        self.transfer_retrying(|| {
+            let hash: [u8; 32] = Sha256::digest(b"").into();
+            let authorization = self.signed_header_for_hash("GET", &path, &hash)?;
+            let status = self.transport.download_file(
+                self.endpoint,
+                HttpRequest { method: "GET", path_and_query: path.clone(), authorization: Some(authorization), body: Vec::new() },
+                dest,
+                max_bytes,
+            )?;
+            check(HttpResponse { status, body: Vec::new() }).map(|_| ())
+        })
     }
 
     pub fn send_batch(&self, deliveries: Vec<Delivery>, ttl_secs: Option<u64>) -> Result<Vec<String>> {
@@ -453,5 +523,82 @@ mod tests {
             assert!(RelayEndpoint::new(bad).is_err(), "{bad}");
         }
         assert!(RelayEndpoint::new("https://relay.example:8443/").is_ok());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod retry_tests {
+    use super::*;
+
+    fn t(m: &'static str) -> SecurityError {
+        SecurityError::Transport(m)
+    }
+
+    #[test]
+    fn delays_grow_are_capped_and_jittered() {
+        assert_eq!(retry_delay_ms(1, 0), 1_000);
+        assert_eq!(retry_delay_ms(2, 0), 2_000);
+        assert_eq!(retry_delay_ms(3, 0), 4_000);
+        assert_eq!(retry_delay_ms(9, 0), 15_000);
+        assert!(retry_delay_ms(1, 999) > 1_400 && retry_delay_ms(1, 999) <= 1_500);
+        assert_ne!(retry_delay_ms(2, 100), retry_delay_ms(2, 900), "jitter actually varies the delay");
+    }
+
+    #[test]
+    fn only_transient_failures_are_retried_and_only_a_bounded_number_of_times() {
+        for (e, retried) in [
+            ("timeout", true),
+            ("unavailable", true),
+            ("network unavailable", true),
+            ("io failure", true),
+            ("tls failure", false),
+            ("unauthorized", false),
+            ("rate limited", false),
+            ("server error", false),
+            ("conflict", false),
+        ] {
+            let mut calls = 0;
+            let mut slept = Vec::new();
+            let r: Result<()> = retry_transient(
+                4,
+                |ms| slept.push(ms),
+                || 0,
+                || {
+                    calls += 1;
+                    Err(t(e))
+                },
+            );
+            assert!(r.is_err());
+            assert_eq!(calls, if retried { 4 } else { 1 }, "{e}");
+            assert_eq!(slept.len(), if retried { 3 } else { 0 }, "{e}");
+        }
+    }
+
+    #[test]
+    fn success_after_a_transient_failure_stops_retrying() {
+        let mut calls = 0;
+        let r = retry_transient(
+            4,
+            |_| {},
+            || 0,
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(t("timeout"))
+                } else {
+                    Ok(calls)
+                }
+            },
+        );
+        assert_eq!(r.unwrap(), 3);
+    }
+
+    #[test]
+    fn statuses_are_classified() {
+        let c = |s| check(HttpResponse { status: s, body: vec![] }).unwrap_err();
+        assert!(is_transient(&c(408)));
+        assert!(is_transient(&c(502)) && is_transient(&c(503)) && is_transient(&c(504)));
+        assert!(!is_transient(&c(500)) && !is_transient(&c(401)) && !is_transient(&c(429)) && !is_transient(&c(413)));
     }
 }

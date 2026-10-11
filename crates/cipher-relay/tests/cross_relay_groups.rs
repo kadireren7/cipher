@@ -597,6 +597,62 @@ fn garbage_with_attacker_chosen_keys_blocks_membership_changes_and_is_reported_b
     assert!(texts(&mut r.alice, &ca).contains(&"messages-do-not-need-the-home-relay".to_owned()));
 }
 
+/// A home relay that has lost the group (purged log, restored from an older backup, replaced database) must not leave members in silent limbo.
+/// Honest members cannot tell this from a hostile relay, so nothing is "repaired": they are told, membership changes are refused with a clear
+/// reason, messages keep flowing, and a SUCCESSOR group (new id, new home, every member accepts again) restores the ability to change membership.
+#[test]
+fn a_home_relay_that_lost_the_group_is_reported_and_a_successor_group_needs_every_member_to_accept_again() {
+    let mut r = rig();
+    let (ca, cb, cc) = trio(&mut r);
+    r.wa.exec("DELETE FROM home_groups", &[]);
+    for e in [&mut r.alice, &mut r.bob, &mut r.carol] {
+        e.take_events();
+    }
+    r.sync_all(2);
+    let told = |e: &mut TestEngine| has_event(e, |ev| matches!(ev, SecurityEvent::HomeRelayUnavailable { .. }));
+    assert!(!told(&mut r.bob), "one failed poll is not an alarm");
+    for w in [&r.wa, &r.wb, &r.wc] {
+        w.clock.0.advance(2 * 3600);
+    }
+    r.sync_all(2);
+    for (name, e) in [("alice", &mut r.alice), ("bob", &mut r.bob), ("carol", &mut r.carol)] {
+        assert!(told(e), "{name} is told that the home relay no longer recognises the group");
+    }
+    r.sync_all(2);
+    assert!(!told(&mut r.bob), "one event per streak, not one per sync");
+    let err = r.alice.rename_group(&ca, "nope").unwrap_err();
+    assert!(format!("{err:?}").contains("recognises"), "{err:?}");
+    // Messages still flow in the old group.
+    r.bob.send_text(&cb, "still-here", None).unwrap();
+    r.sync_all(3);
+    assert!(texts(&mut r.carol, &cc).contains(&"still-here".to_owned()));
+    // A healthy group cannot be "replaced".
+    // (checked below on the new group) Replace the broken one: nothing happens silently on the other members' side.
+    let new_a = r.alice.create_successor_group(&ca).unwrap();
+    assert_ne!(new_a, ca);
+    assert!(r.alice.create_successor_group(&ca).is_err(), "a group is replaced once");
+    r.sync_all(2);
+    let pending = |e: &mut TestEngine, old: &Id16| {
+        e.list_conversations()
+            .unwrap()
+            .into_iter()
+            .find(|c| c.kind == ConvKind::Group && c.id != *old)
+            .expect("an invitation to the new group")
+    };
+    let (nb, nc) = (pending(&mut r.bob, &cb), pending(&mut r.carol, &cc));
+    assert_ne!(nb.state, ConvState::Active, "the invitation is not accepted on the member's behalf");
+    r.bob.accept_conversation(&nb.id).unwrap();
+    r.carol.accept_conversation(&nc.id).unwrap();
+    r.sync_all(4);
+    r.alice.rename_group(&new_a, "Trio v2").unwrap();
+    r.sync_all(3);
+    assert_eq!(r.bob.conversation(&nb.id).unwrap().title, "Trio v2", "membership-level changes work again in the successor group");
+    r.carol.send_text(&nc.id, "in-the-new-group", None).unwrap();
+    r.sync_all(3);
+    assert!(texts(&mut r.alice, &new_a).contains(&"in-the-new-group".to_owned()));
+    assert!(r.alice.create_successor_group(&new_a).is_err(), "a healthy group is not replaced");
+}
+
 // ------------------------------------------------------------------------------------------------------------------ files, metadata, refusals
 
 #[test]

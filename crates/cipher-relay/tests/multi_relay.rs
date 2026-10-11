@@ -449,25 +449,33 @@ fn a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_
     let mut r = rig();
     let (conv_a, _) = wired(&mut r);
     let data = pdf(200_000);
-    // the recipient's relay accepts the upload but the response is lost
+    let attachments = |e: &mut TestEngine, c: &Id16| {
+        e.history(c, None, 50).unwrap().items.iter().filter(|m| matches!(m.content, Content::Attachment { .. })).count()
+    };
+    // The recipient's relay accepts the upload but the response is lost. The core retries a transient failure (bounded, freshly signed): the send
+    // succeeds, produces exactly ONE message (a retry can never duplicate one), and the lost response leaves one unreferenced blob that expires by TTL.
     *r.alice.transport.lose_response_on.lock().unwrap() = Some("/v1/blobs/by-cap".to_owned());
-    assert!(send(&mut r.alice, &conv_a, AttachmentKind::Pdf, "application/pdf", "a.pdf", &data, None).is_err());
-    // the recipient's relay is unreachable
+    let first = send(&mut r.alice, &conv_a, AttachmentKind::Pdf, "application/pdf", "a.pdf", &data, None).unwrap();
+    assert_eq!(attachments(&mut r.alice, &conv_a), 1, "one send, one message");
+    assert_eq!(
+        r.wb.query_bytes("SELECT blob_id FROM blobs").len(),
+        2,
+        "the blob whose response was lost is an orphan next to the referenced one"
+    );
+    // The recipient's relay is unreachable: every attempt fails, the send fails, nothing is left behind.
     r.alice.transport.down.lock().unwrap().push(BASE_B.to_owned());
-    assert!(send(&mut r.alice, &conv_a, AttachmentKind::Pdf, "application/pdf", "a.pdf", &data, None).is_err());
+    assert!(send(&mut r.alice, &conv_a, AttachmentKind::Pdf, "application/pdf", "b.pdf", &data, None).is_err());
     r.alice.transport.down.lock().unwrap().clear();
-    let before =
-        r.alice.history(&conv_a, None, 50).unwrap().items.iter().filter(|m| matches!(m.content, Content::Attachment { .. })).count();
-    assert_eq!(before, 0, "a failed transfer never produces a message");
+    assert_eq!(attachments(&mut r.alice, &conv_a), 1, "a failed transfer never produces a message");
     let leftovers = std::fs::read_dir(r.alice.dir.path().join("tmp").join("up")).map(|d| d.flatten().count()).unwrap_or(0);
     assert_eq!(leftovers, 0, "ciphertext temp files are removed even when the transfer fails");
-    // retry works and Bob gets exactly one file
-    let m = send(&mut r.alice, &conv_a, AttachmentKind::Pdf, "application/pdf", "a.pdf", &data, None).unwrap();
+    // An explicit retry works and Bob ends up with exactly the two files that were sent successfully.
+    let second = send(&mut r.alice, &conv_a, AttachmentKind::Pdf, "application/pdf", "b.pdf", &data, None).unwrap();
     r.alice.sync().unwrap();
     r.bob.sync().unwrap();
     let conv_b = r.bob.list_conversations().unwrap()[0].id;
-    assert_eq!(r.bob.open_attachment(&conv_b, &m.id, false, &mut |_, _| true).unwrap().as_slice(), data.as_slice());
-    let attachments =
-        r.bob.history(&conv_b, None, 50).unwrap().items.iter().filter(|m| matches!(m.content, Content::Attachment { .. })).count();
-    assert_eq!(attachments, 1);
+    for m in [&first, &second] {
+        assert_eq!(r.bob.open_attachment(&conv_b, &m.id, false, &mut |_, _| true).unwrap().as_slice(), data.as_slice());
+    }
+    assert_eq!(attachments(&mut r.bob, &conv_b), 2);
 }

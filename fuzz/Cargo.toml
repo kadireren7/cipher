@@ -95,3 +95,9 @@ name = "multi_relay_wire"
 path = "fuzz_targets/multi_relay_wire.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "home_log"
+path = "fuzz_targets/home_log.rs"
+test = false
+doc = false
