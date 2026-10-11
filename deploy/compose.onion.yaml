@@ -7,6 +7,7 @@ services:
     networks: !override [backend, onion]
     environment:
       CIPHER_RELAY_TLS_HANDSHAKE_SECS: "60"   # a Tor rendezvous handshake exceeds the 10 s default (measured)
+      CIPHER_RELAY_REQUEST_TIMEOUT_SECS: "120" # blob transfers get 4x: a file uploaded through Tor was cut off at 4 x 30 s (observed in CI: server error)
   tor:
     build: { context: ., dockerfile: Dockerfile.tor }
     image: cipher-tor:local
