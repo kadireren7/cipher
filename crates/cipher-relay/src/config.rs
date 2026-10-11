@@ -30,6 +30,8 @@ pub struct Config {
     pub tls_handshake_secs: u64,
     /// Live attachment bytes one delivery capability may have stored (capability uploads).
     pub cap_blob_quota_bytes: u64,
+    /// Cross-relay groups this relay will serve as HOME (unauthenticated creation is otherwise a storage-exhaustion lever).
+    pub home_max_groups: i64,
 }
 
 impl std::fmt::Debug for Config {
@@ -102,6 +104,7 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(cipher_wire::limits::CAP_BLOB_QUOTA_BYTES),
             tls_handshake_secs: (num("CIPHER_RELAY_TLS_HANDSHAKE_SECS", 10) as u64).clamp(1, 120),
+            home_max_groups: get("CIPHER_RELAY_HOME_MAX_GROUPS").and_then(|v| v.parse().ok()).unwrap_or(20_000),
         };
         cfg.check_transport()?;
         Ok(cfg)
@@ -147,6 +150,7 @@ mod tests {
             max_total_blob_bytes: 1,
             tls_handshake_secs: 10,
             cap_blob_quota_bytes: 1,
+            home_max_groups: 1,
         }
     }
     fn unreachable_addr() -> SocketAddr {

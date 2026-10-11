@@ -144,6 +144,7 @@ impl World {
             max_total_blob_bytes: total_blobs,
             tls_handshake_secs: 10,
             cap_blob_quota_bytes: cap_quota,
+            home_max_groups: 3,
         });
         let clock = Arc::new(SharedClock(ManualClock::new(1_800_000_000)));
         let push = Arc::new(RecordingPush::default());

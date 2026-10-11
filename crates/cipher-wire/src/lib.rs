@@ -8,6 +8,7 @@
 //! confidentiality of content comes from the MLS layer inside `ciphertext`.
 
 pub mod b64;
+pub mod home;
 pub mod ids;
 pub mod limits;
 pub mod messages;

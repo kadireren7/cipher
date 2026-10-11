@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::error::ApiError;
 use crate::push::PushNotifier;
 use crate::ratelimit::KeyHasher;
-use crate::store::{Enqueue, GroupOutcome, PgStore};
+use crate::store::{Enqueue, GroupOutcome, HomeOutcome, PgStore};
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{ConnectInfo, MatchedPath, Path, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -112,6 +112,8 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/intro/key-package", post(intro_key_package))
         .route("/v1/groups/{tag}", get(group_state))
         .route("/v1/groups/{tag}/commit", post(group_commit))
+        .route("/v1/home/{tag}/commit", post(home_commit))
+        .route("/v1/home/{tag}/log", get(home_log))
         .route("/v1/push-token", put(set_push_token))
         .route("/v1/blobs", post(upload_blob))
         .route("/v1/blobs/by-cap", post(upload_blob_by_cap))
@@ -154,6 +156,8 @@ async fn log_request(req: Request, next: Next) -> Response {
 }
 
 struct Incoming {
+    home_epoch: Option<u64>,
+    home_sig: Option<Vec<u8>>,
     method: &'static str,
     path_and_query: String,
     authorization: Option<String>,
@@ -171,8 +175,12 @@ async fn read(req: Request<Body>, limit: usize) -> Result<Incoming, ApiError> {
     let path_and_query = req.uri().path_and_query().map(|p| p.as_str().to_owned()).ok_or(ApiError::BadRequest)?;
     let authorization = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+    let (home_epoch, home_sig) = match authorization.as_deref().and_then(cipher_wire::home::parse_auth) {
+        Some((e, sig)) => (Some(e), Some(sig)),
+        None => (None, None),
+    };
     let body = to_bytes(req.into_body(), limit).await.map_err(|_| ApiError::TooLarge)?;
-    Ok(Incoming { method, path_and_query, authorization, ip, body })
+    Ok(Incoming { home_epoch, home_sig, method, path_and_query, authorization, ip, body })
 }
 
 async fn authed(st: &AppState, inc: &Incoming) -> Result<Id16, ApiError> {
@@ -363,7 +371,7 @@ async fn upload_blob(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     if !bool::from(actual.ct_eq(&announced)) {
         return Err(ApiError::BadRequest); // the body is not what the (valid) signature covered
     }
-    let inc = Incoming { method: "POST", path_and_query, authorization, ip, body };
+    let inc = Incoming { home_epoch: None, home_sig: None, method: "POST", path_and_query, authorization, ip, body };
     // Sanity only: the relay cannot verify that the body is encrypted. It enforces the
     // container header and size bounds; the client is responsible for encryption.
     if inc.body.len() < 13 + 16 || inc.body.get(..4) != Some(ATTACHMENT_MAGIC.as_slice()) {
@@ -593,4 +601,82 @@ async fn anon_deliver(State(st): S, req: Request<Body>) -> Result<Response, ApiE
         }
     }
     Ok(Json(AnonDeliverResponse { results }).into_response())
+}
+
+// ------------------------------------------------------------------------------------------ home-relay log (cross-relay groups)
+
+/// Verify the request signature with `public` (an Ed25519 key the caller derived from the MLS exporter of the epoch it names). Every failure
+/// is the same `Unauthorized`: an unknown tag, an unknown epoch and a wrong signature are indistinguishable.
+fn home_verify(inc: &Incoming, epoch: u64, public: &[u8; 32]) -> Result<(), ApiError> {
+    let sig = inc.home_sig.as_deref().ok_or(ApiError::Unauthorized)?;
+    let msg = cipher_wire::home::request_message(epoch, inc.method, &inc.path_and_query, &inc.body);
+    if crate::auth::verify_ed25519(public, &msg, sig) {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized)
+    }
+}
+
+/// UNAUTHENTICATED by device; authenticated by a group credential. Appends the next commit of a cross-relay group to its ordered log
+/// (compare-and-swap on the head). The relay sees ciphertext and two public keys; it learns no account, device or member list.
+async fn home_commit(State(st): S, Path(tag): Path<String>, req: Request<Body>) -> Result<Response, ApiError> {
+    use cipher_wire::home::{HomeCommitRequest, HomeCommitResponse, HomeStaleResponse};
+    let inc = read(req, 4 * MAX_JSON_BODY_BYTES).await?;
+    let tag = id_param(&tag)?;
+    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
+    if !st.take("home-ip", ip.as_bytes(), 1.0, 120.0, 4.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let r: HomeCommitRequest = parse(&inc.body)?;
+    let next = r.validate().map_err(|_| ApiError::BadRequest)?;
+    let epoch = inc.home_epoch.ok_or(ApiError::Unauthorized)?;
+    if epoch != r.expected_seq.max(1) {
+        return Err(ApiError::Unauthorized);
+    }
+    if r.expected_seq == 0 {
+        // Creation: there is no earlier epoch to authenticate against. The request is signed with the NEW commit key it announces (proof that the
+        // creator knows it); the tag is a secret derived from the group id, and the first writer wins.
+        home_verify(&inc, epoch, &next.0)?;
+        if !st.take("home-new-ip", ip.as_bytes(), 1.0, 6.0, 6.0 / 3600.0).await? {
+            return Err(ApiError::RateLimited);
+        }
+    } else {
+        let (commit_pub, _) = st.store.home_pubs(&tag, r.expected_seq).await?.ok_or(ApiError::Unauthorized)?;
+        home_verify(&inc, epoch, &commit_pub)?;
+        if !st.take("home-tag", &tag.0, 1.0, 30.0, 30.0 / 3600.0).await? {
+            return Err(ApiError::RateLimited);
+        }
+    }
+    match st.store.home_commit(&tag, &r, next, st.clock.now(), st.cfg.home_max_groups).await? {
+        HomeOutcome::Accepted { seq, chain } => Ok(Json(HomeCommitResponse { seq, chain }).into_response()),
+        HomeOutcome::Stale { head_seq, head_chain } => {
+            Ok((StatusCode::CONFLICT, Json(HomeStaleResponse { error: "stale".into(), head_seq, head_chain })).into_response())
+        }
+        HomeOutcome::Full => Err(ApiError::QueueFull),
+    }
+}
+
+/// Read the log. A key of epoch `e` reads entries up to `e + 1` only (see `cipher_wire::home`).
+async fn home_log(State(st): S, Path(tag): Path<String>, req: Request<Body>) -> Result<Response, ApiError> {
+    use cipher_wire::home::{HomeLogResponse, MAX_HOME_PAGE};
+    let inc = read(req, 0).await?;
+    let tag = id_param(&tag)?;
+    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
+    if !st.take("home-ip", ip.as_bytes(), 1.0, 120.0, 4.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let epoch = inc.home_epoch.ok_or(ApiError::Unauthorized)?;
+    let (_, read_pub) = st.store.home_pubs(&tag, epoch).await?.ok_or(ApiError::Unauthorized)?;
+    home_verify(&inc, epoch, &read_pub)?;
+    if !st.take("home-tag-read", &tag.0, 1.0, 120.0, 0.5).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let after = inc
+        .path_and_query
+        .split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("after=")))
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or(ApiError::BadRequest)?;
+    let (entries, head) = st.store.home_log(&tag, after, epoch.saturating_add(1), MAX_HOME_PAGE).await?.ok_or(ApiError::Unauthorized)?;
+    Ok(Json(HomeLogResponse { entries, head }).into_response())
 }
