@@ -66,9 +66,10 @@ class CircuitIsolationTest {
         val deadline = System.currentTimeMillis() + 5000
         while (users.size < 3 && System.currentTimeMillis() < deadline) Thread.sleep(20)
         assertEquals(3, users.size)
-        assertEquals("same epoch, same circuit", users[0], users[1])
-        assertNotEquals("after a rotation a fresh circuit is requested", users[1], users[2])
-        assertTrue("the credential is an opaque random token", users[0].matches(Regex("[0-9a-f]{16}")))
+        // the proxy handles connections on separate threads, so compare as a multiset: two connections of the first epoch share a credential, the third has its own
+        val counts = users.groupingBy { it }.eachCount().values.sorted()
+        assertEquals("same epoch, same circuit; after a rotation a fresh one", listOf(1, 2), counts)
+        assertTrue("the credential is an opaque random token", users.all { it.matches(Regex("[0-9a-f]{16}")) })
         assertEquals(1, iso.rotationCount())
     }
 
