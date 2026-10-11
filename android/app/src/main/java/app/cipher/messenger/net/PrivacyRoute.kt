@@ -77,8 +77,9 @@ class CircuitIsolation(private val port: Int, private val random: () -> ByteArra
     /** Process-wide hook of `java.net`: answers ONLY SOCKS credential requests for this proxy port, nothing else. */
     fun install() {
         java.net.Authenticator.setDefault(object : java.net.Authenticator() {
+            // the JDK's SOCKS client asks with requestorType SERVER (not PROXY), so the protocol name ("SOCKS5") and the proxy port identify the request
             override fun getPasswordAuthentication(): java.net.PasswordAuthentication? =
-                if (requestorType == RequestorType.PROXY && requestingProtocol?.startsWith("SOCKS") == true && requestingPort == port) {
+                if (requestingProtocol?.startsWith("SOCKS") == true && requestingPort == port) {
                     java.net.PasswordAuthentication(current(), "x".toCharArray())
                 } else {
                     null

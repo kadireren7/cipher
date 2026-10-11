@@ -68,7 +68,7 @@ class CircuitIsolationTest {
         assertEquals(3, users.size)
         // the proxy handles connections on separate threads, so compare as a multiset: two connections of the first epoch share a credential, the third has its own
         val counts = users.groupingBy { it }.eachCount().values.sorted()
-        assertEquals("same epoch, same circuit; after a rotation a fresh one", listOf(1, 2), counts)
+        assertEquals("same epoch, same circuit; after a rotation a fresh one: $users", listOf(1, 2), counts)
         assertTrue("the credential is an opaque random token", users.all { it.matches(Regex("[0-9a-f]{16}")) })
         assertEquals(1, iso.rotationCount())
     }
