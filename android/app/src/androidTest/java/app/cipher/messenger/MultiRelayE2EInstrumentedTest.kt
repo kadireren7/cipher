@@ -100,6 +100,8 @@ class MultiRelayE2EInstrumentedTest {
             "recv" -> recv()
             "send" -> send()
             "settle" -> settle()
+            "gstart" -> gstart()
+            "gread" -> gread()
             else -> throw AssertionError("unknown phase $phase")
         }
     }
@@ -244,5 +246,54 @@ class MultiRelayE2EInstrumentedTest {
         }
         status("delivered" to e.getHistory(conv, null, 200u).items.count { it.outgoing }.toString())
         e.lockVault()
+    }
+
+    /** A group whose members live on THREE independent relays (the app's relay is the home relay): add the second peer by card, create the group. */
+    private fun gstart() {
+        val e = unlocked()
+        val carol = retryOnTorOffline("addContactByCard") { e.addContactByCard(args.getString("carolCard")!!, "Carol", true) }
+        val group = e.createGroup("E2E group", listOf(args.getString("bobAccount")!!, carol.accountId))
+        e.sendText(group, "g-app-1", null)
+        repeat(3) { e.sync() }
+        status("group" to group)
+    }
+
+    /** Messages and an attachment from members on the other two relays must be here; send ours (text + 200 KB file) into the group. */
+    private fun gread() {
+        val e = unlocked()
+        val group = args.getString("group")!!
+        val expect = args.getString("expectTexts")!!.split(",")
+        waitFor("group texts $expect", 180) {
+            runCatching { e.sync() }
+            texts(e, group).filter { it in expect }.toSet() == expect.toSet()
+        }
+        val att = run {
+            var found: uniffi.cipher_ffi.MessageFfi? = null
+            waitFor("group attachment", 180) {
+                runCatching { e.sync() }
+                found = e.getHistory(group, null, 200u).items.firstOrNull { it.attachment != null && !it.outgoing }
+                found != null
+            }
+            found!!
+        }
+        assertEquals(args.getString("expectName"), att.attachment!!.filename)
+        val opened = sha(e.openAttachment(group, att.id, false, null))
+        assertEquals("group attachment from the third relay is intact", args.getString("expectSha"), opened)
+        e.sendText(group, "g-app-2", null)
+        val bytes = ByteArray(200_000) { (it * 7 + 3).toByte() }
+        val f = File(dir, "g-app.bin").apply { writeBytes(bytes) }
+        var sentOk = false
+        waitFor("send the group attachment (needs every member's mailbox)", 180) {
+            runCatching { e.sync() }
+            sentOk = runCatching {
+                e.sendAttachment(
+                    group, f.absolutePath, "application/octet-stream", "g-app.bin", AttachmentKindFfi.FILE, "", null, null, null, null,
+                )
+            }.isSuccess
+            sentOk
+        }
+        f.delete()
+        repeat(3) { runCatching { e.flushOutbox() } }
+        status("sentSha" to sha(bytes))
     }
 }

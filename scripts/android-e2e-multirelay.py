@@ -20,7 +20,7 @@ CA = os.path.join(ROOT, "android/build/test-ca")
 APK = os.path.join(ROOT, "android/app/build/outputs/apk/debug/app-debug.apk")
 TAPK = os.path.join(ROOT, "android/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk")
 HOST = "10.0.2.2"
-PA, PB = 8443, 8444
+PA, PB, PC = 8443, 8444, 8445
 # CIPHER_E2E_TOR=1: BOTH relays are Tor onion services (self-signed, pinned); the app uses the real SOCKS privacy route to a real Tor client on the
 # host (10.0.2.2:TOR_SOCKS from the emulator) and the peer reaches them with curl --socks5-hostname. No direct route is involved.
 TOR = os.environ.get("CIPHER_E2E_TOR") == "1"
@@ -194,6 +194,7 @@ m = re.search(r"instrumentation:(\S+)/androidx\.test\.runner\.AndroidJUnitRunner
 RUNNER = f"{m.group(1)}/androidx.test.runner.AndroidJUnitRunner"
 
 dba, dbb = f"e2e_a_{sfx}", f"e2e_b_{sfx}"
+DBS = [dba, dbb]
 psql(f"CREATE DATABASE {dba}"); psql(f"CREATE DATABASE {dbb}")
 if TOR:
     onion_a, onion_b = start_tor()
@@ -237,6 +238,7 @@ try:
     ok, v, out = instrument("connect", relayUrl=url_a, peerCard=bob_card)
     check("app: adds a card from another relay, starts a conversation, sends (pinned TLS to relay B on-device)", ok and "conv" in v, out[-500:])
     conv_app = v.get("conv", "")
+    bob_account = v.get("bobAccount", "")
     if not ok:  # everything after this depends on the conversation existing: stop instead of recording a cascade of consequential failures
         raise SystemExit("baseline step failed (see above); later checks would only be consequences")
 
@@ -358,10 +360,77 @@ try:
         bob.cmd(f"open {conv_bob} {mid.group(1)} {outp}")
         opened = sha(open(outp, "rb").read()) if os.path.exists(outp) else ""
     check("the attachment sent around the outage decrypts byte-for-byte at the peer", bool(sent_sha) and opened == sent_sha, (sent_sha, opened))
+    # ======================================================================================================== cross-relay GROUP (direct route, real TLS between processes)
+    if not TOR:
+        dbc = f"e2e_c_{sfx}"
+        DBS.append(dbc)
+        psql(f"CREATE DATABASE {dbc}")
+        PIN_C = self_signed("c", f"IP:{HOST},IP:127.0.0.1,DNS:localhost")
+        start_relay(PC, dbc, f"{tmp}/c.pem", f"{tmp}/c.key", "c")
+        url_c = f"https://{HOST}:{PC}"
+        carol = Peer(f"{tmp}/carol", f"{HOST}:{PC}", {"CIPHER_PEER_OWN_PIN": PIN_C})
+        carol.cmd("provision")
+        carol.cmd(f"register {TOKEN}")
+        carol.cmd(f"ownrelay {url_c} {PIN_C}")
+        carol_card = carol.cmd("card 7").split('"')[1]
+        ok, v, out = instrument("gstart", bobAccount=bob_account, carolCard=carol_card, **ik)
+        check("GROUP: the app (relay A = home) creates a group with peers on relays B and C (self-signed, pinned)", ok and "group" in v, out[-800:])
+        group = v.get("group", "")
+        gids = {}
+        for name, peer in (("bob", bob), ("carol", carol)):
+            gid = ""
+            for _ in range(10):
+                peer.cmd("sync")
+                ids = re.findall(r'id: "([0-9a-f]{32})"', peer.cmd("convs"))
+                cand = [x for x in ids if x != conv_bob] if name == "bob" else ids
+                if cand:
+                    gid = cand[0]
+                    break
+                time.sleep(2)
+            if gid:
+                peer.cmd(f"accept {gid}")
+            gids[name] = gid
+        for _ in range(6):
+            bob.cmd("sync"); carol.cmd("sync"); time.sleep(1)
+        check("GROUP: both peers received the Welcome through the intro capabilities and joined", bool(gids["bob"]) and bool(gids["carol"]), gids)
+        bob.cmd(f"send {gids['bob']} g-bob-1")
+        carol.cmd(f"send {gids['carol']} g-carol-1")
+        gdata = bytes((i * 11 + 5) % 247 for i in range(150_000))
+        gpath = f"{tmp}/g-carol.bin"
+        open(gpath, "wb").write(gdata)
+        r = carol.cmd(f"file {gids['carol']} {gpath} application/octet-stream")
+        pumps = [Pump(bob), Pump(carol)]
+        for pm in pumps:
+            pm.start()
+        try:
+            ok, v, out = instrument("gread", group=group, expectTexts="g-bob-1,g-carol-1", expectSha=sha(gdata), expectName="g-carol.bin", **ik)
+        finally:
+            for pm in pumps:
+                pm.stop()
+        check("GROUP: the app received both peers' texts and an attachment from the THIRD relay, intact (copy on its own relay)", ok and "Ok" in r, out[-1200:])
+        gsha = v.get("sentSha", "")
+        for name, peer in (("bob", bob), ("carol", carol)):
+            got = ""
+            for _ in range(10):
+                peer.cmd("sync")
+                got = peer.cmd(f"history {gids[name]}")
+                if "g-app-2" in got and "g-app.bin" in got:
+                    break
+                time.sleep(2)
+            mid = re.search(r'id: "([0-9a-f]{32})"[^}]*?filename: "g-app\.bin"', got)
+            opened = ""
+            if mid:
+                outp = f"{tmp}/{name}-g-app.bin"
+                peer.cmd(f"open {gids[name]} {mid.group(1)} {outp}")
+                opened = sha(open(outp, "rb").read()) if os.path.exists(outp) else ""
+            check(f"GROUP: {name} (relay {'B' if name == 'bob' else 'C'}) received the app's text and attachment byte-for-byte", "g-app-2" in got and bool(gsha) and opened == gsha, (gsha, opened))
+        homes = (psql("SELECT count(*) FROM home_groups", dba), psql("SELECT count(*) FROM home_groups", dbb), psql("SELECT count(*) FROM home_groups", dbc))
+        check("GROUP: only the home relay holds the group's commit log (and no account of B or C lives there)", homes == ("1", "0", "0") and psql("SELECT count(*) FROM devices", dba) == "1", homes)
 finally:
     for p in procs:
         p.terminate()
     time.sleep(1)
-    psql(f"DROP DATABASE IF EXISTS {dba} WITH (FORCE)"); psql(f"DROP DATABASE IF EXISTS {dbb} WITH (FORCE)")
+    for db in DBS:
+        psql(f"DROP DATABASE IF EXISTS {db} WITH (FORCE)")
 print(f"\n{sum(results)}/{len(results)} checks passed")
 sys.exit(0 if all(results) else 1)
