@@ -119,7 +119,21 @@ Scope: confirmed defects only, each with a regression test; no new features. His
 **Reviewed, no change needed (evidence in the tests named in `CROSS_RELAY_GROUPS.md` §9):** concurrent commits, forks, hostile home relay, Welcome failures, reordering, replay. **Metadata review:** the relay schema stores account↔device mapping (needed for the directory), peppered hashes of addresses for 24 h (rate buckets), a pairwise sender hash for the life of a queued envelope, `push_token` in clear, and per-request logs only at DEBUG. No unnecessary collection was found that could be removed without breaking delivery or abuse protection; the only new fact is the day a group was last polled (GR-009). This is not an anonymity claim (`METADATA_MODEL.md`).
 **Not done in this pass:** chunked/resumable uploads (ST-046), a UI for the new event/action, storage-exhaustion and database-restart phases on a device, expired-capability download tests beyond the existing ones, physical devices.
 
-**Evidence (this machine, 2026-10-11):** `cargo test --workspace` before the last test edit: 399 passed, 1 failed (`multi_relay` transfer test, whose old expectation contradicted fix 3; rewritten, 12/12 pass afterwards); `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo fmt --check` clean; fuzz target compiles (`cargo check`). CI results for the commits of this pass: see the table below (filled in from the runs, not from expectation).
+**CI results for this pass (read from the runs):**
+| Run | Commit | Result |
+| --- | --- | --- |
+| `ci` 38130002171 (before this pass, after the history rewrite) | 6fab1e1 | **failure**: secret scanning (the allowlist held the old commit ids); everything else green |
+| `ci` 38133689402 / 38133755113 | 0260771 / bab9059 | failure: secret scanning (first) and the instrumented suite (both): 3 network-attack tests broke because of `retryOnConnectionFailure(false)`, **my change**, reverted |
+| `ci` 38135688467 | bfb12f5 | **all 8 jobs green** (rust + PostgreSQL, audit, secrets, invariants, Android build/lint, instrumented suite, two-relay emulator E2E) |
+| `self-hosting acceptance` 38135688489 | bfb12f5 | green (also green on 0260771) |
+| `android-tor` (3 independent repetitions per run) 38133689394 | 0260771 | 3/3 green |
+| `android-tor` 38135688443 | bfb12f5 | 3/3 green |
+| `android-tor` 38135693461 | bfb12f5 | 3/3 green |
+| `android-tor` 38135700231 | bfb12f5 | 2/3: repetition 1 **failed by timeout**: the `read` phase (app restart, offline messages, attachment download and reply) exceeded the driver's 600 s per-phase limit; no assertion failed, no TLS/pin/data error. The earlier phases passed; the previous phase alone took ~6 min. Cause not attributed (Tor latency, or the bounded retries lengthening a stalled attempt; the logs do not separate them) |
+
+**Tor effect, honestly:** before this pass (old `28c090a`): 1 of 3 repetitions green; over all earlier history 14 of 17 (with changing code). After: **11 of 12 repetitions green** on two commits, the one failure being a hang, not an error. That is encouraging and **not** proof: 12 repetitions cannot distinguish a 5 % from a 15 % failure rate, the fixes were not tested one at a time, and the original server-error cause was never observed in a relay log. The `read` phase budget (600 s) versus Tor latency plus 4 retry attempts per transfer needs its own look; the driver limit was deliberately **not** raised just to make it pass.
+
+**Evidence (this machine, 2026-10-11):** `cargo test --workspace` before the last test edit: 399 passed, 1 failed (`multi_relay` transfer test, whose old expectation contradicted fix 3; rewritten, 12/12 pass afterwards); `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo fmt --check` clean; fuzz target compiles (`cargo check`). CI results: table below (read from the runs).
 
 ## Resume checkpoint
 Next actions in dependency order: (1) A mid-stream upload cut (TCP-cutting proxy) and airplane-mode/handover phases; Orbot on a physical device; (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).
