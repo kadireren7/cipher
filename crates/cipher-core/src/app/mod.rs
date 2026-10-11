@@ -12,3 +12,5 @@ pub mod netprofile;
 pub mod notify;
 pub mod transport;
 pub use engine::{Engine, EngineConfig, PublicIdentity, Settings, VaultStatus};
+#[cfg(any(test, feature = "insecure-test-support"))]
+pub use engine_home::HomeForgery;

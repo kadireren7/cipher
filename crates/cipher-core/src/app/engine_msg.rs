@@ -955,7 +955,7 @@ impl Engine {
                 // answer `not_found`, which counts as delivered), they wait for their capability.
                 let (mut local_here, mut wait_here): (Vec<Id16>, Vec<Id16>) = match &homed {
                     Some(h) => chunk.drain(..).partition(|d| h.local_devices.contains(d)),
-                    None => (chunk.drain(..).collect(), Vec::new()),
+                    None => (std::mem::take(&mut chunk), Vec::new()),
                 };
                 waiting.append(&mut wait_here);
                 local_here.extend(fallback); // a revoked capability on OUR relay: the authenticated path, right now
@@ -1306,7 +1306,7 @@ impl Engine {
         })
     }
 
-    fn retry_held(&mut self, conv_id: &Id16, report: &mut SyncReport) -> Result<()> {
+    pub(super) fn retry_held(&mut self, conv_id: &Id16, report: &mut SyncReport) -> Result<()> {
         let prefix = conv_id.to_hex();
         for _ in 0..8 {
             let held: Vec<String> =
@@ -1838,7 +1838,10 @@ impl Engine {
                 revoke.push(o.cap);
             }
             // After a removal the old capability must die at once (the removed member may know it); a routine rotation keeps a grace window.
-            let grace = if stale { 0 } else { CAP_ROTATE_GRACE_SECS };
+            // In a cross-relay group both sides rotate after a removal and each must still be able to deliver its NEW capability through the other's
+            // OLD one: revoking at once would leave every pair waiting for a capability that can only arrive through a revoked one. The removed member
+            // can then deposit undecryptable ciphertext until the grace ends, nothing more.
+            let grace = if stale && c.home.is_none() { 0 } else { CAP_ROTATE_GRACE_SECS };
             let rec = OwnCap { cap, minted_ms: now, revoke: revoke.clone(), revoke_grace_secs: grace };
             self.vault.with_store(|s| {
                 s.atomic(|s| {

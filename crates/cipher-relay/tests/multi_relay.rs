@@ -231,11 +231,14 @@ fn a_card_that_changes_hands_with_a_different_identity_is_never_merged_into_an_e
 }
 
 #[test]
-fn groups_and_commits_with_a_peer_on_another_relay_are_refused_not_improvised() {
+fn a_one_to_one_conversation_on_another_relay_performs_no_commits_but_groups_use_a_home_relay() {
     let mut r = rig();
     let (conv_a, _) = connect(&mut r);
-    assert!(matches!(r.alice.create_group("g", &[r.bob_id]), Err(SecurityError::Denied(_))));
+    // A 1:1 conversation has no sequencer: still no commits (no key-update commits, no membership changes).
     assert!(matches!(r.alice.refresh_keys(&conv_a), Err(SecurityError::Denied(_))), "no sequencer, so no commits");
+    // Groups with members on another relay are ordered by a home relay (docs/CROSS_RELAY_GROUPS.md §7; tests/cross_relay_groups.rs).
+    let g = r.alice.create_group("g", &[r.bob_id]).unwrap();
+    assert!(r.alice.conversation(&g).unwrap().home.is_some());
 }
 
 #[test]

@@ -61,7 +61,7 @@ fn msg_view(e: &mut Engine, m: &StoredMessage) -> MessageFfi {
             });
             (caption.clone(), view)
         }
-        Content::Receipt { .. } | Content::LeaveRequest | Content::DeliveryCap { .. } => (String::new(), None),
+        Content::Receipt { .. } | Content::LeaveRequest | Content::DeliveryCap { .. } | Content::GroupCaps { .. } => (String::new(), None),
     };
     MessageFfi {
         id: m.id.to_hex(),

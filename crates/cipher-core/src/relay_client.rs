@@ -417,7 +417,7 @@ impl RelayApi<'_> {
                 let r: HomeStaleResponse = json(&resp)?;
                 Ok(HomeCommitResult::Stale { head_seq: r.head_seq, head_chain: chain32(&r.head_chain)? })
             }
-            429 if json::<serde_json::Value>(&resp).ok().and_then(|v| v["error"].as_str().map(str::to_owned)).as_deref()
+            429 if json::<serde_json::Value>(&resp).ok().and_then(|v| v.get("error")?.as_str().map(str::to_owned)).as_deref()
                 == Some("queue full") =>
             {
                 Ok(HomeCommitResult::Full)

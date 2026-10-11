@@ -105,6 +105,7 @@ impl Curl {
             if h.ends_with(".onion") {
                 let Some(sx) = &self.socks else { return Err(HttpFault::Network) }; // no proxy configured: refuse rather than try a direct connection
                 c.args(["--socks5-hostname", sx]);
+                c.args(["--max-time", "300"]); // circuit building plus a large upload through Tor: the generic 120 s limit cut real transfers off
             } else if h == self.alias_host {
                 c.args(["--connect-to", &format!("{h}:{p}:{}:{p}", self.ip)]);
             }

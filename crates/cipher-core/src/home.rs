@@ -91,9 +91,8 @@ pub const FORK_KEYS: &str = "home log public keys differ from the ones the membe
 /// verified (a re-delivery); anything else is a rollback or a rewrite.
 pub fn verify_page(tag: &Id16, head: &HomeHead, entries: &[HomeLogEntry]) -> Result<Vec<VerifiedEntry>> {
     let mut prev = head.chain32()?;
-    let mut next_seq = head.seq + 1;
     let mut out = Vec::with_capacity(entries.len());
-    for e in entries {
+    for (next_seq, e) in (head.seq + 1..).zip(entries.iter()) {
         if e.seq != next_seq {
             return Err(SecurityError::Protocol(if e.seq < next_seq { FORK_ROLLBACK } else { FORK_GAP }));
         }
@@ -104,7 +103,6 @@ pub fn verify_page(tag: &Id16, head: &HomeHead, entries: &[HomeLogEntry]) -> Res
         }
         out.push(VerifiedEntry { seq: e.seq, commit_id: e.commit_id, commit: e.commit.clone(), chain, commit_pub, read_pub });
         prev = chain;
-        next_seq += 1;
     }
     let _ = tag;
     Ok(out)

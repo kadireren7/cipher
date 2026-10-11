@@ -118,6 +118,8 @@ impl Engine {
         // Peer on another relay: the blob is stored in THEIR mailbox relay under their capability (they download it from the relay they already
         // use), and a second copy goes to our own relay so we can still open what we sent. Same relay: one authenticated upload as before.
         let remote = self.attachment_target(conv)?;
+        // A group with members on several relays: one copy per OTHER relay (each reached through a member's capability there).
+        let group_targets = self.group_attachment_targets(conv)?;
         let tmp = fresh(&self.temp_dir("up"), "enc")?;
         let out = std::fs::File::create(&tmp.0).map_err(|_| SecurityError::Attachment("cannot create temp file"))?;
         let mut high = 0u64; // progress must never go backwards (padding bytes count as work done)
@@ -126,8 +128,16 @@ impl Engine {
             progress(high, total.max(high))
         })?;
         let path = tmp.0.to_str().ok_or(SecurityError::Attachment("temp path"))?.to_owned();
+        let mut copies: Vec<BlobCopy> = Vec::new();
         let (blob_id, own_blob_id) = match &remote {
-            None => (self.api()?.upload_blob_file(&path)?, None),
+            None => {
+                let own = self.api()?.upload_blob_file(&path)?;
+                for (ep, cap, url) in &group_targets {
+                    let id = self.api_at(ep)?.upload_blob_file_by_cap(&path, cap)?;
+                    copies.push(BlobCopy { relay: url.clone(), blob_id: id, thumb_blob_id: None });
+                }
+                (own, None)
+            }
             Some((ep, cap)) => {
                 let theirs = self.api_at(ep)?.upload_blob_file_by_cap(&path, cap)?;
                 (theirs, Some(self.api()?.upload_blob_file(&path)?))
@@ -143,7 +153,12 @@ impl Engine {
                 }
                 let (ct, d) = encrypt_attachment(t, "image/jpeg", "thumb.jpg")?;
                 let id = match &remote {
-                    None => self.api()?.upload_blob(ct)?,
+                    None => {
+                        for ((ep, cap, _), copy) in group_targets.iter().zip(copies.iter_mut()) {
+                            copy.thumb_blob_id = Some(self.api_at(ep)?.upload_blob_by_cap(ct.clone(), cap)?);
+                        }
+                        self.api()?.upload_blob(ct)?
+                    }
                     Some((ep, cap)) => {
                         let theirs = self.api_at(ep)?.upload_blob_by_cap(ct.clone(), cap)?;
                         own_thumb_id = Some(self.api()?.upload_blob(ct)?);
@@ -161,6 +176,7 @@ impl Engine {
             thumb_blob_id,
             thumb_descriptor,
             duration_ms,
+            copies,
         };
         let frame = Frame {
             v: 1,
@@ -215,6 +231,30 @@ impl Engine {
         Ok(Some((crate::relay_client::RelayEndpoint::from_descriptor(&relay)?, cap)))
     }
 
+    /// For a cross-relay group: one (endpoint, capability, base URL) per member relay other than ours. Empty for every other conversation.
+    /// Fails (retry later) while a member's capability is not known yet — that member could not receive the message either.
+    fn group_attachment_targets(&mut self, conv: &Id16) -> Result<Vec<(crate::relay_client::RelayEndpoint, Id16, String)>> {
+        if self.conversation(conv)?.home.is_none() {
+            return Ok(Vec::new());
+        }
+        let (_, me_dev) = self.own_ids()?;
+        let group = crate::protocol::GroupRef(conv.0.to_vec());
+        let devices: Vec<Id16> =
+            self.session()?.mls.members_detailed(&group)?.into_iter().filter(|m| m.device != me_dev).map(|m| m.device).collect();
+        let mut out: Vec<(crate::relay_client::RelayEndpoint, Id16, String)> = Vec::new();
+        for d in devices {
+            let Some((cap, relay)) = self.peer_cap_pub(conv, &d) else {
+                return Err(SecurityError::Transport("a group member's mailbox is not known yet"));
+            };
+            let Some(relay) = relay else { continue }; // a member on OUR relay: the sender's own copy serves it
+            if out.iter().any(|(_, _, url)| url == relay.url()) {
+                continue;
+            }
+            out.push((crate::relay_client::RelayEndpoint::from_descriptor(&relay)?, cap, relay.url().to_owned()));
+        }
+        Ok(out)
+    }
+
     /// Download + verify + decrypt an attachment (or its thumbnail) into memory. Fails closed on ANY integrity problem and never
     /// returns partial plaintext. No plaintext is cached or written to disk by the engine.
     pub fn open_attachment(
@@ -236,13 +276,15 @@ impl Engine {
             return Err(SecurityError::Denied("message unavailable: group access revoked"));
         }
         let Content::Attachment { att, .. } = m.content else { return Err(SecurityError::Malformed("not an attachment")) };
+        // In a cross-relay group the copy on OUR relay is the one we can read.
+        let mine = self.own_relay.as_ref().and_then(|o| att.copies.iter().find(|c| c.relay == o.url()).cloned());
         let (blob, desc_json) = if thumbnail {
             (
-                att.thumb_blob_id.ok_or(SecurityError::NotFound("thumbnail"))?,
+                mine.as_ref().and_then(|c| c.thumb_blob_id).or(att.thumb_blob_id).ok_or(SecurityError::NotFound("thumbnail"))?,
                 att.thumb_descriptor.ok_or(SecurityError::NotFound("thumbnail"))?,
             )
         } else {
-            (att.blob_id, att.descriptor)
+            (mine.as_ref().map_or(att.blob_id, |c| c.blob_id), att.descriptor)
         };
         let desc = AttachmentDescriptor::from_bytes(desc_json.as_bytes())?;
         let tmp = fresh(&self.temp_dir("down"), "enc")?;

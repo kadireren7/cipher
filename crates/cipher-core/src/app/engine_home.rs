@@ -437,11 +437,11 @@ impl Engine {
             .map(|c| c.id)
             .collect();
         for id in ids {
-            match self.pull_home_one(&id, report) {
-                Err(
-                    e @ (SecurityError::StorageCorrupt | SecurityError::Locked | SecurityError::Invalidated | SecurityError::KeyStore(_)),
-                ) => return Err(e),
-                _ => {}
+            if let Err(
+                e @ (SecurityError::StorageCorrupt | SecurityError::Locked | SecurityError::Invalidated | SecurityError::KeyStore(_)),
+            ) = self.pull_home_one(&id, report)
+            {
+                return Err(e);
             }
         }
         Ok(())
@@ -469,7 +469,7 @@ impl Engine {
             if ledger.is_none() {
                 // A joiner anchors itself at the entry that ADDED it: that entry must carry exactly the epoch keys this device derived.
                 let Some(pos) = entries.iter().position(|e| e.seq == creds.epoch) else { return Ok(()) };
-                let e0 = entries[pos].clone();
+                let Some(e0) = entries.get(pos).cloned() else { return Ok(()) };
                 let keys_ok = e0.keys().map(|(c, r)| c == creds.commit_pub() && r == creds.read_pub()).unwrap_or(false);
                 if !keys_ok {
                     self.freeze_group(conv_id, crate::home::FORK_KEYS)?;
@@ -507,12 +507,19 @@ impl Engine {
                     continue;
                 }
                 let conv_now = self.conversation(conv_id)?;
+                let members_before = self.session()?.mls.members_detailed(&group)?.len();
                 match self.process_group_message(&conv_now, &v.commit) {
                     Ok(p) => {
                         let removed_self = matches!(p, ProcessedEx::Commit { self_removed: true, .. });
                         self.apply_processed(conv_id, p, report)?;
                         if removed_self {
                             return Ok(());
+                        }
+                        // Messages of the new epoch that reached the mailbox before this commit were held: they can be read now.
+                        self.retry_held(conv_id, report)?;
+                        // New members cannot know our capability (it is only announced on rotation): announce it again, directly.
+                        if self.session()?.mls.members_detailed(&group)?.len() > members_before {
+                            let _ = self.reannounce_own_cap(conv_id);
                         }
                         let after_creds = self.home_creds_now(&group)?;
                         if after_creds.epoch != v.seq {
@@ -615,6 +622,23 @@ impl Engine {
         Ok(())
     }
 
+    /// Queue our CURRENT inbox capability for the group again (no new capability is minted).
+    pub(crate) fn reannounce_own_cap(&mut self, conv_id: &Id16) -> Result<()> {
+        let Some(relay) = self.own_relay.clone() else { return Ok(()) };
+        let own = self.vault.with_store(|s| get_json::<OwnCapRead>(s, NS_CAPS, &format!("own/{}", conv_id.to_hex())))?;
+        let Some(o) = own else { return Ok(()) };
+        let frame = Frame {
+            v: 1,
+            id: rid()?,
+            ts_ms: self.next_ts_ms(),
+            reply_to: None,
+            content: Content::DeliveryCap { cap: o.cap, relay: Some(relay) },
+            head: None,
+        };
+        self.queue_app_message(conv_id, frame, false, false)?;
+        Ok(())
+    }
+
     /// Hearsay from a member about OTHER members' capabilities. Never overrides a device's own announcement, never concerns this device or the
     /// sender, and only names devices that are members. (A malicious member can misdirect messages to a relay it controls — it can already read
     /// them; the worst effect is that the real recipient does not get them. Documented in docs/CROSS_RELAY_GROUPS.md.)
@@ -623,9 +647,11 @@ impl Engine {
         let (_, me_dev) = self.own_ids()?;
         let members: Vec<Id16> = self.session()?.mls.members_detailed(&group)?.into_iter().map(|m| m.device).collect();
         for e in entries.into_iter().take(100) {
-            if e.device == me_dev || e.device == sender_device || !members.contains(&e.device) {
+            if e.device == me_dev || !members.contains(&e.device) {
                 continue;
             }
+            // An entry about the SENDER is that device announcing its own capability (authenticated by MLS): as good as a DeliveryCap frame.
+            let own_announcement = e.device == sender_device;
             let relay = match e.relay {
                 Some(d) => match d.validated() {
                     Ok(d) if self.own_relay.as_ref().is_some_and(|o| o.url() == d.url()) => None,
@@ -637,13 +663,63 @@ impl Engine {
             let src = format!("src/{}/{}", conv_id.to_hex(), e.device.to_hex());
             let key = format!("peer/{}/{}", conv_id.to_hex(), e.device.to_hex());
             self.vault.with_store(|s| {
-                if s.get(NS_CAPS, &src)?.is_some_and(|v| v.as_slice() == b"\"direct\"".as_slice()) {
+                if !own_announcement && s.get(NS_CAPS, &src)?.is_some_and(|v| v.as_slice() == b"\"direct\"".as_slice()) {
                     return Ok(());
                 }
                 put_json(s, NS_CAPS, &key, &StoredPeerCap::Full(PeerCap { cap: e.cap, relay }))?;
-                put_json(s, NS_CAPS, &src, &"gossip")
+                put_json(s, NS_CAPS, &src, &if own_announcement { "direct" } else { "gossip" })
             })?;
         }
         self.wake_outbox(conv_id)
+    }
+}
+
+// ------------------------------------------------------------------------------------------------------------------ test support
+
+/// What a malicious MEMBER (who holds the real credentials of the current epoch) can put into the home log.
+#[cfg(any(test, feature = "insecure-test-support"))]
+#[derive(Debug)]
+pub enum HomeForgery {
+    /// A well-formed commit the group's policy forbids (its sender skips its own pre-check).
+    Unauthorized(Vec<GroupOp>),
+    /// Unparseable bytes, announcing public keys of the attacker's choosing for the next epoch.
+    Garbage,
+}
+
+#[cfg(any(test, feature = "insecure-test-support"))]
+impl Engine {
+    /// Submit a forged commit with this member's REAL credentials and never merge it locally. Receivers must refuse it.
+    pub fn inject_forged_home_commit_for_tests(&mut self, conv: &Id16, forgery: HomeForgery) -> Result<()> {
+        let mut report = SyncReport::default();
+        self.pull_home_one(conv, &mut report)?;
+        let c = self.conversation(conv)?;
+        let home = c.home.ok_or(SecurityError::Denied("not a cross-relay group"))?;
+        let group = GroupRef(c.id.0.to_vec());
+        let epoch = self.mls_epoch(&group)?;
+        let cur = self.home_creds_now(&group)?;
+        let (commit, next_commit_pub, next_read_pub) = match forgery {
+            HomeForgery::Unauthorized(ops) => {
+                let out = self.session()?.mls.commit_unchecked_for_tests(&group, &ops)?;
+                let next = HomeCreds::new(epoch + 1, &self.session()?.mls.home_keys_after_pending_commit(&group)?);
+                self.session()?.mls.clear_pending_commit(&group)?;
+                (out.commit, next.commit_pub(), next.read_pub())
+            }
+            HomeForgery::Garbage => (vec![0xAB; 200], [7u8; 32], [8u8; 32]),
+        };
+        let p = HomePending {
+            conv: c.id,
+            expected: epoch,
+            commit_id: rid()?,
+            commit,
+            next_commit_pub: next_commit_pub.to_vec(),
+            next_read_pub: next_read_pub.to_vec(),
+            welcome: None,
+            new_devices: Vec::new(),
+            seeds: Vec::new(),
+            local_new: Vec::new(),
+            removed: false,
+            self_update: false,
+        };
+        self.submit_home(&home.relay, &group, &cur, &p).map(|_| ())
     }
 }

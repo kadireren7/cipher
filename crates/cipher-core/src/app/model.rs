@@ -136,6 +136,20 @@ pub struct AttachmentRef {
     pub thumb_blob_id: Option<Id16>,
     pub thumb_descriptor: Option<String>,
     pub duration_ms: Option<u32>,
+    /// Cross-relay groups: the SAME ciphertext stored once on every other member relay. `blob_id` is the copy on the sender's relay; a member
+    /// reads the entry for its own relay. Empty (and not serialised) for every other conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<BlobCopy>,
+}
+
+/// One relay's copy of an attachment (and of its thumbnail).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobCopy {
+    /// Base URL of the relay that holds this copy.
+    pub relay: String,
+    pub blob_id: Id16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb_blob_id: Option<Id16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

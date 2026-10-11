@@ -33,7 +33,9 @@ const REQ_DOMAIN: &[u8] = b"cipher-home-req-v1\0";
 pub fn home_tag(group_id: &[u8]) -> Id16 {
     let h = Sha256::new().chain_update(TAG_DOMAIN).chain_update(group_id).finalize();
     let mut t = [0u8; 16];
-    t.copy_from_slice(&h[..16]);
+    for (dst, src) in t.iter_mut().zip(h.iter()) {
+        *dst = *src;
+    }
     Id16(t)
 }
 
