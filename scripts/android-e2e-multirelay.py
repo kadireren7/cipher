@@ -95,6 +95,28 @@ class Pump(threading.Thread):
         self.join(timeout=120)
 
 
+class GroupPump(threading.Thread):
+    """Syncs two peers continuously and sends `file_cmd` from the second one as soon as the engine accepts it (every member's mailbox known)."""
+
+    def __init__(self, a, b, file_cmd, every=3.0):
+        super().__init__(daemon=True)
+        self.a, self.b, self.file_cmd, self.every = a, b, file_cmd, every
+        self.stop_ev, self.sent, self.last = threading.Event(), False, ""
+
+    def run(self):
+        while not self.stop_ev.is_set():
+            self.a.cmd("sync")
+            self.b.cmd("sync")
+            if not self.sent:
+                self.last = self.b.cmd(self.file_cmd)
+                self.sent = "Ok" in self.last
+            self.stop_ev.wait(self.every)
+
+    def stop(self):
+        self.stop_ev.set()
+        self.join(timeout=180)
+
+
 class Peer:
     def __init__(self, d, host, env):
         self.p = subprocess.Popen([PEER, d, host, f"{CA}/ca.pem", "127.0.0.1"], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, bufsize=1, env=dict(os.environ, **env))
@@ -398,22 +420,15 @@ try:
         gdata = bytes((i * 11 + 5) % 247 for i in range(150_000))
         gpath = f"{tmp}/g-carol.bin"
         open(gpath, "wb").write(gdata)
-        # A file in a group needs every member's mailbox; until the members have introduced themselves the engine refuses (and the caller retries).
-        r = ""
-        for _ in range(30):
-            r = carol.cmd(f"file {gids['carol']} {gpath} application/octet-stream")
-            if "Ok" in r:
-                break
-            bob.cmd("sync"); carol.cmd("sync"); time.sleep(2)
-        pumps = [Pump(bob), Pump(carol)]
-        for pm in pumps:
-            pm.start()
+        # The app is the group's owner and introduces members to each other, so Carol can reach Bob's mailbox (needed for a file) only while the app
+        # runs. Both peers therefore keep syncing, and Carol retries the file, WHILE the app phase runs (a real app runs continuously).
+        gp = GroupPump(bob, carol, f"file {gids['carol']} {gpath} application/octet-stream")
+        gp.start()
         try:
             ok, v, out = instrument("gread", group=group, expectTexts="g-bob-1,g-carol-1", expectSha=sha(gdata), expectName="g-carol.bin", **ik)
         finally:
-            for pm in pumps:
-                pm.stop()
-        check("GROUP: the app received both peers' texts and an attachment from the THIRD relay, intact (copy on its own relay)", ok and "Ok" in r, out[-1200:])
+            gp.stop()
+        check("GROUP: the app received both peers' texts and an attachment from the THIRD relay, intact (copy on its own relay)", ok and gp.sent, (out[-1200:], gp.last))
         gsha = v.get("sentSha", "")
         for name, peer in (("bob", bob), ("carol", carol)):
             got = ""
