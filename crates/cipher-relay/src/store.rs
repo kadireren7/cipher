@@ -34,6 +34,7 @@ pub enum HomeOutcome {
     Full,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum GroupOutcome {
     Accepted(u64),
     Stale(u64),

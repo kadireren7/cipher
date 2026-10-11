@@ -49,6 +49,11 @@ pub struct GroupMeta {
     pub name: String,
     /// Sorted by account id; contains only OWNER and ADMIN entries.
     pub roles: Vec<RoleEntry>,
+    /// The HOME relay that orders the commits of a group whose members live on different relays (docs/CROSS_RELAY_GROUPS.md §7). Part of the
+    /// MLS-authenticated metadata and immutable for the life of the group. Absent for ordinary groups, so their encoding is byte-identical to before;
+    /// an older client cannot decode a homed group's metadata and therefore refuses to join it (fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<cipher_wire::RelayDescriptor>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
@@ -67,11 +72,18 @@ impl GroupMeta {
             tag,
             name: name.chars().take(MAX_NAME_CHARS).collect(),
             roles: vec![RoleEntry { account: owner, role: Role::Owner }],
+            home: None,
         }
     }
 
+    /// The same group, ordered by the commit log of `relay` (cross-relay groups only).
+    pub fn with_home(mut self, relay: cipher_wire::RelayDescriptor) -> Self {
+        self.home = Some(relay);
+        self
+    }
+
     pub fn new_dm(tag: Id16) -> Self {
-        Self { v: 1, kind: MetaKind::Dm, tag, name: String::new(), roles: Vec::new() }
+        Self { v: 1, kind: MetaKind::Dm, tag, name: String::new(), roles: Vec::new(), home: None }
     }
 
     pub fn role_of(&self, account: &Id16) -> Role {
@@ -117,6 +129,11 @@ impl GroupMeta {
         let mut seen = BTreeSet::new();
         for r in &self.roles {
             if r.role == Role::Member || !seen.insert(r.account) {
+                return Err(MetaError::Invariant);
+            }
+        }
+        if let Some(h) = &self.home {
+            if self.kind != MetaKind::Group || h.clone().validated().is_err() {
                 return Err(MetaError::Invariant);
             }
         }
@@ -249,8 +266,8 @@ pub fn authorize_commit(old: &GroupMeta, devices_before: &Members, c: &CommitInf
 
     // Metadata changes.
     let new = c.new_meta.as_ref().unwrap_or(old);
-    if new.v != old.v || new.kind != old.kind {
-        return Err(Violation::MetaChangeNotAllowed);
+    if new.v != old.v || new.kind != old.kind || new.home != old.home {
+        return Err(Violation::MetaChangeNotAllowed); // the home relay is fixed for the life of the group
     }
     if new.name != old.name && !(old.kind == MetaKind::Group && privileged) {
         return Err(Violation::RenameNotAllowed);

@@ -402,6 +402,7 @@ impl Engine {
                 sent_since_update: 0,
                 access_revoked: false,
                 remote: true,
+                home: None,
             };
             let item = OutboxItem {
                 id: rid()?,
@@ -463,6 +464,7 @@ impl Engine {
             sent_since_update: 0,
             access_revoked: false,
             remote: false,
+            home: None,
         };
         let hk = if kind == ConvKind::Group { Some(self.current_epoch_key(&id)?) } else { None };
         self.commit_state(|s| {
@@ -823,35 +825,48 @@ impl Engine {
         // STRICT per-conversation FIFO: ciphertexts leave in the order they were encrypted. A head that is waiting (back-off), failed or only partly
         // delivered holds back its successors, so the relay's queue — and therefore the recipient — never sees generation 9 before generation 2.
         items.sort_by_key(|i| (i.order, i.id.0));
-        let mut blocked: std::collections::HashSet<Id16> = std::collections::HashSet::new();
+        // FIFO PER RECIPIENT DEVICE (not per conversation): a ciphertext is never sent to a device while an EARLIER one for the same device is waiting
+        // (back-off), failed or only partly delivered, so each receiver sees generations in order — but one unreachable member (for instance on a
+        // relay that is down) no longer stalls the conversation for everybody else.
+        let mut blocked: std::collections::HashSet<(Id16, Id16)> = std::collections::HashSet::new();
         let mut delivered = 0;
-        // Nothing else of a conversation is sent while its Welcome is still waiting for the peer's relay to accept it.
-        let welcome_pending: std::collections::HashSet<Id16> = items.iter().filter(|i| i.welcome).map(|i| i.conv).collect();
+        // A device that has not yet received its Welcome gets nothing else of that conversation.
+        let welcome_wait: std::collections::HashSet<(Id16, Id16)> =
+            items.iter().filter(|i| i.welcome).flat_map(|i| i.devices.iter().map(move |d| (i.conv, *d))).collect();
         for mut item in items {
-            if !item.welcome && (welcome_pending.contains(&item.conv) || blocked.contains(&item.conv)) {
-                continue;
-            }
             if item.attempts >= MAX_OUTBOX_ATTEMPTS {
-                // Retries exhausted. A user-visible message stays FAILED and keeps holding its successors back until the user retries or deletes it;
-                // a control frame (receipt, capability) nobody sees is simply dropped — the next one supersedes it.
+                // Retries exhausted. A user-visible message stays FAILED and keeps holding its successors back (for the same recipients) until the
+                // user retries or deletes it; a control frame (receipt, capability) nobody sees is simply dropped — the next one supersedes it.
                 let visible = self.vault.with_store(|s| Ok(msg_key_for(s, &item.conv, &item.id)?.is_some()))?;
                 if visible || item.welcome || item.is_leave {
-                    blocked.insert(item.conv);
+                    blocked.extend(item.devices.iter().map(|d| (item.conv, *d)));
                 } else {
                     self.vault.with_store(|s| s.delete(NS_OUTBOX, &item.id.to_hex()))?;
                 }
                 continue;
             }
             if item.next_attempt_ms > now {
-                blocked.insert(item.conv);
+                blocked.extend(item.devices.iter().map(|d| (item.conv, *d)));
                 continue;
+            }
+            // Recipients that must wait (an earlier item for them is pending, or their Welcome is) are held back; the others go now.
+            let held: Vec<Id16> = item
+                .devices
+                .iter()
+                .filter(|d| blocked.contains(&(item.conv, **d)) || (!item.welcome && welcome_wait.contains(&(item.conv, **d))))
+                .copied()
+                .collect();
+            let live: Vec<Id16> = item.devices.iter().filter(|d| !held.contains(d)).copied().collect();
+            if live.is_empty() {
+                continue; // nothing can leave yet; no attempt is consumed
             }
             let mut remaining: Vec<Id16> = Vec::new();
             let mut net_failed = false;
             // A peer on another relay is reachable ONLY through its capability: the authenticated path would hit OUR relay, which has never heard of
             // them and answers `not_found` (counted as delivered) — a message would be silently lost.
             let conv_remote = self.conversation(&item.conv).map(|c| c.remote).unwrap_or(false);
-            for chunk in item.devices.chunks(cipher_wire::limits::MAX_BATCH_DELIVERIES) {
+            let homed_remote: Vec<Id16> = self.conversation(&item.conv).ok().and_then(|c| c.home).map(|h| h.remote_devices).unwrap_or_default();
+            for chunk in live.chunks(cipher_wire::limits::MAX_BATCH_DELIVERIES) {
                 // Recipients whose inbox capability we hold are reached WITHOUT authenticating (the relay learns neither us nor their stable id).
                 // A capability names the relay it is valid at: peers on another relay are reached THERE, directly from this device (client-mediated,
                 // docs/MULTI_RELAY_PROTOCOL.md §5) and never through the authenticated path, which does not exist for them.
@@ -918,7 +933,12 @@ impl Engine {
                     remaining.extend(fallback);
                     continue;
                 }
-                chunk.extend(fallback); // revoked/expired capability: authenticated path right now, in the same attempt
+                // In a cross-relay group only SOME devices are remote: those are never sent through our relay's authenticated path (it would
+                // answer `not_found`, which counts as delivered), they wait for their capability.
+                let (mut remote_here, mut local_here): (Vec<Id16>, Vec<Id16>) = chunk.drain(..).partition(|d| homed_remote.contains(d));
+                remaining.append(&mut remote_here);
+                local_here.extend(fallback.into_iter().filter(|d| !homed_remote.contains(d))); // a revoked local capability: authenticated path now
+                let mut chunk = local_here;
                 if chunk.is_empty() {
                     continue;
                 }
@@ -945,7 +965,7 @@ impl Engine {
                     }
                 }
             }
-            if remaining.is_empty() {
+            if remaining.is_empty() && held.is_empty() {
                 let leaving = item.is_leave;
                 let conv = item.conv;
                 self.vault.with_store(|s| {
@@ -964,11 +984,17 @@ impl Engine {
                 }
                 delivered += 1;
             } else {
-                blocked.insert(item.conv);
-                item.devices = remaining;
-                item.attempts += 1;
-                item.next_attempt_ms = now + backoff_ms(item.attempts);
-                let failed = item.attempts >= MAX_OUTBOX_ATTEMPTS;
+                let failure = !remaining.is_empty();
+                let mut rest = remaining;
+                rest.extend(held.iter().copied());
+                blocked.extend(rest.iter().map(|d| (item.conv, *d)));
+                item.devices = rest;
+                let mut failed = false;
+                if failure {
+                    item.attempts += 1;
+                    item.next_attempt_ms = now + backoff_ms(item.attempts);
+                    failed = item.attempts >= MAX_OUTBOX_ATTEMPTS;
+                }
                 let _ = net_failed;
                 self.vault.with_store(|s| {
                     put_json(s, NS_OUTBOX, &item.id.to_hex(), &item)?;
@@ -1341,6 +1367,7 @@ impl Engine {
             access_revoked: false,
             // A DM Welcome that was not stamped by a sequencer came through a capability, i.e. from a peer on another relay.
             remote: kind == ConvKind::Dm && env.group_seq.is_none(),
+            home: None,
         };
         // History keys exist only from the epoch this device joined at: no pre-join history, and nothing from a previous membership era.
         let hk = if kind == ConvKind::Group { Some((joined.epoch, self.session()?.mls.export_epoch_key(&joined.group)?)) } else { None };

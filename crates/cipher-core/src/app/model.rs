@@ -104,6 +104,26 @@ pub struct Conversation {
     /// (no key-update commits, no membership changes) — docs/MULTI_RELAY_PROTOCOL.md §9.
     #[serde(default)]
     pub remote: bool,
+    /// Set for a group with members on different relays: its commits are ordered by the log of a HOME relay (docs/CROSS_RELAY_GROUPS.md §7).
+    #[serde(default)]
+    pub home: Option<HomedGroup>,
+}
+
+/// Client-side state of a cross-relay group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomedGroup {
+    /// The home relay named by the group's MLS-authenticated metadata (never taken from the relay or a peer).
+    pub relay: cipher_wire::RelayDescriptor,
+    /// What this device has verified of the log. `None` until a joiner has anchored itself at the entry that added it.
+    pub ledger: Option<crate::home::HomeLedger>,
+    /// Devices known to live on another relay: they are reached only through their capability, never through the authenticated path of our relay
+    /// (which would answer `not_found` and look like a delivery).
+    #[serde(default)]
+    pub remote_devices: Vec<Id16>,
+    /// Membership changes are blocked: the log was tampered with or a member submitted invalid commits. Messages keep flowing; commits do not
+    /// until the user replaces the group. A static category, never free text.
+    #[serde(default)]
+    pub frozen: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
