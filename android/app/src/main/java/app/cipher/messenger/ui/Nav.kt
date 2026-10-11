@@ -46,6 +46,7 @@ import app.cipher.messenger.ui.screens.VerifyContactScreen
 import app.cipher.messenger.ui.screens.ViewerScreen
 import app.cipher.messenger.ui.theme.CipherTheme
 import kotlinx.coroutines.delay
+import uniffi.cipher_ffi.SecurityEventKind
 
 @Composable
 fun CipherRoot() {
@@ -155,10 +156,20 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
         }
         composable("groupinfo/{id}") { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
-            GroupInfoScreen(chat(id), onBack = { nav.popBackStack() }, onMembers = { nav.navigate("members/$id") }, onLeft = {
-                vm.reloadConversations()
-                nav.popBackStack("list", false)
-            })
+            GroupInfoScreen(
+                chat(id),
+                onBack = { nav.popBackStack() },
+                onMembers = { nav.navigate("members/$id") },
+                onLeft = {
+                    vm.reloadConversations()
+                    nav.popBackStack("list", false)
+                },
+                homeUnavailable = state.securityEvents.any { it.kind == SecurityEventKind.HOME_RELAY_UNAVAILABLE && it.subject == id },
+                onReplaced = { newId ->
+                    vm.reloadConversations()
+                    nav.navigate("chat/$newId") { popUpTo("list") }
+                },
+            )
         }
         composable("members/{id}") { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable

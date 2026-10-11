@@ -56,7 +56,14 @@ private fun roleLabel(r: RoleFfi) = when (r) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GroupInfoScreen(vm: ChatViewModel, onBack: () -> Unit, onMembers: () -> Unit, onLeft: () -> Unit) {
+fun GroupInfoScreen(
+    vm: ChatViewModel,
+    onBack: () -> Unit,
+    onMembers: () -> Unit,
+    onLeft: () -> Unit,
+    homeUnavailable: Boolean = false,
+    onReplaced: (String) -> Unit = {},
+) {
     LaunchedEffect(Unit) {
         vm.refresh()
         vm.loadMembers()
@@ -64,6 +71,7 @@ fun GroupInfoScreen(vm: ChatViewModel, onBack: () -> Unit, onMembers: () -> Unit
     val conv = vm.conversation
     var renaming by remember { mutableStateOf(false) }
     var confirmLeave by remember { mutableStateOf(false) }
+    var confirmReplace by remember { mutableStateOf(false) }
     var newName by remember(conv?.title) { mutableStateOf(conv?.title ?: "") }
     val canAdmin = vm.myRole != RoleFfi.MEMBER
 
@@ -83,6 +91,18 @@ fun GroupInfoScreen(vm: ChatViewModel, onBack: () -> Unit, onMembers: () -> Unit
             )
             vm.error?.let { Banner(it, error = true, actionLabel = "Dismiss") { vm.error = null } }
             Spacer(Modifier.size(16.dp))
+            if (homeUnavailable) {
+                Banner(
+                    "This group's coordinating relay is unreachable or blocked, so members can't be changed. " +
+                        "You can create a replacement group with the same members; each of them must accept it again.",
+                    error = true,
+                )
+                OutlinedButton(
+                    onClick = { confirmReplace = true },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                ) { Text("Create replacement group") }
+                Spacer(Modifier.size(8.dp))
+            }
             if (canAdmin) OutlinedButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) { Text("Rename group") }
             OutlinedButton(onClick = onMembers, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Members and roles") }
             OutlinedButton(onClick = {
@@ -124,6 +144,15 @@ fun GroupInfoScreen(vm: ChatViewModel, onBack: () -> Unit, onMembers: () -> Unit
             text = { PrivateTextField(newName, { newName = it.take(64) }, singleLine = true) },
             confirmLabel = "Save",
             onConfirm = { if (newName.isNotBlank()) vm.rename(newName.trim()) },
+        )
+    }
+    if (confirmReplace) {
+        SecureDialog(
+            onDismiss = { confirmReplace = false },
+            title = "Create a replacement group?",
+            text = { Text("A new group is created with the same members. Members must accept it again.") },
+            confirmLabel = "Create",
+            onConfirm = { vm.createSuccessor(onReplaced) },
         )
     }
     if (confirmLeave) {

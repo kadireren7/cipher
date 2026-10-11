@@ -74,6 +74,27 @@ impl Lane<'_> {
     }
 }
 
+/// SHA-256 of the stored (already encrypted) bytes, used only to recognise a retried upload.
+fn blob_body_hash(data: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(data).into()
+}
+
+async fn existing_blob(tx: &Transaction<'_>, owner: &[u8; 32], body_hash: &[u8; 32], now: u64) -> Result<Option<Id16>, ApiError> {
+    let r = tx
+        .query_opt(
+            "SELECT blob_id FROM blobs WHERE owner_hash=$1 AND body_hash=$2 AND expires_at>$3",
+            &[&owner.as_slice(), &body_hash.as_slice(), &(now as i64)],
+        )
+        .await
+        .map_err(internal)?;
+    r.map(|r| {
+        let v: Vec<u8> = r.get(0);
+        <[u8; 16]>::try_from(v.as_slice()).map(Id16).map_err(|_| ApiError::Internal)
+    })
+    .transpose()
+}
+
 pub fn cap_hash(cap: &Id16) -> [u8; 32] {
     use sha2::Digest as _;
     let mut h = sha2::Sha256::new();
@@ -646,11 +667,16 @@ impl PgStore {
 
     // ---- blobs ----
 
-    pub async fn put_blob(&self, blob: &Id16, data: &[u8], now: u64, max_total: u64) -> Result<(), ApiError> {
+    /// Stores `data` and returns its id. A repeat of the SAME bytes by the SAME uploader (a retry after a lost response) returns the existing id and stores nothing.
+    pub async fn put_blob(&self, blob: &Id16, data: &[u8], uploader: &Id16, now: u64, max_total: u64) -> Result<Id16, ApiError> {
+        let (owner, body_hash) = (cap_hash(uploader), blob_body_hash(data));
         let mut c = self.conn().await?;
         let tx = c.transaction().await.map_err(internal)?;
         tx.execute("SELECT pg_advisory_xact_lock(7263002)", &[]).await.map_err(internal)?;
         tx.execute("DELETE FROM blobs WHERE expires_at<=$1", &[&(now as i64)]).await.map_err(internal)?;
+        if let Some(existing) = existing_blob(&tx, &owner, &body_hash, now).await? {
+            return Ok(existing);
+        }
         let total: i64 = tx.query_one("SELECT COALESCE(sum(size_bytes),0)::bigint FROM blobs", &[]).await.map_err(internal)?.get(0);
         if total as u64 + data.len() as u64 > max_total {
             return Err(ApiError::QueueFull);
@@ -658,15 +684,16 @@ impl PgStore {
         let expires = round_up(now.saturating_add(BLOB_TTL_SECS));
         match tx
             .execute(
-                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at) VALUES ($1,$2,$3,$4)",
-                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires],
+                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at, owner_hash, body_hash) VALUES ($1,$2,$3,$4,$5,$6)",
+                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires, &owner.as_slice(), &body_hash.as_slice()],
             )
             .await
         {
             Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
             r => r.map_err(internal)?,
         };
-        tx.commit().await.map_err(internal)
+        tx.commit().await.map_err(internal)?;
+        Ok(*blob)
     }
 
     /// Is `cap` a live delivery capability? (Cheap pre-check done BEFORE a request body is read.)
@@ -687,8 +714,9 @@ impl PgStore {
         now: u64,
         max_total: u64,
         cap_quota: u64,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Id16, ApiError> {
         let h = cap_hash(cap);
+        let body_hash = blob_body_hash(data);
         let mut c = self.conn().await?;
         let tx = c.transaction().await.map_err(internal)?;
         tx.execute("SELECT pg_advisory_xact_lock(7263002)", &[]).await.map_err(internal)?;
@@ -700,6 +728,9 @@ impl PgStore {
             .is_none()
         {
             return Err(ApiError::NotFound);
+        }
+        if let Some(existing) = existing_blob(&tx, &h, &body_hash, now).await? {
+            return Ok(existing); // a retry of the same ciphertext under the same capability: no second copy, no extra quota
         }
         let used: i64 = tx
             .query_one("SELECT COALESCE(sum(size_bytes),0)::bigint FROM blobs WHERE cap_hash=$1", &[&h.as_slice()])
@@ -713,15 +744,16 @@ impl PgStore {
         let expires = round_up(now.saturating_add(BLOB_TTL_SECS));
         match tx
             .execute(
-                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at, cap_hash) VALUES ($1,$2,$3,$4,$5)",
-                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires, &h.as_slice()],
+                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at, cap_hash, owner_hash, body_hash) VALUES ($1,$2,$3,$4,$5,$5,$6)",
+                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires, &h.as_slice(), &body_hash.as_slice()],
             )
             .await
         {
             Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
             r => r.map_err(internal)?,
         };
-        tx.commit().await.map_err(internal)
+        tx.commit().await.map_err(internal)?;
+        Ok(*blob)
     }
 
     pub async fn get_blob(&self, blob: &Id16, now: u64) -> Result<Option<Vec<u8>>, ApiError> {

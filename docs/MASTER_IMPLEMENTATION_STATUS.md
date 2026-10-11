@@ -160,5 +160,14 @@ Passing repetitions also show one `BLOB TIMEOUT` at 60 s (the idle-write timeout
 
 **Not done / unresolved.** A stalled or very slow circuit is not abandoned for a fresh one: Android's `java.net` SOCKS client, as far as I know, has no username/password support (not verified), so Tor's per-credential circuit isolation cannot be triggered without a custom SOCKS5 client (ST-060). The stuck-descriptor-fetch repetition is unexplained. No physical device and no Orbot run.
 
+## Session 7 — circuit rotation, replacement-group screen, idempotent uploads (2026-10-11)
+
+Done (what can be done without a device, keys or an independent reviewer; the rest is listed in `EXTERNAL_HANDOFF.md`):
+- **ST-060:** `CircuitIsolation` (Android): a random SOCKS user name per epoch, rotated and the connection pool evicted after a timeout or broken call, so Tor builds a fresh circuit for the next attempt. JVM unit test with a fake SOCKS5 server (`CircuitIsolationTest`). **Not yet verified on CI** that Android's SOCKS client presents the credential, and its effect on the Tor failure rate is unmeasured.
+- **ST-048 (part):** "Create replacement group" on the group info screen when the home relay is unavailable (uses `create_successor_group`). Not run on a device, no UI test.
+- **ST-046 (part):** relay migration 0010; a retried upload of the same ciphertext by the same uploader/capability returns the original blob id (MR-016). Chunked/resumable transfer is NOT done.
+- **Fuzz:** `fuzz.yml` takes a `seconds` input and keeps crash inputs as artifacts. No campaign has been analysed.
+- Local checks: relay tests `upload_stall`, `multi_relay`, `delivery_caps`, `relay_compromise` pass; `fmt`, `clippy -D warnings` (core, relay), invariants (91). Kotlin was not compiled locally (CI only).
+
 ## Resume checkpoint
 Next actions in dependency order: (1) A mid-stream upload cut (TCP-cutting proxy) and airplane-mode/handover phases; Orbot on a physical device; (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).

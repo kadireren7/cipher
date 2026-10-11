@@ -225,4 +225,15 @@ class ChatViewModel(app: Application, val convId: String) : AndroidViewModel(app
     }
 
     fun refreshKeys() = admin { it.refreshKeys(convId) }
+
+    /** The group's home relay is lost or blocked: make a NEW group with the same members (each must accept again) and open it. */
+    fun createSuccessor(onDone: (String) -> Unit) {
+        viewModelScope.launch {
+            try {
+                onDone(host.call { it.createSuccessorGroup(convId) })
+            } catch (e: Exception) {
+                fail(e)
+            }
+        }
+    }
 }

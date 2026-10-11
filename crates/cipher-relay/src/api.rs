@@ -477,7 +477,7 @@ async fn upload_blob(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     let id = Id16(id);
     let (store, max) = (st.store.clone(), st.cfg.max_total_blob_bytes);
     let body = inc.body;
-    store.put_blob(&id, &body, now, max).await?;
+    let id = store.put_blob(&id, &body, &dev, now, max).await?; // a retry of the same bytes returns the first id
     Ok((StatusCode::CREATED, Json(BlobCreated { blob_id: id })).into_response())
 }
 
@@ -522,7 +522,7 @@ async fn upload_blob_by_cap(State(st): S, req: Request<Body>) -> Result<Response
     let mut id = [0u8; 16];
     getrandom::fill(&mut id).map_err(|_| ApiError::Internal)?;
     let id = Id16(id);
-    st.store.put_blob_by_cap(&id, &body, &cap, now, st.cfg.max_total_blob_bytes, st.cfg.cap_blob_quota_bytes).await?;
+    let id = st.store.put_blob_by_cap(&id, &body, &cap, now, st.cfg.max_total_blob_bytes, st.cfg.cap_blob_quota_bytes).await?;
     Ok((StatusCode::CREATED, Json(BlobCreated { blob_id: id })).into_response())
 }
 

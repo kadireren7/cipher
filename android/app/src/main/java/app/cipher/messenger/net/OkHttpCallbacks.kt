@@ -83,6 +83,10 @@ class OkHttpCallbacks(
         .tlsVersions(TlsVersion.TLS_1_3)
         .build()
 
+    /** Fresh Tor circuit per rotation (see [CircuitIsolation]); only on the privacy route. */
+    private val isolation: CircuitIsolation? =
+        if (route.directDevRoute()) null else CircuitIsolation(route.socks().port).also { it.install() }
+
     private val client: OkHttpClient = OkHttpClient.Builder()
         .sslSocketFactory(pinnedTls.socketFactory, pinnedTls.trustManager)
         .connectionSpecs(listOf(tls13Only))
@@ -137,6 +141,11 @@ class OkHttpCallbacks(
 
     private fun fault(e: IOException): HttpFault {
         tracker.recordFailure()
+        // A call that timed out or broke is most likely on a slow or stalled circuit: drop the pooled connections and build the next one on a new circuit.
+        if (isolation != null && (e is java.io.InterruptedIOException || (e !is SSLException && e !is java.net.ConnectException))) {
+            isolation.rotate()
+            client.connectionPool.evictAll()
+        }
         return when (e) {
             is SSLException -> HttpFault.Tls()
             // The proxy refused/was unreachable, or spoke malformed SOCKS: the privacy route is unavailable. The message stays queued; nothing else is tried.

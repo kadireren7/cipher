@@ -52,6 +52,41 @@ object NoDns : Dns {
         throw UnknownHostException("local DNS is disabled: names are resolved by the privacy route")
 }
 
+/**
+ * Circuit isolation for a Tor SOCKS endpoint (ST-060). Tor gives connections with DIFFERENT SOCKS credentials different circuits (`IsolateSOCKSAuth`,
+ * on by default). The user name is a random token with no meaning, never derived from an identity, a relay or a message; the password is a constant.
+ * [rotate] picks a new token, so the NEXT connection is built on a fresh circuit: used after a call timed out or broke on a slow or stalled circuit.
+ * A proxy that does not ask for credentials simply ignores this (the greeting still offers "no authentication"). Not a trust boundary and not a
+ * fallback: the route is still the one fixed proxy.
+ */
+class CircuitIsolation(private val port: Int, private val random: () -> ByteArray = { java.security.SecureRandom().generateSeed(8) }) {
+    private val token = java.util.concurrent.atomic.AtomicReference(newToken())
+    private val rotations = java.util.concurrent.atomic.AtomicInteger()
+
+    private fun newToken(): String = random().joinToString("") { "%02x".format(it) }
+
+    fun current(): String = token.get()
+
+    fun rotationCount(): Int = rotations.get()
+
+    fun rotate() {
+        token.set(newToken())
+        rotations.incrementAndGet()
+    }
+
+    /** Process-wide hook of `java.net`: answers ONLY SOCKS credential requests for this proxy port, nothing else. */
+    fun install() {
+        java.net.Authenticator.setDefault(object : java.net.Authenticator() {
+            override fun getPasswordAuthentication(): java.net.PasswordAuthentication? =
+                if (requestorType == RequestorType.PROXY && requestingProtocol?.startsWith("SOCKS") == true && requestingPort == port) {
+                    java.net.PasswordAuthentication(current(), "x".toCharArray())
+                } else {
+                    null
+                }
+        })
+    }
+}
+
 /** One fixed proxy, no system proxy selection, and no DIRECT entry. */
 class FixedProxySelector(private val proxy: Proxy) : ProxySelector() {
     override fun select(uri: URI?): List<Proxy> = listOf(proxy)

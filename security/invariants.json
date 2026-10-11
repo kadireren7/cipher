@@ -2607,6 +2607,27 @@
         }
       ],
       "gap": "The home relay cannot be told apart from a hostile one that denies the group, so the response is notification + replacement, not repair. The successor group has no cryptographic link to the old one (members trust the inviting contact). Not tested on a device; no UI exists for the new event or action (ST-048)."
+    },
+    {
+      "id": "MR-016",
+      "statement": "A retried attachment upload (same ciphertext, same uploader or delivery capability) returns the original blob id and stores nothing new, so a lost response cannot multiply unreferenced blobs; another uploader or different bytes never receive that id.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Relay integration tests against PostgreSQL (signed and capability uploads); not chunked or resumable (a cut upload still restarts from zero).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_retried_upload_returns_the_same_blob_instead_of_a_second_copy"
+        },
+        {
+          "kind": "rust",
+          "name": "a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_can_be_retried"
+        }
+      ],
+      "gap": "Resumable/chunked upload (a cut upload restarts from zero) is not implemented (ST-046); an orphan can still arise if a response is lost AND the user then sends different bytes."
     }
   ]
 }

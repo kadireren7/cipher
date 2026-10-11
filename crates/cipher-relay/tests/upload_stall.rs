@@ -134,3 +134,41 @@ fn one_device_cannot_hold_more_than_its_share_of_upload_slots() {
     );
     assert_eq!(bob_status, 201, "another device is unaffected");
 }
+
+/// ST-046: a client retrying an upload whose response was lost sends the same ciphertext again. It must get the SAME blob id back, not a second
+/// unreferenced copy; a different uploader or different bytes still get their own blob.
+#[test]
+fn a_retried_upload_returns_the_same_blob_instead_of_a_second_copy() {
+    let w = World::new();
+    let alice = new_client();
+    let bob = new_client();
+    w.register(&alice);
+    w.register(&bob);
+    let app = w.instance_with_body_idle(5);
+    let upload = |who: &cipher_core::mls::MlsClient, blob: &[u8]| {
+        let h = sign_announced(who, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), blob);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/blobs")
+            .header("content-length", blob.len().to_string())
+            .header("authorization", h)
+            .body(Body::from(blob.to_vec()))
+            .unwrap();
+        let r = w.rt.block_on(app.clone().oneshot(req)).unwrap();
+        let st = r.status().as_u16();
+        let body = w.rt.block_on(axum::body::to_bytes(r.into_body(), 4096)).unwrap();
+        (st, String::from_utf8_lossy(&body).to_string())
+    };
+    let blob = valid_blob();
+    let (s1, first) = upload(&alice, &blob);
+    let (s2, again) = upload(&alice, &blob);
+    assert_eq!((s1, s2), (201, 201));
+    assert_eq!(first, again, "the retry returns the first blob id");
+    let (_, other_user) = upload(&bob, &blob);
+    assert_ne!(first, other_user, "another uploader never gets someone else's blob id");
+    let mut changed = blob.clone();
+    changed.push(1);
+    let (_, other_bytes) = upload(&alice, &changed);
+    assert_ne!(first, other_bytes, "different bytes are a different blob");
+    assert_eq!(w.query_bytes("SELECT blob_id FROM blobs").len(), 3, "alice's retry created no extra row");
+}

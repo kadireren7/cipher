@@ -98,6 +98,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | MR-015 | Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts and a 150 s wall-clock budget per logical transfer (no new attempt after it, so retries cannot multiply the per-call deadline), with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message. | partial | 5 |
 | GR-009 | The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged. | automated | 1 |
 | GR-010 | When the home relay of a cross-relay group stays unreachable or no longer recognises the group, the user is told once per streak (sooner for 'does not recognise'), membership changes are refused with a specific reason, messages keep flowing, and a successor group (new id, new home, every member must accept again) can be created; nothing is migrated or re-pointed silently, and a healthy group cannot be 'replaced'. | partial | 1 |
+| MR-016 | A retried attachment upload (same ciphertext, same uploader or delivery capability) returns the original blob id and stores nothing new, so a lost response cannot multiply unreferenced blobs; another uploader or different bytes never receive that id. | partial | 2 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -1170,3 +1171,13 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 * **Known gap:** The home relay cannot be told apart from a hostile one that denies the group, so the response is notification + replacement, not repair. The successor group has no cryptographic link to the old one (members trust the inviting contact). Not tested on a device; no UI exists for the new event or action (ST-048).
 * **Tests:**
   * `a_home_relay_that_lost_the_group_is_reported_and_a_successor_group_needs_every_member_to_accept_again` (Rust)
+
+## MR-016 — A retried attachment upload (same ciphertext, same uploader or delivery capability) returns the original blob id and stores nothing new, so a lost response cannot multiply unreferenced blobs; another uploader or different bytes never receive that id.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay integration tests against PostgreSQL (signed and capability uploads); not chunked or resumable (a cut upload still restarts from zero).
+* **Known gap:** Resumable/chunked upload (a cut upload restarts from zero) is not implemented (ST-046); an orphan can still arise if a response is lost AND the user then sends different bytes.
+* **Tests:**
+  * `a_retried_upload_returns_the_same_blob_instead_of_a_second_copy` (Rust)
+  * `a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_can_be_retried` (Rust)

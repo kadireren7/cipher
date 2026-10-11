@@ -51,7 +51,7 @@ Severity (H/M/L) is a rough prioritisation. Evidence labels as in `SECURITY_TEST
 | ST-043 | L | **New.** "Uses Tor" is visible to the ISP; no bridge/pluggable-transport support | OPEN — INTENTIONALLY DEFERRED | `ISP_OBSERVABILITY_REPORT.md` |
 | ST-044 | M | **Partly resolved (2026-10-11).** Cross-relay GROUPS are now ordered by a home relay (`CROSS_RELAY_GROUPS.md` §7–§8; GR-001…GR-008). **Still open:** a 1:1 conversation with a peer on another relay performs **no MLS key-update commits** (no automatic post-compromise refresh); the group design is **self-reviewed only** | PARTIAL — EXPERIMENTAL | A key-update commit between two relays needs a sequencer a 1:1 pair does not have; a home relay for DMs would reuse the group machinery but is not built. Groups: see ST-051…ST-054 |
 | ST-045 | L | **New.** `cargo audit` reports RUSTSEC-2026-0330/-0331 (`libcrux-kem` 0.0.9, panics on short hybrid keys) | **OPEN — reviewed exception, not a fix** | The crate is in `Cargo.lock` only as an inactive optional dependency (`cargo tree --workspace --all-features --target all -e all` shows 0 occurrences). Exception + evidence in `.cargo/audit.toml`; re-check on every OpenMLS / hpke-rs bump |
-| ST-046 | M | **New.** Attachment transfer is not resumable or chunked: an interrupted upload restarts from zero and leaves an unreferenced blob until its 14-day TTL; the relay buffers a whole blob (≤ 101 MiB, 8 concurrent) | OPEN | Quotas and capability checks are tested (MR-006); streaming/multipart design not done |
+| ST-046 | M | **New.** Attachment transfer is not resumable or chunked: an interrupted upload restarts from zero and leaves an unreferenced blob until its 14-day TTL; the relay buffers a whole blob (≤ 101 MiB, 8 concurrent) | PARTLY FIXED (retries no longer orphan blobs; transfer still not chunked/resumable) | Quotas and capability checks are tested (MR-006); streaming/multipart design not done | Session 7: the relay now answers a repeat of the same ciphertext from the same uploader/capability with the original blob id (migration 0010; MR-016), so a lost response no longer leaves a second copy. A cut upload still restarts from zero; the whole blob is still buffered.
 | ST-047 | M | **New.** Relay migration (`MailboxUpdate`) is designed but not built: a contact cannot move to another relay without issuing a new card | OPEN | `MULTI_RELAY_PROTOCOL.md` §7 |
 | ST-048 | H | **New.** The Android UI for any of this does not exist: create/scan a contact card, enter an onion relay URL + pin, choose a relay, show relay status. The Rust/FFI surface exists (`create_contact_card`, `add_contact_by_card`, `set_own_relay`, `pin_relay`) | OPEN | Kotlin compiles are not verified for the new callback (`pinRelay`) until the Android build is run |
 | ST-049 | M | **New.** Real-device behaviour of everything above (TLS stack, Tor/Orbot, battery, network handover, process death during transfer) | OPEN — REQUIRES PHYSICAL DEVICE | Folded into ST-028 |
@@ -65,7 +65,7 @@ Severity (H/M/L) is a rough prioritisation. Evidence labels as in `SECURITY_TEST
 | ST-057 | M | **New, fixed.** Upload slot exhaustion: 8 concurrent upload slots, no progress deadline on request bodies (overall 120–480 s), immediate 503 when full | **CLOSED (with residuals)** | `MR-013`: body-idle deadline (20 s, 90 s onion), 5 s wait for a slot. per-device / per-capability limit of 2 concurrent uploads. **Residual:** an attacker with many registered devices can still occupy the 8 slots (registration needs the invitation token); the counter is per relay instance |
 | ST-058 | M | **New, fixed.** Home-relay logs were purged 180 days after the last commit even though members poll them | **CLOSED** | `GR-009` |
 | ST-059 | L | **New.** The home relay learns "this group was polled on day D" (needed for retention) and a removed member that keeps polling with its old key keeps the log alive within its read range | OPEN — DOCUMENTED | `CROSS_RELAY_GROUPS.md` §9 |
-| ST-060 | M | **New.** Over Tor a slow or stalled rendezvous circuit (SENDME RTT 40–190 s observed) or a stuck hidden-service descriptor fetch is not abandoned for a fresh circuit; calls are bounded (120–300 s each, 150 s budget per transfer) and fail as Offline, so a message stays queued, but a long outage of one circuit delays delivery. Circuit rotation needs per-attempt SOCKS credentials, i.e. a custom SOCKS5 client | OPEN | `MASTER_IMPLEMENTATION_STATUS.md` Session 6 |
+| ST-060 | M | **New.** Over Tor a slow or stalled rendezvous circuit (SENDME RTT 40–190 s observed) or a stuck hidden-service descriptor fetch is not abandoned for a fresh circuit; calls are bounded (120–300 s each, 150 s budget per transfer) and fail as Offline, so a message stays queued, but a long outage of one circuit delays delivery. Circuit rotation needs per-attempt SOCKS credentials, i.e. a custom SOCKS5 client | IMPLEMENTED, UNMEASURED | `MASTER_IMPLEMENTATION_STATUS.md` Session 6 | Session 7: `CircuitIsolation` gives each connection a random SOCKS user name (Tor `IsolateSOCKSAuth`) and rotates it, with the connection pool evicted, after a timeout or broken call, so the next attempt uses a fresh circuit. Whether Android's SOCKS client sends the credential, and the effect on the Tor failure rate, are NOT yet verified on CI.
 
 ## Classification of every open item (this pass)
 
@@ -104,9 +104,9 @@ CAN COMPLETE NOW = done in this environment (see status column above). REQUIRES 
 | ST-038..043 | see rows above | privacy pass |
 | ST-044 | DESIGN DECISION | cross-relay commit ordering |
 | ST-045 | INTENTIONALLY DEFERRED (upstream) | inactive dependency |
-| ST-046 | CAN COMPLETE (not done) | chunked/resumable transfer |
+| ST-046 | PARTLY DONE (idempotent retry; chunked/resumable transfer not done) | |
 | ST-047 | CAN COMPLETE (not done) | MailboxUpdate |
-| ST-048 | CAN COMPLETE (not done) | Kotlin UI |
+| ST-048 | PARTLY DONE (group replacement screen only) | Kotlin UI: "Create replacement group" on the group info screen when the home relay is unavailable (not run on a device or in a UI test); contact card / onion relay / pin screens were already present |
 | ST-049 | REQUIRES PHYSICAL DEVICE | |
 | ST-050 | CAN COMPLETE (not done) | with ST-048 |
 | ST-051 | DESIGN LIMIT | member can freeze membership |
@@ -114,7 +114,7 @@ CAN COMPLETE NOW = done in this environment (see status column above). REQUIRES 
 | ST-053 | CAN COMPLETE (not done) | real-transport group tests |
 | ST-054 | INTENTIONALLY DEFERRED | documented limits |
 | ST-055 | INVESTIGATING (bounds + diagnostics added; 12/15 repetitions green in Session 6; causes seen: slow circuit, corrupt directory data, stuck descriptor fetch, test poll) | Tor timeouts; measure with repeated CI runs |
-| ST-060 | OPEN | circuit rotation / custom SOCKS5 client |
+| ST-060 | IMPLEMENTED, UNMEASURED | verify on CI that rotation happens and helps |
 | ST-056 / ST-057 / ST-058 | CLOSED (residuals listed) | hardening pass |
 | ST-059 | INTENTIONALLY DEFERRED | retention needs a liveness signal |
 | ST-032 | DESIGN DECISION | `DELIVERY_SEMANTICS.md` |

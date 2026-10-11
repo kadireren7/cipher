@@ -453,14 +453,15 @@ fn a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_
         e.history(c, None, 50).unwrap().items.iter().filter(|m| matches!(m.content, Content::Attachment { .. })).count()
     };
     // The recipient's relay accepts the upload but the response is lost. The core retries a transient failure (bounded, freshly signed): the send
-    // succeeds, produces exactly ONE message (a retry can never duplicate one), and the lost response leaves one unreferenced blob that expires by TTL.
+    // succeeds, produces exactly ONE message (a retry can never duplicate one), and, because the relay recognises the identical ciphertext from the same capability, the retry
+    // gets the SAME blob back: no orphan is left (ST-046).
     *r.alice.transport.lose_response_on.lock().unwrap() = Some("/v1/blobs/by-cap".to_owned());
     let first = send(&mut r.alice, &conv_a, AttachmentKind::Pdf, "application/pdf", "a.pdf", &data, None).unwrap();
     assert_eq!(attachments(&mut r.alice, &conv_a), 1, "one send, one message");
     assert_eq!(
         r.wb.query_bytes("SELECT blob_id FROM blobs").len(),
-        2,
-        "the blob whose response was lost is an orphan next to the referenced one"
+        1,
+        "the retry after the lost response reused the stored blob: no orphan"
     );
     // The recipient's relay is unreachable: every attempt fails, the send fails, nothing is left behind.
     r.alice.transport.down.lock().unwrap().push(BASE_B.to_owned());
