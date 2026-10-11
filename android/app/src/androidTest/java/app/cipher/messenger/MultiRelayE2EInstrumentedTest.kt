@@ -70,11 +70,14 @@ class MultiRelayE2EInstrumentedTest {
         while (true) {
             val t0 = System.currentTimeMillis()
             try {
-                return block().also { status("retries_$what" to (attempt - 1).toString(), "ms_$what" to (System.currentTimeMillis() - start).toString()) }
+                return block().also {
+                    status("retries_$what" to (attempt - 1).toString(), "ms_$what" to (System.currentTimeMillis() - start).toString())
+                }
             } catch (e: CipherException.Offline) {
-                // the core already retries with its own budget; this outer loop is bounded in TIME too, so attempts can never multiply into the driver's phase limit
-                Log.i("CipherNet", "test-retry what=$what attempt=$attempt ms=${System.currentTimeMillis() - t0} totalMs=${System.currentTimeMillis() - start}")
-                if (args.getString("socks") == null || attempt >= 4 || System.currentTimeMillis() - start > 240_000) throw e
+                // the core retries with its own budget; this outer loop is bounded in TIME too, so attempts cannot multiply into the phase limit
+                val now = System.currentTimeMillis()
+                Log.i("CipherNet", "test-retry what=$what attempt=$attempt ms=${now - t0} totalMs=${now - start}")
+                if (args.getString("socks") == null || attempt >= 4 || now - start > 240_000) throw e
                 attempt++
             }
         }
