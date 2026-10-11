@@ -135,5 +135,30 @@ Scope: confirmed defects only, each with a regression test; no new features. His
 
 **Evidence (this machine, 2026-10-11):** `cargo test --workspace` before the last test edit: 399 passed, 1 failed (`multi_relay` transfer test, whose old expectation contradicted fix 3; rewritten, 12/12 pass afterwards); `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo fmt --check` clean; fuzz target compiles (`cargo check`). CI results: table below (read from the runs).
 
+## Session 6 — Android-over-Tor reliability diagnosis (2026-10-11, commits 1083af5..b688ec2)
+
+Scope: only the remaining `android-tor` failures. Everything below is from GitHub Actions artifacts of the named runs.
+
+**Measured (this session, `android-tor`, 3 repetitions per run).** 5 runs started, 4 with a result per repetition: `1083af5` run 38143456357 **3/3**; `61563e7` run 38146931412 **3/3** and run 38149005445 **2/3**; `3d71099` run 38151077261 **1/3**; `b688ec2` run 38153523251 **3/3**. Run 38146138971 (`9c25db2`) was cancelled by me to limit parallel jobs and counts as no result. **12 of 15 repetitions green (80 %), 3 failures (20 %).** Before this session's changes, after the Session 5 pass: 11 of 12. The difference is not significant at this sample size; there is **no evidence that this session's changes improved the rate**, and no evidence they worsened it. Durations of green repetitions varied from about 17 to 38 minutes (the same 704 KB upload took 1.2 s to 27.4 s inside one repetition set).
+
+**Failures and what the artifacts show.**
+| Run / rep | Symptom | Where | Established | Not established |
+|---|---|---|---|---|
+| 38135700231 rep 1 (before) | `read` phase over the driver's 600 s | app was inside `sendAttachment`; relay logs, TLS and pins clean | the Tor client log shows one rendezvous circuit with SENDME RTT 40–53 s (normal 0.6–2 s) for 9 minutes | that this circuit was the cause (the app had no network log yet) |
+| 38149005445 rep 1 | `tor did not bootstrap` before any app phase | harness | the directory data was corrupt (`Bogus ntor-onion-key in microdesc`, `Bad element ... node family`), Tor sat at 50 % for 5 minutes | why the mirror served it |
+| 38151077261 rep 1 | `OnionRelayInstrumentedTest` over its 900 s | first onion connection of the app | 8 consecutive calls failed (65 s, then 120 s each); the Tor log repeats `Already a pending directory request. Waiting on it.` 80 times, i.e. a hidden-service descriptor fetch that never completed | why it stalled; it is a Tor client state the app cannot reset |
+| 38151077261 rep 2 | `final` phase failed after 3 s | test | one poll (`sync`) returned Offline (`ROUTE_UNAVAILABLE`, 1.2 s) and the test did not poll again, while the app's own sync loop does | — |
+
+Passing repetitions also show one `BLOB TIMEOUT` at 60 s (the idle-write timeout on a congested circuit); the transfer was retried and succeeded.
+
+**Findings in Cipher code (fixed).**
+1. No bound per logical operation: per call up to 5 minutes, 4 core attempts, 4 more in the test = unbounded relative to the driver's 600 s. Fixed: call deadline 120 s + body at a floor of 8 KB/s (max 300 s); a 150 s wall-clock budget per logical transfer after which no new attempt starts (`the_time_budget_stops_retries_even_with_attempts_left`; invariant MR-015); the test's outer retry is bounded in time too.
+2. OkHttp reports its call deadline as `InterruptedIOException("timeout")`, which was classified as an I/O failure; now `Timeout` (both are retried, the diagnostics are accurate).
+3. Diagnostics: one content-free line per HTTP call through `SafeLog.net` (closed enums and integers: sequence number, API/BLOB, bytes, ms, outcome, consecutive failures; debug builds only, stripped by R8 in release; the repo's `android_guards` log guard stays unchanged). The driver prints per-phase durations and, if a phase exceeds 600 s, the network lines.
+
+**Harness changes (infrastructure, not product).** Tor bootstrap is retried up to 3 times with a fresh DataDirectory after 90 s without progress, each attempt printed (in `b688ec2` runs all bootstraps succeeded at the first attempt, 8–20 s, so the retry itself is **unexercised**). The Tor test's poll loop tolerates a transient Offline within its existing deadline; the asserted end state is unchanged.
+
+**Not done / unresolved.** A stalled or very slow circuit is not abandoned for a fresh one: Android's `java.net` SOCKS client, as far as I know, has no username/password support (not verified), so Tor's per-credential circuit isolation cannot be triggered without a custom SOCKS5 client (ST-060). The stuck-descriptor-fetch repetition is unexplained. No physical device and no Orbot run.
+
 ## Resume checkpoint
 Next actions in dependency order: (1) A mid-stream upload cut (TCP-cutting proxy) and airplane-mode/handover phases; Orbot on a physical device; (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).

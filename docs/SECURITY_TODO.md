@@ -65,6 +65,7 @@ Severity (H/M/L) is a rough prioritisation. Evidence labels as in `SECURITY_TEST
 | ST-057 | M | **New, fixed.** Upload slot exhaustion: 8 concurrent upload slots, no progress deadline on request bodies (overall 120–480 s), immediate 503 when full | **CLOSED (with residuals)** | `MR-013`: body-idle deadline (20 s, 90 s onion), 5 s wait for a slot. per-device / per-capability limit of 2 concurrent uploads. **Residual:** an attacker with many registered devices can still occupy the 8 slots (registration needs the invitation token); the counter is per relay instance |
 | ST-058 | M | **New, fixed.** Home-relay logs were purged 180 days after the last commit even though members poll them | **CLOSED** | `GR-009` |
 | ST-059 | L | **New.** The home relay learns "this group was polled on day D" (needed for retention) and a removed member that keeps polling with its old key keeps the log alive within its read range | OPEN — DOCUMENTED | `CROSS_RELAY_GROUPS.md` §9 |
+| ST-060 | M | **New.** Over Tor a slow or stalled rendezvous circuit (SENDME RTT 40–190 s observed) or a stuck hidden-service descriptor fetch is not abandoned for a fresh circuit; calls are bounded (120–300 s each, 150 s budget per transfer) and fail as Offline, so a message stays queued, but a long outage of one circuit delays delivery. Circuit rotation needs per-attempt SOCKS credentials, i.e. a custom SOCKS5 client | OPEN | `MASTER_IMPLEMENTATION_STATUS.md` Session 6 |
 
 ## Classification of every open item (this pass)
 
@@ -112,7 +113,8 @@ CAN COMPLETE NOW = done in this environment (see status column above). REQUIRES 
 | ST-052 | PARTIAL | retention fixed, loss reported, successor group; no migration |
 | ST-053 | CAN COMPLETE (not done) | real-transport group tests |
 | ST-054 | INTENTIONALLY DEFERRED | documented limits |
-| ST-055 | INVESTIGATING (fixes made) | Tor timeouts; measure with repeated CI runs |
+| ST-055 | INVESTIGATING (bounds + diagnostics added; 12/15 repetitions green in Session 6; causes seen: slow circuit, corrupt directory data, stuck descriptor fetch, test poll) | Tor timeouts; measure with repeated CI runs |
+| ST-060 | OPEN | circuit rotation / custom SOCKS5 client |
 | ST-056 / ST-057 / ST-058 | CLOSED (residuals listed) | hardening pass |
 | ST-059 | INTENTIONALLY DEFERRED | retention needs a liveness signal |
 | ST-032 | DESIGN DECISION | `DELIVERY_SEMANTICS.md` |
