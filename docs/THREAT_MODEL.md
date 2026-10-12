@@ -1,5 +1,7 @@
 # Threat model
 
+**2026-10-12 proposed changes:** `EXTERNAL_IMPLEMENTATION_PLAN.md` records the owner's UnifiedPush and user-held recovery direction, associated endpoint/timing/SSRF and recovery-secret risks, and proposed reduced metadata/resumable upload protocols. These are not shipped protections. The threat model for current code below is unchanged until implementation, independent review and acceptance tests provide evidence.
+
 Scope: the Android app (Kotlin/Compose UI, `cipher-ffi` bridge, Android Keystore wrapper), the Rust core (`cipher-core`, `cipher-wire`) and the
 relay (`cipher-relay` + PostgreSQL). Every security property below is stated *against a named adversary and explicit
 assumptions*. Nothing here claims the system is unbreakable or anonymous. **Passing tests does not prove Cipher secure**: claims are labelled with

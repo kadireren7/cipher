@@ -3,6 +3,10 @@
 name: android-tor
 on:
   workflow_dispatch:
+    inputs:
+      repetitions:
+        description: "Repetitions on one commit (1..30; 20 for ST-060 measurement)"
+        default: "3"
   push:
     branches: [feat/self-hosted-multi-relay]
     paths:
@@ -15,14 +19,33 @@ on:
 permissions:
   contents: read
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    outputs:
+      repetitions: ${{ steps.matrix.outputs.repetitions }}
+    steps:
+      - id: matrix
+        env:
+          REPETITIONS: ${{ inputs.repetitions || '3' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          raw = os.environ['REPETITIONS']
+          if not raw.isascii() or not raw.isdigit() or len(raw) > 2 or not 1 <= int(raw) <= 30:
+              raise SystemExit('repetitions must be an integer in 1..30')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
+              out.write('repetitions=' + json.dumps(list(range(1, int(raw) + 1))) + '\n')
+          PY
   tor-e2e:
+    needs: plan
     name: android over real Tor to onion relays (emulator) #${{ matrix.n }}
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false # independent repetitions: a flaky Tor run must stay visible, not cancel the others
+      max-parallel: 3 # bounded resource use; every repetition keeps its original result
       matrix:
-        n: [1, 2, 3]
+        n: ${{ fromJSON(needs.plan.outputs.repetitions) }}
     services:
       postgres:
         image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24

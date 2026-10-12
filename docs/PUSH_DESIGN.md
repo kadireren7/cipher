@@ -1,5 +1,7 @@
 # Push notification design (ST-017 — OPEN)
 
+**Product decision, 2026-10-12:** the owner selected opt-in UnifiedPush with constant decrypted message wakes. The reviewed-spec implementation proposal, Web Push encryption, endpoint verification exception and SSRF protections are in [EXTERNAL_IMPLEMENTATION_PLAN.md](EXTERNAL_IMPLEMENTATION_PLAN.md#push-and-metadata-st-017-st-009-st-042). This supersedes the undecided provider choice below; no provider integration has been shipped.
+
 **No push provider is integrated and no provider credentials exist.** What exists is the production-safe abstraction on both sides, so a provider can be added without touching security-relevant code.
 We will not fake an integration: ST-017 stays open until real provider behaviour (token lifecycle, delivery under Doze, throttling, OEM limits) has been tested on devices.
 
