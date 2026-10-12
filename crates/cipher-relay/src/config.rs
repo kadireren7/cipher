@@ -20,12 +20,25 @@ pub struct Config {
     /// Cap on simultaneously open client connections.
     pub max_connections: usize,
     pub request_timeout_secs: u64,
+    /// A request body must make progress: this long without a single byte and the upload is aborted and its slot released. Separate from the overall
+    /// request deadline, which a stalled (e.g. abandoned Tor circuit) peer could otherwise consume in full while holding one of the few upload slots.
+    pub body_idle_secs: u64,
+    /// The peer address of every connection is the same local process (a Tor daemon in front of an onion service, or a reverse proxy), so it says
+    /// nothing about the client. Per-address limits then become shared buckets (scaled up) and failed authentication never locks anybody out.
+    /// Connections from a loopback address are treated this way even without the flag.
+    pub shared_source: bool,
     pub listen: SocketAddr,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
     /// Plain-HTTP is only possible with an explicit flag AND a loopback listen address.
     pub insecure_dev_http: bool,
     pub max_total_blob_bytes: u64,
+    /// TLS handshake deadline. 10 s suits direct clients; a Tor rendezvous handshake routinely needs longer (measured: > 10 s), so the onion profile raises it.
+    pub tls_handshake_secs: u64,
+    /// Live attachment bytes one delivery capability may have stored (capability uploads).
+    pub cap_blob_quota_bytes: u64,
+    /// Cross-relay groups this relay will serve as HOME (unauthenticated creation is otherwise a storage-exhaustion lever).
+    pub home_max_groups: i64,
 }
 
 impl std::fmt::Debug for Config {
@@ -40,13 +53,25 @@ pub enum ConfigError {
     Invalid(&'static str),
 }
 
+/// `KEY` from the environment, or the contents of the file named by `KEY_FILE` (container secrets: keeps secrets out of `docker inspect`
+/// and process environments). Setting both is an error-by-ambiguity: the file wins only when the plain variable is absent.
+fn env_or_file(k: &str) -> Option<String> {
+    if let Some(v) = std::env::var(k).ok().filter(|v| !v.is_empty()) {
+        return Some(v);
+    }
+    let path = std::env::var(format!("{k}_FILE")).ok().filter(|v| !v.is_empty())?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let v = raw.trim_end_matches(['\n', '\r']).to_owned();
+    (!v.is_empty()).then_some(v)
+}
+
 impl Config {
     pub fn hash_token(token: &str) -> [u8; 32] {
         Sha256::digest(token.as_bytes()).into()
     }
 
     pub fn from_env() -> Result<Self, ConfigError> {
-        let get = |k: &'static str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let get = |k: &'static str| env_or_file(k);
         let audience = get("CIPHER_RELAY_AUDIENCE").ok_or(ConfigError::Invalid("CIPHER_RELAY_AUDIENCE"))?;
         let token = get("CIPHER_RELAY_REGISTRATION_TOKEN").ok_or(ConfigError::Invalid("CIPHER_RELAY_REGISTRATION_TOKEN"))?;
         if token.len() < 32 {
@@ -75,6 +100,8 @@ impl Config {
             max_inflight: num("CIPHER_RELAY_MAX_INFLIGHT", 512),
             max_connections: num("CIPHER_RELAY_MAX_CONNECTIONS", 2048),
             request_timeout_secs: num("CIPHER_RELAY_REQUEST_TIMEOUT_SECS", 30) as u64,
+            body_idle_secs: (num("CIPHER_RELAY_BODY_IDLE_SECS", 20) as u64).clamp(1, 300),
+            shared_source: get("CIPHER_RELAY_SHARED_SOURCE").is_some_and(|v| v == "1"),
             listen,
             tls_cert,
             tls_key,
@@ -82,6 +109,11 @@ impl Config {
             max_total_blob_bytes: get("CIPHER_RELAY_MAX_BLOB_BYTES")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(cipher_wire::limits::DEFAULT_MAX_TOTAL_BLOB_BYTES),
+            cap_blob_quota_bytes: get("CIPHER_RELAY_CAP_BLOB_QUOTA_BYTES")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(cipher_wire::limits::CAP_BLOB_QUOTA_BYTES),
+            tls_handshake_secs: (num("CIPHER_RELAY_TLS_HANDSHAKE_SECS", 10) as u64).clamp(1, 120),
+            home_max_groups: get("CIPHER_RELAY_HOME_MAX_GROUPS").and_then(|v| v.parse().ok()).unwrap_or(20_000),
         };
         cfg.check_transport()?;
         Ok(cfg)
@@ -120,11 +152,16 @@ mod tests {
             max_inflight: 1,
             max_connections: 1,
             request_timeout_secs: 1,
+            body_idle_secs: 20,
+            shared_source: false,
             listen: "0.0.0.0:443".parse().unwrap_or_else(|_| unreachable_addr()),
             tls_cert: None,
             tls_key: None,
             insecure_dev_http: false,
             max_total_blob_bytes: 1,
+            tls_handshake_secs: 10,
+            cap_blob_quota_bytes: 1,
+            home_max_groups: 1,
         }
     }
     fn unreachable_addr() -> SocketAddr {

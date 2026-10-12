@@ -1,0 +1,174 @@
+//! Availability: a peer that stalls mid-upload (dead mobile link, abandoned Tor circuit, or an attacker) must not hold one of the few
+//! upload slots until the overall request deadline. Regression for the slot-exhaustion defect found in the Tor reliability pass.
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+mod harness;
+use axum::body::Body;
+use axum::http::Request;
+use bytes::Bytes;
+use cipher_core::clock::Clock as _;
+use harness::*;
+use std::time::{Duration, Instant};
+use tower::ServiceExt as _;
+
+fn valid_blob() -> Vec<u8> {
+    [b"CATT".as_slice(), &[0u8; 60]].concat()
+}
+
+/// A body that sends `first` bytes and then never sends anything again (the connection stays open).
+fn stalling_body(first: Vec<u8>) -> Body {
+    let s = futures_util::stream::once(async move { Ok::<_, std::io::Error>(Bytes::from(first)) }).chain(futures_util::stream::pending());
+    Body::from_stream(s)
+}
+use futures_util::StreamExt as _;
+
+#[test]
+fn stalled_authenticated_upload_is_cut_off_and_frees_its_slot() {
+    let w = World::new();
+    let alice = new_client();
+    w.register(&alice);
+    let app = w.instance_with_body_idle(1);
+    let blob = valid_blob();
+    let auth = |b: &[u8]| {
+        sign_announced(&alice, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), b)
+    };
+    // Announce the full length, deliver only part of it, then stall.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/blobs")
+        .header("content-length", blob.len().to_string())
+        .header("authorization", auth(&blob))
+        .body(stalling_body(blob[..10].to_vec()))
+        .unwrap();
+    let t = Instant::now();
+    let status = w.rt.block_on(app.clone().oneshot(req)).unwrap().status().as_u16();
+    assert_eq!(status, 408, "a stalled body is answered with a timeout");
+    assert!(t.elapsed() < Duration::from_secs(10), "cut off by the idle deadline, not by the overall request deadline");
+    // The slot is free again: eight more stalls in a row would have exhausted it if each had been held.
+    let ok = Request::builder()
+        .method("POST")
+        .uri("/v1/blobs")
+        .header("content-length", blob.len().to_string())
+        .header("authorization", auth(&blob))
+        .body(Body::from(blob.clone()))
+        .unwrap();
+    assert_eq!(w.rt.block_on(app.clone().oneshot(ok)).unwrap().status().as_u16(), 201);
+}
+
+#[test]
+fn many_stalled_uploads_do_not_starve_a_good_one() {
+    let w = World::new();
+    let good_dev = new_client();
+    w.register(&good_dev);
+    // Ten different devices (more than the 8 slots) each stall one upload.
+    let stallers: Vec<_> = (0..10).map(|_| new_client()).collect();
+    for c in &stallers {
+        w.register(c);
+    }
+    let app = w.instance_with_body_idle(1);
+    let blob = valid_blob();
+    let mk = |who: &cipher_core::mls::MlsClient, body: Body| {
+        let h = sign_announced(who, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), &blob);
+        Request::builder()
+            .method("POST")
+            .uri("/v1/blobs")
+            .header("content-length", blob.len().to_string())
+            .header("authorization", h)
+            .body(body)
+            .unwrap()
+    };
+    let stalled: Vec<_> = stallers.iter().map(|c| mk(c, stalling_body(blob[..4].to_vec()))).collect();
+    let good = mk(&good_dev, Body::from(blob.clone()));
+    let (statuses, good_status) = w.rt.block_on(async {
+        let handles: Vec<_> = stalled.into_iter().map(|r| tokio::spawn(app.clone().oneshot(r))).collect();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let g = app.clone().oneshot(good).await.unwrap().status().as_u16();
+        let mut v = Vec::new();
+        for h in handles {
+            v.push(h.await.unwrap().unwrap().status().as_u16());
+        }
+        (v, g)
+    });
+    assert!(
+        statuses.iter().all(|s| *s == 408 || *s == 503),
+        "stalled uploads end in 408 (or 503 when they could not even queue): {statuses:?}"
+    );
+    assert_eq!(good_status, 201, "the good upload waited for a slot instead of failing at once");
+}
+
+#[test]
+fn one_device_cannot_hold_more_than_its_share_of_upload_slots() {
+    let w = World::new();
+    let (alice, bob) = (new_client(), new_client());
+    w.register(&alice);
+    w.register(&bob);
+    let app = w.instance_with_body_idle(2);
+    let blob = valid_blob();
+    let mk = |who: &cipher_core::mls::MlsClient, body: Body| {
+        let h = sign_announced(who, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), &blob);
+        Request::builder()
+            .method("POST")
+            .uri("/v1/blobs")
+            .header("content-length", blob.len().to_string())
+            .header("authorization", h)
+            .body(body)
+            .unwrap()
+    };
+    // Alice opens four stalling uploads: two are admitted, the other two are refused at once (429) instead of occupying more slots.
+    let stalled: Vec<_> = (0..4).map(|_| mk(&alice, stalling_body(blob[..4].to_vec()))).collect();
+    let bob_ok = mk(&bob, Body::from(blob.clone()));
+    let (alice_statuses, bob_status) = w.rt.block_on(async {
+        let handles: Vec<_> = stalled.into_iter().map(|r| tokio::spawn(app.clone().oneshot(r))).collect();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let b = app.clone().oneshot(bob_ok).await.unwrap().status().as_u16();
+        let mut v = Vec::new();
+        for h in handles {
+            v.push(h.await.unwrap().unwrap().status().as_u16());
+        }
+        v.sort_unstable();
+        (v, b)
+    });
+    assert_eq!(
+        alice_statuses,
+        [408, 408, 429, 429],
+        "two stalled uploads were admitted (and cut off), two were refused: {alice_statuses:?}"
+    );
+    assert_eq!(bob_status, 201, "another device is unaffected");
+}
+
+/// ST-046: a client retrying an upload whose response was lost sends the same ciphertext again. It must get the SAME blob id back, not a second
+/// unreferenced copy; a different uploader or different bytes still get their own blob.
+#[test]
+fn a_retried_upload_returns_the_same_blob_instead_of_a_second_copy() {
+    let w = World::new();
+    let alice = new_client();
+    let bob = new_client();
+    w.register(&alice);
+    w.register(&bob);
+    let app = w.instance_with_body_idle(5);
+    let upload = |who: &cipher_core::mls::MlsClient, blob: &[u8]| {
+        let h = sign_announced(who, AUDIENCE, "POST", "/v1/blobs", w.clock.0.unix_secs(), cipher_core::rng::array::<16>().unwrap(), blob);
+        let req = Request::builder()
+            .method("POST")
+            .uri("/v1/blobs")
+            .header("content-length", blob.len().to_string())
+            .header("authorization", h)
+            .body(Body::from(blob.to_vec()))
+            .unwrap();
+        let r = w.rt.block_on(app.clone().oneshot(req)).unwrap();
+        let st = r.status().as_u16();
+        let body = w.rt.block_on(axum::body::to_bytes(r.into_body(), 4096)).unwrap();
+        (st, String::from_utf8_lossy(&body).to_string())
+    };
+    let blob = valid_blob();
+    let (s1, first) = upload(&alice, &blob);
+    let (s2, again) = upload(&alice, &blob);
+    assert_eq!((s1, s2), (201, 201));
+    assert_eq!(first, again, "the retry returns the first blob id");
+    let (_, other_user) = upload(&bob, &blob);
+    assert_ne!(first, other_user, "another uploader never gets someone else's blob id");
+    let mut changed = blob.clone();
+    changed.push(1);
+    let (_, other_bytes) = upload(&alice, &changed);
+    assert_ne!(first, other_bytes, "different bytes are a different blob");
+    assert_eq!(w.query_bytes("SELECT blob_id FROM blobs").len(), 3, "alice's retry created no extra row");
+}

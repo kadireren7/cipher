@@ -77,6 +77,12 @@ When a compliant Cipher client observes that it has been removed from a group, i
 - Padding (1 KiB minimum frame class, Padmé for attachments), optional bounded cover traffic, and `STANDARD` / `ENHANCED` network profiles.
 - **Tor/Orbot has not been validated against the live Tor network.** What was measured, and what was not: [PRIVACY_TRANSPORT_REVIEW](docs/PRIVACY_TRANSPORT_REVIEW.md).
 
+### Self-hosting and multiple relays (branch `feat/self-hosted-multi-relay`, experimental)
+- Docker Compose deployment with PostgreSQL, health checks, backup/restore and an optional Tor onion profile: [SELF_HOSTING](docs/SELF_HOSTING.md). Tested on one Linux host.
+- Two people on **different** relays can exchange 1:1 messages and files (client-mediated, signed contact cards, no relay-to-relay traffic): [MULTI_RELAY_PROTOCOL](docs/MULTI_RELAY_PROTOCOL.md).
+  **Not supported across relays:** groups and key-update commits. The Android app has **no UI for cards or onion pins yet**; the Rust/FFI layer does.
+- What each observer can see: [NETWORK_ADVERSARY_MODEL](docs/NETWORK_ADVERSARY_MODEL.md), [MAILBOX_PRIVACY](docs/MAILBOX_PRIVACY.md). Exact status and evidence: [MASTER_IMPLEMENTATION_STATUS](docs/MASTER_IMPLEMENTATION_STATUS.md); readiness: [RELEASE_READINESS](docs/RELEASE_READINESS.md).
+
 ## What Cipher does not claim
 
 Cipher does **not** currently claim:

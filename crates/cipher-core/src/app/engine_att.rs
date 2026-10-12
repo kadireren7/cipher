@@ -115,6 +115,11 @@ impl Engine {
         if caption.chars().count() > 1000 || (kind == AttachmentKind::Voice && mime != "audio/aac") {
             return Err(SecurityError::Malformed("attachment parameters"));
         }
+        // Peer on another relay: the blob is stored in THEIR mailbox relay under their capability (they download it from the relay they already
+        // use), and a second copy goes to our own relay so we can still open what we sent. Same relay: one authenticated upload as before.
+        let remote = self.attachment_target(conv)?;
+        // A group with members on several relays: one copy per OTHER relay (each reached through a member's capability there).
+        let group_targets = self.group_attachment_targets(conv)?;
         let tmp = fresh(&self.temp_dir("up"), "enc")?;
         let out = std::fs::File::create(&tmp.0).map_err(|_| SecurityError::Attachment("cannot create temp file"))?;
         let mut high = 0u64; // progress must never go backwards (padding bytes count as work done)
@@ -123,16 +128,43 @@ impl Engine {
             progress(high, total.max(high))
         })?;
         let path = tmp.0.to_str().ok_or(SecurityError::Attachment("temp path"))?.to_owned();
-        let blob_id = self.api()?.upload_blob_file(&path)?;
+        let mut copies: Vec<BlobCopy> = Vec::new();
+        let (blob_id, own_blob_id) = match &remote {
+            None => {
+                let own = self.api()?.upload_blob_file(&path)?;
+                for (ep, cap, url) in &group_targets {
+                    let id = self.api_at(ep)?.upload_blob_file_by_cap(&path, cap)?;
+                    copies.push(BlobCopy { relay: url.clone(), blob_id: id, thumb_blob_id: None });
+                }
+                (own, None)
+            }
+            Some((ep, cap)) => {
+                let theirs = self.api_at(ep)?.upload_blob_file_by_cap(&path, cap)?;
+                (theirs, Some(self.api()?.upload_blob_file(&path)?))
+            }
+        };
         drop(tmp); // ciphertext temp file removed right after upload
 
+        let mut own_thumb_id: Option<Id16> = None;
         let (thumb_blob_id, thumb_descriptor) = match thumbnail_jpeg {
             Some(t) if !t.is_empty() => {
                 if t.len() > MAX_THUMB_BYTES {
                     return Err(SecurityError::Attachment("thumbnail too large"));
                 }
                 let (ct, d) = encrypt_attachment(t, "image/jpeg", "thumb.jpg")?;
-                let id = self.api()?.upload_blob(ct)?;
+                let id = match &remote {
+                    None => {
+                        for ((ep, cap, _), copy) in group_targets.iter().zip(copies.iter_mut()) {
+                            copy.thumb_blob_id = Some(self.api_at(ep)?.upload_blob_by_cap(ct.clone(), cap)?);
+                        }
+                        self.api()?.upload_blob(ct)?
+                    }
+                    Some((ep, cap)) => {
+                        let theirs = self.api_at(ep)?.upload_blob_by_cap(ct.clone(), cap)?;
+                        own_thumb_id = Some(self.api()?.upload_blob(ct)?);
+                        theirs
+                    }
+                };
                 (Some(id), Some(String::from_utf8(d.to_bytes()?.to_vec()).map_err(|_| SecurityError::Attachment("descriptor"))?))
             }
             _ => (None, None),
@@ -144,18 +176,83 @@ impl Engine {
             thumb_blob_id,
             thumb_descriptor,
             duration_ms,
+            copies,
         };
         let frame = Frame {
             v: 1,
             id: Id16(crate::rng::array::<16>()?),
-            ts_ms: self.now_ms(),
+            ts_ms: self.next_ts_ms(),
             reply_to,
             content: Content::Attachment { caption: caption.to_owned(), att },
+            head: None,
         };
-        let m = self.queue_app_message(conv, frame, true, false)?.ok_or(SecurityError::InvalidState)?;
+        let mut m = self.queue_app_message(conv, frame, true, false)?.ok_or(SecurityError::InvalidState)?;
+        if let Some(own) = own_blob_id {
+            // The copy WE keep points at OUR relay's blob (the peer's relay would not let us read it); the frame already sent/queued carries theirs.
+            if let Content::Attachment { att, .. } = &mut m.content {
+                att.blob_id = own;
+                if let Some(t) = own_thumb_id {
+                    att.thumb_blob_id = Some(t);
+                }
+            }
+            self.vault.with_store(|s| super::engine_msg::put_message(s, &m))?;
+        }
         progress(high.max(total), high.max(total));
         self.flush_if_immediate();
         Ok(self.message(conv, &m.id)?.unwrap_or(m))
+    }
+
+    /// For a conversation with a peer on another relay: that relay and the peer's capability (uploads go there). `None` for a same-relay conversation.
+    /// Fails (retry later) while the peer's capability is not known yet.
+    fn attachment_target(&mut self, conv: &Id16) -> Result<Option<(crate::relay_client::RelayEndpoint, Id16)>> {
+        if !self.conversation(conv)?.remote {
+            return Ok(None);
+        }
+        let (_, me_dev) = {
+            let s = self.session()?;
+            (s.ident.account_id, s.ident.device_id)
+        };
+        let group = crate::protocol::GroupRef(conv.0.to_vec());
+        let devices: Vec<Id16> =
+            self.session()?.mls.members_detailed(&group)?.into_iter().filter(|m| m.device != me_dev).map(|m| m.device).collect();
+        // A 1:1 peer's devices share one home relay; use the first device that has a capability and require the others to agree.
+        let mut chosen: Option<(cipher_wire::RelayDescriptor, Id16)> = None;
+        for d in devices {
+            if let Some(pc) = self.peer_cap_pub(conv, &d) {
+                let Some(relay) = pc.1 else { return Err(SecurityError::Denied("peer capability is not tied to another relay")) };
+                match &chosen {
+                    None => chosen = Some((relay, pc.0)),
+                    Some((r, _)) if *r == relay => {}
+                    Some(_) => return Err(SecurityError::Denied("peer devices live on different relays")),
+                }
+            }
+        }
+        let (relay, cap) = chosen.ok_or(SecurityError::Transport("the peer's mailbox is not known yet"))?;
+        Ok(Some((crate::relay_client::RelayEndpoint::from_descriptor(&relay)?, cap)))
+    }
+
+    /// For a cross-relay group: one (endpoint, capability, base URL) per member relay other than ours. Empty for every other conversation.
+    /// Fails (retry later) while a member's capability is not known yet — that member could not receive the message either.
+    fn group_attachment_targets(&mut self, conv: &Id16) -> Result<Vec<(crate::relay_client::RelayEndpoint, Id16, String)>> {
+        if self.conversation(conv)?.home.is_none() {
+            return Ok(Vec::new());
+        }
+        let (_, me_dev) = self.own_ids()?;
+        let group = crate::protocol::GroupRef(conv.0.to_vec());
+        let devices: Vec<Id16> =
+            self.session()?.mls.members_detailed(&group)?.into_iter().filter(|m| m.device != me_dev).map(|m| m.device).collect();
+        let mut out: Vec<(crate::relay_client::RelayEndpoint, Id16, String)> = Vec::new();
+        for d in devices {
+            let Some((cap, relay)) = self.peer_cap_pub(conv, &d) else {
+                return Err(SecurityError::Transport("a group member's mailbox is not known yet"));
+            };
+            let Some(relay) = relay else { continue }; // a member on OUR relay: the sender's own copy serves it
+            if out.iter().any(|(_, _, url)| url == relay.url()) {
+                continue;
+            }
+            out.push((crate::relay_client::RelayEndpoint::from_descriptor(&relay)?, cap, relay.url().to_owned()));
+        }
+        Ok(out)
     }
 
     /// Download + verify + decrypt an attachment (or its thumbnail) into memory. Fails closed on ANY integrity problem and never
@@ -179,13 +276,15 @@ impl Engine {
             return Err(SecurityError::Denied("message unavailable: group access revoked"));
         }
         let Content::Attachment { att, .. } = m.content else { return Err(SecurityError::Malformed("not an attachment")) };
+        // In a cross-relay group the copy on OUR relay is the one we can read.
+        let mine = self.own_relay.as_ref().and_then(|o| att.copies.iter().find(|c| c.relay == o.url()).cloned());
         let (blob, desc_json) = if thumbnail {
             (
-                att.thumb_blob_id.ok_or(SecurityError::NotFound("thumbnail"))?,
+                mine.as_ref().and_then(|c| c.thumb_blob_id).or(att.thumb_blob_id).ok_or(SecurityError::NotFound("thumbnail"))?,
                 att.thumb_descriptor.ok_or(SecurityError::NotFound("thumbnail"))?,
             )
         } else {
-            (att.blob_id, att.descriptor)
+            (mine.as_ref().map_or(att.blob_id, |c| c.blob_id), att.descriptor)
         };
         let desc = AttachmentDescriptor::from_bytes(desc_json.as_bytes())?;
         let tmp = fresh(&self.temp_dir("down"), "enc")?;

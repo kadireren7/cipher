@@ -1,0 +1,173 @@
+# Master implementation status — branch `feat/self-hosted-multi-relay`
+
+Dated 2026-10-10. Evidence labels: **TESTED** = automated test or script run in this session (name given); **TESTED-LIVE** = against the real Tor network / real Docker;
+**NOT TESTED**; **BLOCKED** (reason). Nothing is called complete unless it says so. Base: `main` @ `ca45fd3`.
+
+## Baseline (before changes)
+`cargo test --workspace` with PostgreSQL up: all suites green (first run showed 21 relay-test failures only because the `cipher-pg` container was stopped — an environment fact, now noted in SELF_HOSTING/CI).
+
+## Phase 1 — Stabilise: **mostly done, exit gate met for the matrix that exists**
+| Item | Result |
+| --- | --- |
+| Load-sensitive FFI lock/unlock test | Fixed (readers must observe each state; 3/3 under 4 CPU hogs). Cause: a coverage assertion that depended on thread scheduling. |
+| **Message LOSS after offline period** (new finding) | 25 messages queued offline → 16 silently lost: outbox flushed in random-id order, MLS keeps 5 skipped generations. Fixed with strict per-conversation FIFO + head-of-line blocking. Test `many_messages_queued_offline_all_arrive_after_reconnecting`. |
+| Lost acknowledgment (new finding) | Receipts for messages that arrived as a message request were discarded → sender stuck at `Sent`. Fixed. Test `a_message_that_arrived_as_a_request_becomes_delivered_once_the_recipient_accepts`. |
+| Ordering | Outgoing timestamps strictly increasing and persisted across restarts. Test `messages_sent_within_one_clock_tick_keep_their_order`. |
+| Deterministic fault matrix | `delivery_matrix.rs`: 8 single-relay + 6 cross-relay seeds × 70 steps; injects network flaps, lost responses (relay executed, answer lost), device restarts, relay restarts, clock jumps. Invariant: every message exactly once at the recipient, in order, ends `Delivered`. **Passes** (MR-010). |
+| Cancel/FAILED semantics | A FAILED head holds successors until retried or deleted; deleting an undelivered message now cancels its send; conversation deletion purges its outbox. |
+| Not done | PostgreSQL restart inside the matrix (covered by `test-deploy.py` instead); group epoch transitions under faults; attachment resume (ST-046); multi-device. |
+
+## Phase 2 — Self-hosting: **done for one Linux host; Profile A relay side TESTED-LIVE**
+* `deploy/` Compose stack, Dockerfiles, `cipherctl.sh`, `docs/SELF_HOSTING.md`. Health checks, secrets as files, internal-only DB network, TLS 1.3 to PostgreSQL with a local CA, hardened containers.
+* `scripts/test-deploy.py` **17/17** on the final relay: fresh install, relay restart, PostgreSQL restart, backup → volume wipe → restore, no-downgrade guard.
+* `scripts/test-upgrade.py` **10/10**: previous `main` relay + previous client binary → this relay on the same database (migrations 7–8 applied, checksums intact, old client works, old relay refuses the upgraded DB).
+* Onion (Profile A): Tor bootstrapped to 100 %, relay reachable through a **separate Tor client over the live network**; pinned cert accepted, wrong pin and missing pin refused. Found and fixed: the 10 s TLS handshake deadline made the onion relay unreachable (6–18 s measured) — now configurable (60 s in the overlay).
+* Not tested: multi-host, real Let's Encrypt issuance, load, rootless Docker, disk-full, the weekly workflow `deploy-test.yml` (never run on GitHub).
+
+## Phase 3 — Multi-relay: **1:1 messaging done and tested; groups across relays implemented (experimental, Session 4)**
+`MULTI_RELAY_PROTOCOL.md` is the design. Implemented: relay descriptor, signed Contact Card v1, intro capabilities (migration 0007 + two unauthenticated endpoints), engine support (remote contacts, capability+relay storage, per-relay outbox routing, no authenticated fallback for remote peers, Welcome-before-messages gate), vault-persisted own relay.
+Exit gate (Alice on A, Bob on B, separate databases, offline either side): **met** in `multi_relay.rs` (12 tests, MR-001…006). In-process transport — not two processes over TLS.
+Groups across relays: see Session 4. Not built: **key-update commits in 1:1 conversations across relays** (no sequencer for a pair: ST-044), relay migration (ST-047). The Android UI exists since Session 2 (ST-048).
+
+## Phase 4 — Cross-relay files: **done for single-blob files up to the relay limit**
+Image, PDF, video, voice, arbitrary file + thumbnail cross relays (`text_image_pdf_video_voice_and_arbitrary_files_cross_relays…`); ciphertext only on both relays; tamper/truncate/swap/missing fail closed; capability needed, per-capability and global quota; interrupted transfer leaves no message and no files. Not done: resumable/chunked upload (ST-046), group-removal behaviour (no cross-relay groups), real large-file (100 MiB) soak.
+
+## Phase 5 — Metadata: **measured; modest, honest improvement**
+`metadata_measurement.rs`: against the mailbox relay, first contact via card exposes 0 signed requests / 0 Alice→Bob links / 0 stored mentions of Alice (vs 8 / 6 / 73 on the same-relay flow). PIR/mixnet/sealed-sender **not built** (design-only, `MAILBOX_PRIVACY.md` §5). Traffic analysis is unchanged.
+
+## Phase 6 — Tor: relay side TESTED-LIVE; **Android app stack TESTED over real Tor in CI (emulator)**
+See `NETWORK_ADVERSARY_MODEL.md` and *Session 3* below. Still not tested: Orbot, a physical device, IPv6, network handover, airplane mode, backgrounding, the app's own Tor integration (the Tor client runs on the host and the app is its SOCKS client).
+
+## Phase 7 — Device/account security: **no new work** (needs a physical device; ST-001/028 unchanged). Cards are issued only by the root device; no recovery was added (explicit no-recovery policy kept).
+
+## Phase 8 — Reliability: foreground retry/backoff/ordering/receipts are covered by the matrix. Background delivery, FCM/UnifiedPush and battery work are **not done** (ST-017/042).
+
+## Phase 9 — Adversarial: added hostile-relay key substitution, withheld/replayed/reordered delivery (matrix + existing tests), capability guessing/revocation, quota flooding, tampered blobs; fuzz target `multi_relay_wire` (90 s smoke: 5.5 M executions, no crash; its first crash was a bug in my own assertion; no campaign, no sanitizers beyond libFuzzer's defaults), and two previously missing targets added to the CI fuzz matrix. Not done: sanitizer runs, long fuzz campaigns, TLS-downgrade tests of the app.
+
+## Phase 10 — Release engineering: SBOM generator (`scripts/gen_sbom.py`, 972 components, reproducible), `cargo deny` pass, `cargo audit` pass **with a reviewed exception** (ST-045), CI updated. No signed release, no reproducible-build claim, no APK produced. See `RELEASE_READINESS.md`.
+
+## Security findings in this pass
+1. HIGH (pre-existing): message loss after offline queueing (fixed). 2. MEDIUM: lost receipts for message requests (fixed). 3. MEDIUM: onion handshake deadline (fixed). 4. LOW: `own_relay` memory-only would have mis-addressed cross-relay capabilities after restart (found by design review before release; fixed, persisted). 5. LOW: CI fuzz matrix omitted two targets (fixed). 6. INFO: `libcrux-kem` advisories (not in build graph; exception recorded). Everything is **self-reviewed**; ST-005 (independent review) stays open.
+
+## Commands and results (this machine)
+`cargo test --workspace` (PostgreSQL on 127.0.0.1:55432) — last full run: 39 suites; the one failure (a static guard flagging my negative-test URL literals) was fixed and re-run green; `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` clean; `scripts/check_invariants.py` 75 invariants; `scripts/test-deploy.py localhost:18443` 17/17; `scripts/test-upgrade.py` 10/10; `scripts/public_release_scan.py` 0 findings.
+
+## Session 2 (Android UI, pinning, CI) — evidence as of HEAD after `84448b1`
+| Item | Result |
+| --- | --- |
+| Android UI: contact card create/QR/paste, QR-scan routing, relay URL + onion pin settings, onboarding pin field | **Written; compiled and ktlint/lint/unit tests green in GitHub CI** (`android` job) and exercised by the emulator E2E. Never viewed on a physical device. |
+| Kotlin TLS pinning (`PinnedTls`, `RelayAddress`) | **TESTED**: JVM tests incl. real TLS 1.3 handshakes (right pin accepted, wrong pin/expired refused); static guard against accept-all trust managers. Not run against a real onion relay from the app. |
+| Complete Rust suite | **TESTED locally**: `cargo test --workspace --no-fail-fast`, PostgreSQL up, exit 0, 40 suites `ok`, 0 failed. (A first attempt failed 8 relay tests only because I exported an empty `CIPHER_TEST_DATABASE_URL`: harness error, not product.) Also green in CI (`build / lint / tests`). |
+| CI on GitHub (run on `84448b1`) | Green: rust, dependency audit, secret scan, invariants, android unit/ktlint/lint/build, **self-hosting acceptance (deploy-test + upgrade)**. Earlier failures (upgrade step ref, history secret scan) fixed. |
+| CI `android-instrumented` (emulator job) | **GREEN on GitHub (run 38077466094; also 38071782971)**: 46 instrumented tests on an API 34 x86_64 emulator, 0 failed, 2 skipped (the skipped ones were not individually identified; the multi-relay phase test is skipped there by design and covered by the job below). It had never run before and failed three times for real reasons, all fixed: truncated system-image download hidden by the script (now retried and verified on disk), unbounded waits (now bounded + 60 min timeout), missing Gradle checksum for `junit-bom-5.9.2.module` (added after matching Maven Central's published SHA-256). |
+| Emulator E2E, two independent relays (`android-e2e-multirelay` CI job, `scripts/android-e2e-multirelay.py`) | **14/14 PASS on GitHub (run 38077466094, the commit "build the relay binary and the e2e peer example separately")**. Real app stack (native core, Android Keystore, OkHttp/TLS 1.3, `PinnedTls`) on an emulator against relay A (CA-signed) and a self-signed, pinned relay B, headless peer on B, separate PostgreSQL databases: card exchange across relays, message app→B, 3 offline texts + 900 KB file B→app while the app is offline, replies + attachment back (byte-for-byte), end-to-end receipts, each relay holds only its own user, no sender hash on B. The first CI attempt failed only because my script built `--example` without the relay binary (script bug). Earlier local emulator runs peaked at 10/14 (driver bugs, since fixed). Scope: emulator, software-backed Keystore, direct route (no Tor), one run — not a physical device, not a soak. |
+| Cross-relay groups (ST-044) | Superseded: designed, corrected and implemented in Session 4 (below). |
+| Real Tor from the Android app | Done in Session 3 (below). |
+
+## Session 3 — repeated E2E, resilience, Android over real Tor (evidence from GitHub Actions)
+All results are from GitHub-hosted runners (KVM emulator, API 34, software-backed Keystore); nothing ran on a physical device.
+
+**1. Repetition of the two-relay E2E (workflow `e2e-repeat`, run 38082672542, 5 independent jobs, no retries):** 5/5 green, each log 14 PASS / 0 FAIL; job wall time 11 to 16 minutes (including build).
+
+**2. Resilience phases added to the E2E driver** (offline burst of 10 after an app restart; app's relay stopped and restarted on the same database; peer's relay down while the app sends a text and a 300 KB attachment; recovery with exactly-once and byte-for-byte checks; all messages DELIVERED, none FAILED). Final result on commit 731b1c5: **`ci` run 38090565452 all 7 jobs green, direct-route E2E 21/21; instrumented suite 49 tests, 0 failed.**
+Failures found on the way (all in my driver, none in product code): ktlint violations in new androidTest sources (3 CI runs); at ad15f54 the direct E2E scored 18/21 (run 38087638441) because failed sends retry on an exponential backoff (10 s, 20 s, 40 s ... `backoff_ms`, FAILED after 8 attempts) and my driver stopped syncing the peer before the app's retry was due, so no receipt came back. Fixed by keeping the peer syncing while the app recovers; assertions unchanged.
+
+**3. Android over real Tor (workflow `android-tor`; own Tor client on the runner, two relays as hidden services with self-signed certificates and SPKI pins, app uses its SOCKS privacy route, peer uses `curl --socks5-hostname`; 3 repetitions per push):**
+| Run | Commit | Result |
+| --- | --- | --- |
+| 38082923137 | 7d54dc1 | 1 rep, 16/16 (baseline, no resilience phases yet) |
+| 38083099330 | 47493e0 | **FAIL** 9/22: first connection from the app to the other onion service timed out at the 60 s connect limit (`addContactByCard` Offline) |
+| 38084578602 | d121b53 | 3/3 green |
+| 38084625647 | 5bc9edf | 2 green, **1 FAIL** 19/23: `sendAttachment` Offline (circuit timeout during upload; no message left behind) |
+| 38087515662 | cc8c21d | 3/3 green |
+| 38087638416 | ad15f54 | 2 green, **1 FAIL** 18/23: the peer's 900 KB upload through Tor returned Offline |
+| 38090565453 | 731b1c5 | 3/3 green, each 23/23 (no peer-upload retry needed) |
+Total 17 repetitions: **14 green, 3 failed**. All three failures were Tor circuit timeouts surfacing as "offline"; none was a TLS, pin or data-integrity failure. The code under test changed between rows (harness retries were added after the failures), so this is not a clean flake rate; with the bounded retries the last commit was 3/3. Retries are limited to "offline" (never to a TLS refusal) and are printed/recorded.
+The Android-level assertions that held in every run that reached them (class `OnionRelayInstrumentedTest`): correct pin accepted and route `PROTECTED`; wrong pin refused with a TLS fault; a self-signed onion certificate without any pin refused (platform CA validation). The same app-stack flow as the direct E2E (cards across relays, offline messages and attachments, receipts, metadata checks) ran over Tor.
+Product changes made for this: the privacy route's connect timeout is 60 s (was 10 s; circuit building routinely exceeds 10 s). Invariants MR-011 and MR-012 added (status `partial`).
+
+**4. The skipped instrumented tests:** Gradle prints "2 skipped"; the result XML lists 8 `assumeTrue`-gated cases (PrivacyRoute x5, PrivacyTraffic, LiveRelay, MultiRelay phase) plus the 3 new onion tests that need arguments. They are skipped because they need arguments or servers that only a driver provides (a SOCKS endpoint, a live relay URL, a phase name). The multi-relay and onion tests are executed by the E2E and Tor jobs. I did not reconcile Gradle's count of 2 with the XML.
+
+**5. ST-044 (cross-relay groups):** superseded by Session 4.
+
+**Not covered by any of this:** mid-stream network cuts during an upload at the E2E level (only a refused connection; the mid-transfer case is a Rust test), database outage, multi-device, physical devices, Orbot, battery/background behaviour, independent review.
+
+## Session 4 — cross-relay MLS groups and encrypted group files (experimental)
+**Built** (design: `CROSS_RELAY_GROUPS.md` §7 as corrected in §8; invariants GR-001…GR-008): a **home relay** (the creator's relay, named in the MLS-authenticated group metadata, immutable) orders the group's commits in a hash-chained log it cannot read (migration 0009, `/v1/home/{tag}/commit|log`); requests are signed with Ed25519 keys derived from the MLS exporter of one epoch (the relay stores public keys only; a key reads up to the next entry only); members verify position, hash chain and epoch keys of everything the relay returns, compare log heads inside authenticated frames (equivocation), freeze the group on any inconsistency; Welcomes are written ahead and delivered per device through cards' intro capabilities; members are introduced to each other by owners/admins (capability directory); group files are stored once per member relay; the outbox is now ordered **per recipient device** so one unreachable member relay cannot stall a group.
+**Design corrections found by implementing/testing** (all documented in §8.1): public keys instead of verifiers; one-entry-at-a-time catch-up; an invalid commit captures the next epoch's credentials (any member can freeze membership changes: ST-051); joiner anchoring; capability bootstrap; capability grace after removals; held-message retry after log commits; new members learning existing members' capabilities.
+**Evidence**
+* Local, this machine: `cargo test --workspace --all-features --locked` — 44 suites ok; the single failure was a test of the old "groups are refused" policy, updated; `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean. New tests: `cipher-relay/tests/cross_relay_groups.rs` (19: three/four relays + PostgreSQL — creation, join, text between all pairs, offline member, one dead member relay, home restart/outage, concurrent commits, removal incl. the removed member winning a slot, lost response, unreachable Welcome, member added later, hostile home relay: tamper / renumber / rollback / equivocation / withholding, forged and garbage commits, group files byte-for-byte with one ciphertext copy per relay, minimal knowledge of relays, refusal without a named relay), `home_log.rs` (9), `cipher-core/tests/{home_keys,home_client}.rs` (3 + 6), wire unit tests, a group-metadata unit test.
+* GitHub Actions run **38126726477** (commit 5b8ae20), all 7 jobs green: Rust, audit, secret scan, invariants, Android build/lint/ktlint, instrumented suite (49 tests, 0 failed, 2 skipped as before) and the **two-relay emulator E2E 27/27**, which now includes a **cross-relay group over real TLS between processes**: the real Android app (relay A = home) creates a group with headless peers on relays B and C (both self-signed, pinned), both peers join through the Welcome, texts and a file from the third relay arrive intact, the app's text and file reach both peers byte-for-byte (a ciphertext copy on each relay), and only the home relay holds the commit log (B and C hold none; no account of B or C exists on A).
+* Failures on the way (my driver/test/CI mistakes unless stated): invariants registry pointing at a renamed test; secret scanner flagging the URL path `/v1/home/…` (pattern narrowed, not weakened); an invalid Tor log domain that stopped Tor from starting (3 runs red); a group-file retry sequenced while the app (the group's introducer) was not running; **a Tor upload cut off by the relay's own request timeout** (see below).
+**Tor timeouts (investigated, partly understood)**: runs 38122057758 (Tor failed to start: my torrc), 38124111058 (2 of 3 green; the red one: Tor itself abandoned circuits stalled in the handshake — `circuit_expire_building … doing handshakes` repeated towards the same relays in the new hidden-service log — while the app's connect limit was 60 s; raised to 120 s, still fail-closed), 38126726478 (2 of 3 green with 23/23; the red one: the peer's 900 KB upload through Tor returned a **server error** because the relay's request timeout allows blobs only 4 × 30 s; the onion overlay and the driver now use 120 s). Both new limits are untested as of this writing except through the run noted in the next line. No red Tor run so far was a TLS, pin or data-integrity failure.
+**Not covered / limits (ST-051…ST-055):** any current member can freeze membership changes; the home relay cannot be migrated and a dead one blocks membership changes (messages continue); the home relay sees poll timing and source addresses (Tor hides the latter); introductions are hearsay from owners/admins; no group test over real Tor, on a physical device, with large groups or multi-device accounts; mid-stream upload cuts; **self-reviewed only**.
+
+## Session 5 — security hardening and reliability pass (2026-10-11)
+Scope: confirmed defects only, each with a regression test; no new features. History note: the co-author trailer was removed from all 42 branch commits and the branch force-pushed, so commit ids quoted in Sessions 3–4 (`28c090a`, `5b8ae20` …) are the **old** ids; their content is unchanged.
+
+**Baseline.** GitHub runs on the old `28c090a` (`ci` 38129033062, `android-tor` 38129033063, `self-hosting acceptance` 38129033159): acceptance green; `android-tor` red in 2 of 3 repetitions (rep 2: `sendAttachment` raised `CipherException.Server`, then the peer's view lacked the file; rep 3: the attachment after the peer-relay outage failed, 20/23); rep 1 green. `ci` was still running when the branch was rewritten and its runs were cancelled by the push. **Infrastructure vs product:** none of the failures was a TLS/pin/data failure. The `Server` error is a product defect (a 5xx surfaced to the caller with no retry); Tor circuit latency is the trigger, not the cause.
+
+| # | Defect | Root cause | Exploit / failure | Fix | Regression test | Remaining risk |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | Lock-out of an entire onion relay (ST-056, **P0 for onion relays**) | Failed-auth bucket keyed by source address was consulted **before** the signature check and gated every authenticated request; behind an onion service every client has the same address | Any unauthenticated party sends ~20 invalid requests, then one per 5 s: every user's requests get 429. Same pooling limited all group creation on the relay to 6/hour | Shared-source mode (`CIPHER_RELAY_SHARED_SOURCE=1`, or a loopback peer): no pre-auth lockout, per-address buckets ×25 | `garbage_requests_cannot_lock_legitimate_users_out_of_a_shared_source_relay` (+ control `an_attributable_source_still_gets_the_failed_auth_lockout`) | No per-client address limit on shared sources; credential-less requests still cost one signature check |
+| 2 | Upload-slot exhaustion (ST-057, P1) | 8 upload slots, body read bounded only by the 120–480 s request deadline, immediate 503 | A stalled upload (dead circuit, attacker with any capability) holds a slot for minutes; 8 of them stop all uploads; abandoned Tor uploads starved their own retries (the observed `Server` error is consistent with this; the relay logs nothing per request, so it is **not proven** to be the cause in the CI runs) | Body-idle deadline (20 s; 90 s onion) answering 408, 5 s wait for a slot, at most 2 uploads in flight per device/capability | `stalled_authenticated_upload_is_cut_off_and_frees_its_slot`, `many_stalled_uploads_do_not_starve_a_good_one`, `one_device_cannot_hold_more_than_its_share_of_upload_slots` | An attacker with many registered devices can still fill the 8 slots; slow-but-steady uploads are admitted |
+| 3 | Transient failures surfaced as hard errors (ST-055, P1) | 408/502/503/504 were not distinguished from 500; no retry in the transfer path; (suspected, not confirmed: OkHttp's own connection-failure retry reuses a signed request) | One Tor hiccup during an upload failed the send | Classified statuses; bounded retry (4 attempts, 1/2/4 s + ≤50 % jitter), fresh signature per attempt, never for TLS/pin/auth/rate-limit. An attempt to disable OkHttp's own retry (`retryOnConnectionFailure(false)`) broke 3 existing instrumented tests in CI and was reverted | `only_transient_failures_are_retried_and_only_a_bounded_number_of_times`, `delays_grow_are_capped_and_jittered`, `success_after_a_transient_failure_stops_retrying`, `statuses_are_classified`; `multi_relay.rs` transfer test updated (a lost response is now absorbed, one message, one orphan blob) | Orphan blob after a lost response (ST-046); effect over Tor measured only by CI (below) |
+| 4 | Home log purged for a live group (ST-058, P1) | `touched_day` only advanced on commits; application messages never reach the home relay; purge after 180 days | A group with no membership change for six months silently loses its commit channel | A verified read refreshes `touched_day` (≤ 1 write/group/day) | `a_group_that_is_still_polled_keeps_its_log_even_without_commits_for_over_six_months` (failed before the fix) | Removed members polling with old keys keep it alive (ST-059) |
+| 5 | Lost/blocked commit channel invisible (ST-052, P1) | A failed home poll was ignored for ever | Members never learn membership changes are impossible | Explicit state + `HomeRelayUnavailable` event (1 h unrecognised / 72 h unreachable), specific refusal, `create_successor_group` | `a_home_relay_that_lost_the_group_is_reported_and_a_successor_group_needs_every_member_to_accept_again` | No UI; successor not cryptographically linked; cannot distinguish a hostile relay |
+| — | Fuzzing | The client parser of hostile home-log pages had no target | — | New target `home_log` (parsers, `verify_page` postconditions) added to `fuzz.yml` | not run for a campaign; compiles | — |
+
+**Reviewed, no change needed (evidence in the tests named in `CROSS_RELAY_GROUPS.md` §9):** concurrent commits, forks, hostile home relay, Welcome failures, reordering, replay. **Metadata review:** the relay schema stores account↔device mapping (needed for the directory), peppered hashes of addresses for 24 h (rate buckets), a pairwise sender hash for the life of a queued envelope, `push_token` in clear, and per-request logs only at DEBUG. No unnecessary collection was found that could be removed without breaking delivery or abuse protection; the only new fact is the day a group was last polled (GR-009). This is not an anonymity claim (`METADATA_MODEL.md`).
+**Not done in this pass:** chunked/resumable uploads (ST-046), a UI for the new event/action, storage-exhaustion and database-restart phases on a device, expired-capability download tests beyond the existing ones, physical devices.
+
+**CI results for this pass (read from the runs):**
+| Run | Commit | Result |
+| --- | --- | --- |
+| `ci` 38130002171 (before this pass, after the history rewrite) | 6fab1e1 | **failure**: secret scanning (the allowlist held the old commit ids); everything else green |
+| `ci` 38133689402 / 38133755113 | 0260771 / bab9059 | failure: secret scanning (first) and the instrumented suite (both): 3 network-attack tests broke because of `retryOnConnectionFailure(false)`, **my change**, reverted |
+| `ci` 38135688467 | bfb12f5 | **all 8 jobs green** (rust + PostgreSQL, audit, secrets, invariants, Android build/lint, instrumented suite, two-relay emulator E2E) |
+| `self-hosting acceptance` 38135688489 | bfb12f5 | green (also green on 0260771) |
+| `android-tor` (3 independent repetitions per run) 38133689394 | 0260771 | 3/3 green |
+| `android-tor` 38135688443 | bfb12f5 | 3/3 green |
+| `android-tor` 38135693461 | bfb12f5 | 3/3 green |
+| `android-tor` 38135700231 | bfb12f5 | 2/3: repetition 1 **failed by timeout**: the `read` phase (app restart, offline messages, attachment download and reply) exceeded the driver's 600 s per-phase limit; no assertion failed, no TLS/pin/data error. The earlier phases passed; the previous phase alone took ~6 min. Cause not attributed (Tor latency, or the bounded retries lengthening a stalled attempt; the logs do not separate them) |
+
+**Tor effect, honestly:** before this pass (old `28c090a`): 1 of 3 repetitions green; over all earlier history 14 of 17 (with changing code). After: **11 of 12 repetitions green** on two commits, the one failure being a hang, not an error. That is encouraging and **not** proof: 12 repetitions cannot distinguish a 5 % from a 15 % failure rate, the fixes were not tested one at a time, and the original server-error cause was never observed in a relay log. The `read` phase budget (600 s) versus Tor latency plus 4 retry attempts per transfer needs its own look; the driver limit was deliberately **not** raised just to make it pass.
+
+**Evidence (this machine, 2026-10-11):** `cargo test --workspace` before the last test edit: 399 passed, 1 failed (`multi_relay` transfer test, whose old expectation contradicted fix 3; rewritten, 12/12 pass afterwards); `cargo clippy --workspace --all-targets --all-features -- -D warnings` clean; `cargo fmt --check` clean; fuzz target compiles (`cargo check`). CI results: table below (read from the runs).
+
+## Session 6 — Android-over-Tor reliability diagnosis (2026-10-11, commits 1083af5..b688ec2)
+
+Scope: only the remaining `android-tor` failures. Everything below is from GitHub Actions artifacts of the named runs.
+
+**Measured (this session, `android-tor`, 3 repetitions per run).** 5 runs started, 4 with a result per repetition: `1083af5` run 38143456357 **3/3**; `61563e7` run 38146931412 **3/3** and run 38149005445 **2/3**; `3d71099` run 38151077261 **1/3**; `b688ec2` run 38153523251 **3/3**. Run 38146138971 (`9c25db2`) was cancelled by me to limit parallel jobs and counts as no result. **12 of 15 repetitions green (80 %), 3 failures (20 %).** Before this session's changes, after the Session 5 pass: 11 of 12. The difference is not significant at this sample size; there is **no evidence that this session's changes improved the rate**, and no evidence they worsened it. Durations of green repetitions varied from about 17 to 38 minutes (the same 704 KB upload took 1.2 s to 27.4 s inside one repetition set).
+
+**Failures and what the artifacts show.**
+| Run / rep | Symptom | Where | Established | Not established |
+|---|---|---|---|---|
+| 38135700231 rep 1 (before) | `read` phase over the driver's 600 s | app was inside `sendAttachment`; relay logs, TLS and pins clean | the Tor client log shows one rendezvous circuit with SENDME RTT 40–53 s (normal 0.6–2 s) for 9 minutes | that this circuit was the cause (the app had no network log yet) |
+| 38149005445 rep 1 | `tor did not bootstrap` before any app phase | harness | the directory data was corrupt (`Bogus ntor-onion-key in microdesc`, `Bad element ... node family`), Tor sat at 50 % for 5 minutes | why the mirror served it |
+| 38151077261 rep 1 | `OnionRelayInstrumentedTest` over its 900 s | first onion connection of the app | 8 consecutive calls failed (65 s, then 120 s each); the Tor log repeats `Already a pending directory request. Waiting on it.` 80 times, i.e. a hidden-service descriptor fetch that never completed | why it stalled; it is a Tor client state the app cannot reset |
+| 38151077261 rep 2 | `final` phase failed after 3 s | test | one poll (`sync`) returned Offline (`ROUTE_UNAVAILABLE`, 1.2 s) and the test did not poll again, while the app's own sync loop does | — |
+
+Passing repetitions also show one `BLOB TIMEOUT` at 60 s (the idle-write timeout on a congested circuit); the transfer was retried and succeeded.
+
+**Findings in Cipher code (fixed).**
+1. No bound per logical operation: per call up to 5 minutes, 4 core attempts, 4 more in the test = unbounded relative to the driver's 600 s. Fixed: call deadline 120 s + body at a floor of 8 KB/s (max 300 s); a 150 s wall-clock budget per logical transfer after which no new attempt starts (`the_time_budget_stops_retries_even_with_attempts_left`; invariant MR-015); the test's outer retry is bounded in time too.
+2. OkHttp reports its call deadline as `InterruptedIOException("timeout")`, which was classified as an I/O failure; now `Timeout` (both are retried, the diagnostics are accurate).
+3. Diagnostics: one content-free line per HTTP call through `SafeLog.net` (closed enums and integers: sequence number, API/BLOB, bytes, ms, outcome, consecutive failures; debug builds only, stripped by R8 in release; the repo's `android_guards` log guard stays unchanged). The driver prints per-phase durations and, if a phase exceeds 600 s, the network lines.
+
+**Harness changes (infrastructure, not product).** Tor bootstrap is retried up to 3 times with a fresh DataDirectory after 90 s without progress, each attempt printed (in `b688ec2` runs all bootstraps succeeded at the first attempt, 8–20 s, so the retry itself is **unexercised**). The Tor test's poll loop tolerates a transient Offline within its existing deadline; the asserted end state is unchanged.
+
+**Not done / unresolved.** A stalled or very slow circuit is not abandoned for a fresh one: Android's `java.net` SOCKS client, as far as I know, has no username/password support (not verified), so Tor's per-credential circuit isolation cannot be triggered without a custom SOCKS5 client (ST-060). The stuck-descriptor-fetch repetition is unexplained. No physical device and no Orbot run.
+
+## Session 7 — circuit rotation, replacement-group screen, idempotent uploads (2026-10-11)
+
+Done (what can be done without a device, keys or an independent reviewer; the rest is listed in `EXTERNAL_HANDOFF.md`):
+- **ST-060:** `CircuitIsolation` (Android): a random SOCKS user name per epoch, rotated and the connection pool evicted after a timeout or broken call, so Tor builds a fresh circuit for the next attempt. JVM unit test with a fake SOCKS5 server (`CircuitIsolationTest`). **Not yet verified on CI** that Android's SOCKS client presents the credential, and its effect on the Tor failure rate is unmeasured.
+- **ST-048 (part):** "Create replacement group" on the group info screen when the home relay is unavailable (uses `create_successor_group`). Not run on a device, no UI test.
+- **ST-046 (part):** relay migration 0010; a retried upload of the same ciphertext by the same uploader/capability returns the original blob id (MR-016). Chunked/resumable transfer is NOT done.
+- **Fuzz:** `fuzz.yml` takes a `seconds` input and keeps crash inputs as artifacts. No campaign has been analysed.
+- Local checks: relay tests `upload_stall`, `multi_relay`, `delivery_caps`, `relay_compromise` pass; `fmt`, `clippy -D warnings` (core, relay), invariants (91). Kotlin was not compiled locally (CI only).
+
+## Resume checkpoint
+Next actions in dependency order: (1) A mid-stream upload cut (TCP-cutting proxy) and airplane-mode/handover phases; Orbot on a physical device; (2) run `multi_relay_wire` fuzz and a longer campaign; (3) chunked/resumable upload (ST-046); (4) cross-relay commit design (ST-044) before any group work; (5) physical-device + Orbot matrix (ST-028/038/049); (6) independent crypto review (ST-005).

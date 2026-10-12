@@ -1,8 +1,9 @@
 package app.cipher.messenger.net
 
+import app.cipher.messenger.BuildConfig
+import app.cipher.messenger.util.SafeLog
 import java.io.File
 import java.io.IOException
-import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
 import okhttp3.CertificatePinner
@@ -20,9 +21,53 @@ import uniffi.cipher_ffi.HttpFault
 import uniffi.cipher_ffi.HttpReply
 
 /**
+ * Privacy-preserving network diagnostics (debug builds only; R8 also strips them from release). One line per HTTP call through [SafeLog.net]:
+ * closed enums and integers only (sequence number, kind api/blob, byte count, duration, outcome class, consecutive failures of that kind).
+ * No bodies, keys, identities, tokens, paths or hosts. Retries are visible as consecutive failing lines with a growing `failsInRow`.
+ */
+internal object NetDiag {
+    private val seq = java.util.concurrent.atomic.AtomicInteger()
+    private val failsInRow = java.util.concurrent.ConcurrentHashMap<SafeLog.NetKind, Int>()
+
+    fun kind(pathAndQuery: String) = if (pathAndQuery.startsWith("/v1/blobs")) SafeLog.NetKind.BLOB else SafeLog.NetKind.API
+
+    fun <T> track(kind: SafeLog.NetKind, bytes: Long, block: () -> T): T {
+        val id = seq.incrementAndGet()
+        val t0 = System.nanoTime()
+        var outcome = SafeLog.NetOutcome.OK
+        try {
+            return block()
+        } catch (e: HttpFault) {
+            outcome = when (e) {
+                is HttpFault.Timeout -> SafeLog.NetOutcome.TIMEOUT
+                is HttpFault.RouteUnavailable -> SafeLog.NetOutcome.ROUTE_UNAVAILABLE
+                is HttpFault.Tls -> SafeLog.NetOutcome.TLS
+                is HttpFault.Network -> SafeLog.NetOutcome.NETWORK
+                else -> SafeLog.NetOutcome.IO
+            }
+            throw e
+        } catch (e: Throwable) {
+            outcome = SafeLog.NetOutcome.OTHER
+            throw e
+        } finally {
+            val ms = ((System.nanoTime() - t0) / 1_000_000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+            val n = if (outcome == SafeLog.NetOutcome.OK) 0.also { failsInRow[kind] = 0 } else failsInRow.merge(kind, 1, Int::plus) ?: 1
+            if (BuildConfig.DEBUG) SafeLog.net(kind, outcome, id, bytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), ms, n)
+        }
+    }
+
+    /**
+     * Whole-call deadline: 120 s for the connection (a Tor rendezvous can take that long) plus the time the body needs at a floor of 8 KB/s, at most 5 minutes.
+     * A congested circuit that trickles bytes never trips the 60 s read/write idle timeouts, so without this a 700 KB upload could hold a call for minutes.
+     */
+    fun callLimitSeconds(bytes: Long): Long = (120 + bytes / 8_192).coerceIn(120, 300)
+}
+
+/**
  * The only network stack. Policy, all enforced by construction:
  *  - TLS 1.3 ONLY (`ConnectionSpec` below); cleartext is not in the connection-spec list, so `http://` cannot even be attempted;
- *  - platform trust anchors only: NO custom TrustManager, NO HostnameVerifier, NO "accept invalid certificate" path anywhere;
+ *  - platform trust anchors only. The single exception is [PinnedTls] (certificate-pinned relays, e.g. onion services): there the server key must hash
+ *    to the pin from the invitation; for every other host the platform trust manager decides. No HostnameVerifier, no "accept invalid certificate" path;
  *  - HTTP/1.1, no redirects (a relay never legitimately redirects; following one could leak signed headers);
  *  - optional SPKI certificate pinning (`pins`), empty by default (SECURITY TODO ST-002: needs the operator's pin + backup pin).
  *
@@ -32,17 +77,25 @@ class OkHttpCallbacks(
     private val route: RouteConfig,
     private val tracker: RouteTracker,
     pins: List<Pair<String, String>> = emptyList(),
+    private val pinnedTls: PinnedTls = PinnedTls(),
 ) : HttpCallbacks {
     private val tls13Only: ConnectionSpec = ConnectionSpec.Builder(ConnectionSpec.RESTRICTED_TLS)
         .tlsVersions(TlsVersion.TLS_1_3)
         .build()
 
+    /** Fresh Tor circuit per rotation (see [CircuitIsolation]); only on the privacy route. */
+    private val isolation: CircuitIsolation? =
+        if (route.directDevRoute()) null else CircuitIsolation(route.socks().port).also { it.install() }
+
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .sslSocketFactory(pinnedTls.socketFactory, pinnedTls.trustManager)
         .connectionSpecs(listOf(tls13Only))
         .protocols(listOf(Protocol.HTTP_1_1))
         .followRedirects(false)
         .followSslRedirects(false)
-        .connectTimeout(10, TimeUnit.SECONDS)
+        // Through the SOCKS proxy the handshake includes building a Tor circuit (onion services: rendezvous). Typical 10-30 s; CI logs show Tor itself abandoning
+        // stalled circuits after ~60 s and retrying, so a shorter limit would cut off a retry that is about to succeed. Still fail-closed: no fallback route.
+        .connectTimeout(if (route.directDevRoute()) 10 else 120, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
         .callTimeout(5, TimeUnit.MINUTES)
@@ -66,6 +119,16 @@ class OkHttpCallbacks(
         }
         .build()
 
+    /** The core asks that `baseUrl` be authenticated by this key (SHA-256 of its SubjectPublicKeyInfo, unpadded base64url) instead of by a CA chain. */
+    override fun pinRelay(baseUrl: String, spkiSha256B64: String) {
+        val pin = try {
+            java.util.Base64.getUrlDecoder().decode(spkiSha256B64)
+        } catch (e: IllegalArgumentException) {
+            throw HttpFault.Tls()
+        }
+        if (!pinnedTls.pins.register(baseUrl, pin)) throw HttpFault.Tls() // malformed, or the host is already pinned to a DIFFERENT key
+    }
+
     /** Cancels every running and queued call (used when the app is about to lock: an in-flight transfer must not keep keys alive). */
     fun cancelAll() = client.dispatcher.cancelAll()
 
@@ -78,71 +141,89 @@ class OkHttpCallbacks(
 
     private fun fault(e: IOException): HttpFault {
         tracker.recordFailure()
+        // A call that timed out or broke is most likely on a slow or stalled circuit: drop the pooled connections and build the next one on a new circuit.
+        if (isolation != null && (e is java.io.InterruptedIOException || (e !is SSLException && e !is java.net.ConnectException))) {
+            isolation.rotate()
+            client.connectionPool.evictAll()
+        }
         return when (e) {
             is SSLException -> HttpFault.Tls()
             // The proxy refused/was unreachable, or spoke malformed SOCKS: the privacy route is unavailable. The message stays queued; nothing else is tried.
             is java.net.ConnectException, is java.net.NoRouteToHostException, is java.net.SocketException -> HttpFault.RouteUnavailable()
-            is SocketTimeoutException -> HttpFault.Timeout()
+            // includes SocketTimeoutException AND the call deadline (OkHttp reports that one as a plain InterruptedIOException("timeout"))
+            is java.io.InterruptedIOException -> HttpFault.Timeout()
             is java.net.UnknownHostException -> HttpFault.Network()
             else -> HttpFault.Io()
         }
     }
 
+    /** One call with its own deadline (see [NetDiag.callLimitSeconds]); `okhttp3.Call.timeout` overrides the client-wide 5 minutes for this call only. */
+    private fun call(req: Request, bytes: Long): okhttp3.Call =
+        client.newCall(req).also { it.timeout().timeout(NetDiag.callLimitSeconds(bytes), TimeUnit.SECONDS) }
+
     override fun execute(baseUrl: String, method: String, pathAndQuery: String, authorization: String?, body: ByteArray): HttpReply {
         val rb = if (method == "GET") null else body.toRequestBody("application/octet-stream".toMediaType())
-        try {
-            client.newCall(request(baseUrl, pathAndQuery, authorization, method, rb)).execute().use { r ->
-                val bytes = r.body.bytes()
-                tracker.recordSuccess()
-                return HttpReply(status = r.code.toUShort(), body = bytes)
+        return NetDiag.track(NetDiag.kind(pathAndQuery), body.size.toLong()) {
+            try {
+                call(request(baseUrl, pathAndQuery, authorization, method, rb), body.size.toLong()).execute().use { r ->
+                    val bytes = r.body.bytes()
+                    tracker.recordSuccess()
+                    HttpReply(status = r.code.toUShort(), body = bytes)
+                }
+            } catch (e: IOException) {
+                throw fault(e)
+            } catch (e: IllegalArgumentException) {
+                throw HttpFault.Io()
             }
-        } catch (e: IOException) {
-            throw fault(e)
-        } catch (e: IllegalArgumentException) {
-            throw HttpFault.Io()
         }
     }
 
     override fun uploadFile(baseUrl: String, pathAndQuery: String, authorization: String?, filePath: String): HttpReply {
         val file = File(filePath)
-        try {
-            val rb = file.asRequestBody("application/octet-stream".toMediaType())
-            client.newCall(request(baseUrl, pathAndQuery, authorization, "POST", rb)).execute().use { r ->
-                tracker.recordSuccess()
-                return HttpReply(status = r.code.toUShort(), body = r.body.bytes())
+        val size = file.length()
+        return NetDiag.track(SafeLog.NetKind.BLOB, size) {
+            try {
+                val rb = file.asRequestBody("application/octet-stream".toMediaType())
+                call(request(baseUrl, pathAndQuery, authorization, "POST", rb), size).execute().use { r ->
+                    tracker.recordSuccess()
+                    HttpReply(status = r.code.toUShort(), body = r.body.bytes())
+                }
+            } catch (e: IOException) {
+                throw fault(e)
+            } catch (e: IllegalArgumentException) {
+                throw HttpFault.Io()
             }
-        } catch (e: IOException) {
-            throw fault(e)
-        } catch (e: IllegalArgumentException) {
-            throw HttpFault.Io()
         }
     }
 
     override fun downloadFile(baseUrl: String, pathAndQuery: String, authorization: String?, destPath: String, maxBytes: ULong): UShort {
-        try {
-            client.newCall(request(baseUrl, pathAndQuery, authorization, "GET", null)).execute().use { r ->
-                if (r.code == 200) {
-                    var total = 0L
-                    File(destPath).outputStream().use { out ->
-                        r.body.byteStream().use { input ->
-                            val buf = ByteArray(64 * 1024)
-                            while (true) {
-                                val n = input.read(buf)
-                                if (n < 0) break
-                                total += n
-                                if (total.toULong() > maxBytes) throw HttpFault.Io() // never write more than the descriptor allows
-                                out.write(buf, 0, n)
+        val limit = maxBytes.toLong().coerceAtLeast(0)
+        return NetDiag.track(SafeLog.NetKind.BLOB, limit) {
+            try {
+                call(request(baseUrl, pathAndQuery, authorization, "GET", null), limit).execute().use { r ->
+                    if (r.code == 200) {
+                        var total = 0L
+                        File(destPath).outputStream().use { out ->
+                            r.body.byteStream().use { input ->
+                                val buf = ByteArray(64 * 1024)
+                                while (true) {
+                                    val n = input.read(buf)
+                                    if (n < 0) break
+                                    total += n
+                                    if (total.toULong() > maxBytes) throw HttpFault.Io() // never write more than the descriptor allows
+                                    out.write(buf, 0, n)
+                                }
                             }
                         }
                     }
+                    tracker.recordSuccess()
+                    r.code.toUShort()
                 }
-                tracker.recordSuccess()
-                return r.code.toUShort()
+            } catch (e: IOException) {
+                throw fault(e)
+            } catch (e: IllegalArgumentException) {
+                throw HttpFault.Io()
             }
-        } catch (e: IOException) {
-            throw fault(e)
-        } catch (e: IllegalArgumentException) {
-            throw HttpFault.Io()
         }
     }
 }

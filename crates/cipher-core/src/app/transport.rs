@@ -52,6 +52,10 @@ pub trait HttpTransport: Send + Sync {
         dest: &str,
         max_bytes: u64,
     ) -> std::result::Result<u16, HttpError>;
+    /// The platform stack MUST accept only a certificate whose SubjectPublicKeyInfo hashes to `spki_sha256` for `base_url` (instead of validating a CA
+    /// chain), for every later request to that base. Required, not defaulted: a transport that cannot pin must return an error so the request is
+    /// refused (fail closed) — onion relays use self-signed certificates and are authenticated only by this pin.
+    fn pin_relay(&self, base_url: &str, spki_sha256: &[u8; 32]) -> std::result::Result<(), HttpError>;
 }
 
 pub struct TransportAdapter {
@@ -74,19 +78,31 @@ fn map(e: HttpError) -> SecurityError {
     })
 }
 
+impl TransportAdapter {
+    fn apply_pin(&self, endpoint: &RelayEndpoint) -> Result<()> {
+        match endpoint.pin() {
+            Some(pin) => self.inner.pin_relay(endpoint.base(), &pin).map_err(map),
+            None => Ok(()),
+        }
+    }
+}
+
 impl RelayTransport for TransportAdapter {
     fn execute(&self, endpoint: &RelayEndpoint, req: HttpRequest) -> Result<HttpResponse> {
+        self.apply_pin(endpoint)?;
         let o =
             self.inner.execute(endpoint.base(), req.method, &req.path_and_query, req.authorization.as_deref(), &req.body).map_err(map)?;
         Ok(HttpResponse { status: o.status, body: o.body })
     }
 
     fn upload_file(&self, endpoint: &RelayEndpoint, req: HttpRequest, path: &str) -> Result<HttpResponse> {
+        self.apply_pin(endpoint)?;
         let o = self.inner.upload_file(endpoint.base(), &req.path_and_query, req.authorization.as_deref(), path).map_err(map)?;
         Ok(HttpResponse { status: o.status, body: o.body })
     }
 
     fn download_file(&self, endpoint: &RelayEndpoint, req: HttpRequest, dest: &str, max_bytes: u64) -> Result<u16> {
+        self.apply_pin(endpoint)?;
         self.inner.download_file(endpoint.base(), &req.path_and_query, req.authorization.as_deref(), dest, max_bytes).map_err(map)
     }
 }

@@ -49,6 +49,11 @@ pub struct GroupMeta {
     pub name: String,
     /// Sorted by account id; contains only OWNER and ADMIN entries.
     pub roles: Vec<RoleEntry>,
+    /// The HOME relay that orders the commits of a group whose members live on different relays (docs/CROSS_RELAY_GROUPS.md §7). Part of the
+    /// MLS-authenticated metadata and immutable for the life of the group. Absent for ordinary groups, so their encoding is byte-identical to before;
+    /// an older client cannot decode a homed group's metadata and therefore refuses to join it (fail closed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home: Option<cipher_wire::RelayDescriptor>,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq, Clone)]
@@ -67,11 +72,18 @@ impl GroupMeta {
             tag,
             name: name.chars().take(MAX_NAME_CHARS).collect(),
             roles: vec![RoleEntry { account: owner, role: Role::Owner }],
+            home: None,
         }
     }
 
+    /// The same group, ordered by the commit log of `relay` (cross-relay groups only).
+    pub fn with_home(mut self, relay: cipher_wire::RelayDescriptor) -> Self {
+        self.home = Some(relay);
+        self
+    }
+
     pub fn new_dm(tag: Id16) -> Self {
-        Self { v: 1, kind: MetaKind::Dm, tag, name: String::new(), roles: Vec::new() }
+        Self { v: 1, kind: MetaKind::Dm, tag, name: String::new(), roles: Vec::new(), home: None }
     }
 
     pub fn role_of(&self, account: &Id16) -> Role {
@@ -117,6 +129,11 @@ impl GroupMeta {
         let mut seen = BTreeSet::new();
         for r in &self.roles {
             if r.role == Role::Member || !seen.insert(r.account) {
+                return Err(MetaError::Invariant);
+            }
+        }
+        if let Some(h) = &self.home {
+            if self.kind != MetaKind::Group || h.clone().validated().is_err() {
                 return Err(MetaError::Invariant);
             }
         }
@@ -249,8 +266,8 @@ pub fn authorize_commit(old: &GroupMeta, devices_before: &Members, c: &CommitInf
 
     // Metadata changes.
     let new = c.new_meta.as_ref().unwrap_or(old);
-    if new.v != old.v || new.kind != old.kind {
-        return Err(Violation::MetaChangeNotAllowed);
+    if new.v != old.v || new.kind != old.kind || new.home != old.home {
+        return Err(Violation::MetaChangeNotAllowed); // the home relay is fixed for the life of the group
     }
     if new.name != old.name && !(old.kind == MetaKind::Group && privileged) {
         return Err(Violation::RenameNotAllowed);
@@ -311,6 +328,47 @@ mod tests {
         assert!(GroupMeta::decode(&serde_json::to_vec(&v).unwrap()).is_err());
         assert!(GroupMeta::decode(b"{}").is_err());
         assert!(GroupMeta::decode(&vec![b' '; MAX_META_BYTES + 1]).is_err());
+    }
+
+    #[test]
+    fn ordinary_groups_encode_exactly_as_before_and_the_home_relay_is_immutable_and_validated() {
+        // byte-identical to the pre-home encoding: an ordinary group carries no `home` field at all
+        let (m, members) = group();
+        let json = String::from_utf8(m.encode().unwrap()).unwrap();
+        assert!(!json.contains("home"), "{json}");
+        assert_eq!(GroupMeta::decode(json.as_bytes()).unwrap(), m);
+
+        let relay = cipher_wire::RelayDescriptor::new("https://relay-a.test", None).unwrap();
+        let homed = m.clone().with_home(relay.clone());
+        let b = homed.encode().unwrap();
+        assert_eq!(GroupMeta::decode(&b).unwrap(), homed);
+        // an owner's rename keeps the home; any attempt to change or drop it is refused, even by the owner
+        let mut renamed = homed.clone();
+        renamed.name = "Renamed".into();
+        assert!(authorize_commit(&homed, &members, &CommitInfo { new_meta: Some(renamed), ..commit(1) }).is_ok());
+        let mut moved = homed.clone();
+        moved.home = Some(cipher_wire::RelayDescriptor::new("https://elsewhere.test", None).unwrap());
+        assert_eq!(
+            authorize_commit(&homed, &members, &CommitInfo { new_meta: Some(moved), ..commit(1) }),
+            Err(Violation::MetaChangeNotAllowed)
+        );
+        let mut dropped = homed.clone();
+        dropped.home = None;
+        assert_eq!(
+            authorize_commit(&homed, &members, &CommitInfo { new_meta: Some(dropped), ..commit(1) }),
+            Err(Violation::MetaChangeNotAllowed)
+        );
+        let mut added = m.clone();
+        added.home = Some(relay);
+        assert_eq!(
+            authorize_commit(&m, &members, &CommitInfo { new_meta: Some(added), ..commit(1) }),
+            Err(Violation::MetaChangeNotAllowed)
+        );
+        // a DM never has a home relay, and an onion relay without a pin is not a valid descriptor
+        let mut dm = GroupMeta::new_dm(id(1));
+        dm.home = homed.home.clone();
+        assert!(dm.validate_shape().is_err());
+        assert!(cipher_wire::RelayDescriptor::new("https://abcdefghijklmnop.onion", None).is_err());
     }
 
     #[test]

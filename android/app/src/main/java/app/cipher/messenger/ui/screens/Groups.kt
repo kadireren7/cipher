@@ -56,7 +56,14 @@ private fun roleLabel(r: RoleFfi) = when (r) {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GroupInfoScreen(vm: ChatViewModel, onBack: () -> Unit, onMembers: () -> Unit, onLeft: () -> Unit) {
+fun GroupInfoScreen(
+    vm: ChatViewModel,
+    onBack: () -> Unit,
+    onMembers: () -> Unit,
+    onLeft: () -> Unit,
+    homeUnavailable: Boolean = false,
+    onReplaced: (String) -> Unit = {},
+) {
     LaunchedEffect(Unit) {
         vm.refresh()
         vm.loadMembers()
@@ -83,6 +90,7 @@ fun GroupInfoScreen(vm: ChatViewModel, onBack: () -> Unit, onMembers: () -> Unit
             )
             vm.error?.let { Banner(it, error = true, actionLabel = "Dismiss") { vm.error = null } }
             Spacer(Modifier.size(16.dp))
+            ReplacementGroupAction(homeUnavailable, vm.creatingSuccessor) { vm.createSuccessor(onReplaced) }
             if (canAdmin) OutlinedButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) { Text("Rename group") }
             OutlinedButton(onClick = onMembers, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Members and roles") }
             OutlinedButton(onClick = {
@@ -134,6 +142,33 @@ fun GroupInfoScreen(vm: ChatViewModel, onBack: () -> Unit, onMembers: () -> Unit
             confirmLabel = "Leave",
             destructive = true,
             onConfirm = { vm.leave(onLeft) },
+        )
+    }
+}
+
+/** Shared with the Compose tests; recovery creates a new group only after explicit confirmation. */
+@Composable
+fun ReplacementGroupAction(homeUnavailable: Boolean, creating: Boolean, onCreate: () -> Unit) {
+    if (!homeUnavailable) return
+    var confirmReplace by remember { mutableStateOf(false) }
+    Banner(
+        "This group's coordinating relay is unreachable or blocked, so members can't be changed. " +
+            "You can create a replacement group with the same members; each of them must accept it again.",
+        error = true,
+    )
+    OutlinedButton(
+        onClick = { confirmReplace = true },
+        enabled = !creating,
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+    ) { Text(if (creating) "Creating replacement group…" else "Create replacement group") }
+    Spacer(Modifier.size(8.dp))
+    if (confirmReplace && !creating) {
+        SecureDialog(
+            onDismiss = { confirmReplace = false },
+            title = "Create a replacement group?",
+            text = { Text("A new group is created with the same members. Members must accept it again.") },
+            confirmLabel = "Create",
+            onConfirm = onCreate,
         )
     }
 }

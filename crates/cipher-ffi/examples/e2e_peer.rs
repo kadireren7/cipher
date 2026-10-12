@@ -61,7 +61,13 @@ impl KeystoreCallbacks for Ks {
 
 struct Curl {
     ca: String,
-    resolve: String,
+    /// Host name every relay is addressed by (e.g. the emulator's 10.0.2.2) and the real address it maps to; any port is reachable (several relays).
+    alias_host: String,
+    ip: String,
+    /// base url -> SPKI pin (unpadded base64url); curl is then run with --pinnedpubkey (and --insecure ONLY because the pin replaces the CA chain).
+    pins: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// `ip:port` of a Tor SocksPort: onion relays are reached ONLY through it, with the name resolved by the proxy (`--socks5-hostname`); never directly.
+    socks: Option<String>,
 }
 impl Curl {
     #[allow(clippy::too_many_arguments)]
@@ -76,7 +82,34 @@ impl Curl {
         out: Option<&str>,
     ) -> Result<(u16, Vec<u8>), HttpFault> {
         let mut c = Command::new("curl");
-        c.args(["-sS", "--tlsv1.3", "--proto", "=https", "--max-time", "120", "--cacert", &self.ca, "--connect-to", &self.resolve]);
+        c.args(["-sS", "--tlsv1.3", "--proto", "=https", "--max-time", "120"]);
+        if let Some(pin) = self.pins.lock().unwrap().get(base) {
+            // curl wants standard base64 with padding; the pin replaces CA validation for this relay (self-signed / other relay).
+            let mut std_b64: String = pin
+                .chars()
+                .map(|c| match c {
+                    '-' => '+',
+                    '_' => '/',
+                    c => c,
+                })
+                .collect();
+            while std_b64.len() % 4 != 0 {
+                std_b64.push('=');
+            }
+            c.args(["--insecure", "--pinnedpubkey", &format!("sha256//{std_b64}")]);
+        } else {
+            c.args(["--cacert", &self.ca]);
+        }
+        if let Some(rest) = base.strip_prefix("https://") {
+            let (h, p) = rest.rsplit_once(':').unwrap_or((rest, "443"));
+            if h.ends_with(".onion") {
+                let Some(sx) = &self.socks else { return Err(HttpFault::Network) }; // no proxy configured: refuse rather than try a direct connection
+                c.args(["--socks5-hostname", sx]);
+                c.args(["--max-time", "300"]); // circuit building plus a large upload through Tor: the generic 120 s limit cut real transfers off
+            } else if h == self.alias_host {
+                c.args(["--connect-to", &format!("{h}:{p}:{}:{p}", self.ip)]);
+            }
+        }
         c.args(["-X", method, "-w", "\n%{http_code}"]);
         if let Some(a) = auth {
             c.args(["-H", &format!("Authorization: {a}")]);
@@ -121,13 +154,27 @@ impl HttpCallbacks for Curl {
         let (status, _) = self.run(&base, "GET", &path, auth.as_deref(), None, &[], Some(&dest))?;
         Ok(status)
     }
+    fn pin_relay(&self, base: String, pin: String) -> Result<(), HttpFault> {
+        self.pins.lock().unwrap().insert(base, pin);
+        Ok(())
+    }
 }
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
     let (dir, host, ca, ip) = (&a[1], &a[2], &a[3], &a[4]);
-    let port = host.rsplit(':').next().unwrap();
-    let http = Arc::new(Curl { ca: ca.clone(), resolve: format!("{host}:{ip}:{port}") });
+    let alias_host = host.rsplit_once(':').map_or(host.as_str(), |(h, _)| h).to_owned();
+    let http = Arc::new(Curl {
+        ca: ca.clone(),
+        alias_host,
+        ip: ip.clone(),
+        pins: Default::default(),
+        socks: std::env::var("CIPHER_PEER_SOCKS").ok(),
+    });
+    // Optional: this peer's OWN relay uses a self-signed certificate and is authenticated by this pin (unpadded base64url SPKI SHA-256).
+    if let Ok(pin) = std::env::var("CIPHER_PEER_OWN_PIN") {
+        http.pins.lock().unwrap().insert(format!("https://{host}"), pin);
+    }
     let ks = Arc::new(Ks(InMemoryKeyStore::new(ProtectionLevel::OsSoftware)));
     let eng = CipherEngine::new(
         EngineSettings {
@@ -193,6 +240,9 @@ fn main() {
                 }
                 Err(e) => format!("Err({e:?})"),
             },
+            "ownrelay" => format!("{:?}", eng.set_own_relay(p[1].into(), p.get(2).map(|x| (*x).to_owned()))),
+            "card" => format!("{:?}", eng.create_contact_card(p[1].parse().unwrap())),
+            "addcard" => format!("{:?}", eng.add_contact_by_card(p[1].into(), p[2].into(), true)),
             "quit" => break,
             _ => "unknown".into(),
         };

@@ -13,6 +13,7 @@
 .externalNativeBuild/
 captures/
 **/node_modules
+__pycache__/
 *.apk
 *.aab
 *.ap_
@@ -105,3 +106,7 @@ perf.data*
 Thumbs.db
 *.swp
 *~
+
+# self-hosting data (secrets, onion keys, backups)
+deploy/data/
+deploy/.env

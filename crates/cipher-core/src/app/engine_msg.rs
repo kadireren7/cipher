@@ -24,8 +24,11 @@ const MAX_MSGS_BETWEEN_UPDATES: u32 = 100;
 const KP_REFILL_INTERVAL_MS: u64 = 3600 * 1000;
 const MAX_HELD_PER_CONV: usize = 64;
 
+/// Recipients (device, capability) that are reached at one relay (`None` = our own).
+type RelayGroup = (Option<cipher_wire::RelayDescriptor>, Vec<(Id16, Id16)>);
+
 /// What a commit builder returns: MLS operations, devices to welcome, and an optional new routing tag.
-type CommitPlan = (Vec<GroupOp>, Vec<Id16>, Option<Id16>);
+pub(super) type CommitPlan = (Vec<GroupOp>, Vec<Id16>, Option<Id16>);
 const MAX_TS_FUTURE_MS: u64 = 5 * 60 * 1000;
 const MAX_TS_PAST_MS: u64 = 7 * 24 * 3600 * 1000;
 
@@ -83,7 +86,7 @@ fn preview_of(c: &Content) -> String {
                 format!("{kind}: {}", clip(caption))
             }
         }
-        Content::Receipt { .. } | Content::LeaveRequest | Content::DeliveryCap { .. } => String::new(),
+        Content::Receipt { .. } | Content::LeaveRequest | Content::DeliveryCap { .. } | Content::GroupCaps { .. } => String::new(),
     }
 }
 
@@ -204,7 +207,7 @@ impl Engine {
         }
     }
 
-    fn own_ids(&mut self) -> Result<(Id16, Id16)> {
+    pub(super) fn own_ids(&mut self) -> Result<(Id16, Id16)> {
         let s = self.session()?;
         Ok((s.ident.account_id, s.ident.device_id))
     }
@@ -251,7 +254,7 @@ impl Engine {
     // ------------------------------------------------------------------------------------- conversation setup
 
     /// Trusted, non-blocked devices of the given contacts (fresh directory evaluation). Fails closed on identity problems.
-    fn peer_devices(&mut self, accounts: &[Id16]) -> Result<Vec<(Id16, Id16, [u8; 32])>> {
+    pub(super) fn peer_devices(&mut self, accounts: &[Id16]) -> Result<Vec<(Id16, Id16, [u8; 32])>> {
         let mut out = Vec::new();
         for a in accounts {
             let c = self.contact(a)?.ok_or(SecurityError::NotFound("contact"))?;
@@ -276,10 +279,17 @@ impl Engine {
         Ok(out)
     }
 
-    fn claim_key_packages(&mut self, devs: &[(Id16, Id16, [u8; 32])]) -> Result<Vec<GroupOp>> {
+    pub(super) fn claim_key_packages(&mut self, devs: &[(Id16, Id16, [u8; 32])]) -> Result<Vec<GroupOp>> {
         let mut ops = Vec::new();
         for (account, device, key) in devs {
-            match self.api()?.consume_key_package(device) {
+            let kp = match self.home_of(account) {
+                Some(h) => {
+                    let ep = crate::relay_client::RelayEndpoint::from_descriptor(&h.relay)?;
+                    self.api_at(&ep)?.intro_key_package(&h.intro, device)
+                }
+                None => self.api()?.consume_key_package(device),
+            };
+            match kp {
                 Ok(kp) => ops.push(GroupOp::Add {
                     key_package: kp,
                     expected: ExpectedPeer { account_id: *account, device_id: *device, identity_key: *key },
@@ -301,7 +311,7 @@ impl Engine {
 
     /// History key of the CURRENT epoch of a group (docs/HISTORY_REVOCATION.md). Must be stored in the SAME atomic commit as the MLS state
     /// that reached this epoch, otherwise a crash could advance MLS while losing the key.
-    fn current_epoch_key(&mut self, conv: &Id16) -> Result<(u64, zeroize::Zeroizing<[u8; 32]>)> {
+    pub(super) fn current_epoch_key(&mut self, conv: &Id16) -> Result<(u64, zeroize::Zeroizing<[u8; 32]>)> {
         let g = GroupRef(conv.0.to_vec());
         let s = self.session()?;
         Ok((crate::protocol::GroupProtocol::epoch(&s.mls, &g)?, s.mls.export_epoch_key(&g)?))
@@ -331,6 +341,7 @@ impl Engine {
                 s.delete(NS_HELD, &id)?;
             }
             s.delete(NS_PENDING_COMMIT, &prefix)?;
+            s.delete(super::engine_home::NS_HOME_PENDING, &prefix)?;
             for id in s.list_ids(NS_CAPS)?.into_iter().filter(|i| i.contains(prefix.as_str())) {
                 s.delete(NS_CAPS, &id)?;
             }
@@ -343,6 +354,11 @@ impl Engine {
     fn create_conversation(&mut self, kind: ConvKind, name: &str, accounts: &[Id16]) -> Result<Id16> {
         self.guard()?;
         let (me, _) = self.own_ids()?;
+        let remote_home = if kind == ConvKind::Dm { accounts.first().and_then(|a| self.home_of(a)) } else { None };
+        if kind == ConvKind::Group && accounts.iter().any(|a| self.home_of(a).is_some()) {
+            // Members on different relays: the commits are ordered by the log of a HOME relay (docs/CROSS_RELAY_GROUPS.md §7).
+            return self.create_homed_group(name, accounts);
+        }
         let devs = self.peer_devices(accounts)?;
         let ops = self.claim_key_packages(&devs)?;
         let tag = rid()?;
@@ -363,6 +379,55 @@ impl Engine {
         };
         let new_devices: Vec<Id16> =
             ops.iter().filter_map(|o| if let GroupOp::Add { expected, .. } = o { Some(expected.device_id) } else { None }).collect();
+        if let Some(home) = remote_home {
+            // A conversation with a peer on another relay has NO sequencer: the commit is merged locally and the Welcome is delivered to the peer's
+            // mailbox on THEIR relay through the intro capability of their card (queued in the encrypted outbox, so it survives process death and
+            // an unreachable relay). The conversation then performs no further commits.
+            let welcome = out.welcome.clone().ok_or(SecurityError::Protocol("missing welcome"))?;
+            self.session()?.mls.merge_pending_commit(&group)?;
+            let id = Id16(group.0.as_slice().try_into().map_err(|_| SecurityError::Protocol("group id"))?);
+            let peer = accounts.first().copied().ok_or(SecurityError::Malformed("no peer"))?;
+            let now = self.now_ms();
+            let conv = Conversation {
+                id,
+                kind,
+                state: ConvState::Active,
+                title: self.account_name(&peer),
+                peer: Some(peer),
+                tag,
+                relay_seq: 0,
+                unread: 0,
+                last_activity_ms: now,
+                last_preview: String::new(),
+                last_self_update_ms: now,
+                sent_since_update: 0,
+                access_revoked: false,
+                remote: true,
+                home: None,
+            };
+            let item = OutboxItem {
+                id: rid()?,
+                conv: id,
+                devices: new_devices.clone(),
+                ciphertext: welcome,
+                attempts: 0,
+                next_attempt_ms: 0,
+                is_leave: false,
+                welcome: true,
+                order: self.next_ts_ms(),
+            };
+            let seeds = StoredPeerCap::Full(PeerCap { cap: home.intro, relay: Some(home.relay.clone()) });
+            self.commit_state(|s| {
+                put_json(s, NS_CONV, &id.to_hex(), &conv)?;
+                put_json(s, NS_OUTBOX, &item.id.to_hex(), &item)?;
+                for d in &new_devices {
+                    put_json(s, NS_CAPS, &format!("peer/{}/{}", id.to_hex(), d.to_hex()), &seeds)?;
+                }
+                Ok(())
+            })?;
+            let _ = self.flush_outbox();
+            return Ok(id);
+        }
         let deliveries = Self::welcome_deliveries(&out, &new_devices)?;
         let result = self.api()?.group_commit(&tag, 0, None, deliveries);
         let seq = match result {
@@ -399,6 +464,8 @@ impl Engine {
             last_self_update_ms: now,
             sent_since_update: 0,
             access_revoked: false,
+            remote: false,
+            home: None,
         };
         let hk = if kind == ConvKind::Group { Some(self.current_epoch_key(&id)?) } else { None };
         self.commit_state(|s| {
@@ -437,6 +504,14 @@ impl Engine {
     /// concurrent commit wins per sequence number).
     fn run_commit(&mut self, conv_id: &Id16, build: &dyn Fn(&mut Engine, &Conversation) -> Result<CommitPlan>) -> Result<()> {
         self.guard()?;
+        if self.conversation(conv_id)?.home.is_some() {
+            return self.run_home_commit(conv_id, build);
+        }
+        if self.conversation(conv_id)?.remote {
+            return Err(SecurityError::Denied(
+                "conversations with a peer on another relay cannot be changed (no sequencer; MULTI_RELAY_PROTOCOL.md §9)",
+            ));
+        }
         self.resolve_pending_commits()?;
         let mut last_err = SecurityError::Transport("commit contention");
         for _ in 0..4 {
@@ -644,7 +719,7 @@ impl Engine {
         if self.my_role(conv)? == Role::Owner {
             return Err(SecurityError::Denied("transfer ownership before leaving"));
         }
-        let frame = Frame { v: 1, id: rid()?, ts_ms: self.now_ms(), reply_to: None, content: Content::LeaveRequest };
+        let frame = Frame { v: 1, id: rid()?, ts_ms: self.now_ms(), reply_to: None, content: Content::LeaveRequest, head: None };
         self.queue_app_message(&c.id, frame, false, true)?;
         let mut c = self.conversation(conv)?;
         c.state = ConvState::Left;
@@ -666,7 +741,8 @@ impl Engine {
         if n == 0 || n > codec::MAX_TEXT_CHARS || body.trim().is_empty() {
             return Err(SecurityError::Malformed("message text"));
         }
-        let frame = Frame { v: 1, id: rid()?, ts_ms: self.now_ms(), reply_to, content: Content::Text { body: body.to_owned() } };
+        let frame =
+            Frame { v: 1, id: rid()?, ts_ms: self.next_ts_ms(), reply_to, content: Content::Text { body: body.to_owned() }, head: None };
         let m = self.queue_app_message(conv, frame, true, false)?.ok_or(SecurityError::InvalidState)?;
         self.flush_if_immediate(); // best effort; failures stay in the outbox for retry
         Ok(self.message(conv, &m.id)?.unwrap_or(m))
@@ -679,6 +755,17 @@ impl Engine {
             return Err(SecurityError::Denied("conversation is not active"));
         }
         let (me, me_dev) = self.own_ids()?;
+        let mut frame = frame;
+        if let Some(h) = &conv.home {
+            // A group whose commit log can no longer be trusted keeps its history readable but stops sending, except when the only problem is an
+            // invalid commit occupying a log position (membership changes are blocked; messages are unaffected).
+            if h.frozen.as_deref().is_some_and(|r| r != super::engine_home::FREEZE_BLOCKED) {
+                return Err(SecurityError::Denied("this group is frozen: its home relay showed members inconsistent histories"));
+            }
+            if let Some(l) = &h.ledger {
+                frame.head = Some(LogHead { seq: l.head.seq, chain: l.head.chain.clone() });
+            }
+        }
         let bytes = codec::encode(&frame)?;
         let group = GroupRef(conv.id.0.to_vec());
         let (ct, devices, epoch) = {
@@ -692,13 +779,24 @@ impl Engine {
             return Err(SecurityError::Denied("no recipients"));
         }
         let now = self.now_ms();
-        let item = OutboxItem { id: frame.id, conv: conv.id, devices, ciphertext: ct, attempts: 0, next_attempt_ms: 0, is_leave };
+        let order = self.next_ts_ms();
+        let item = OutboxItem {
+            id: frame.id,
+            conv: conv.id,
+            devices,
+            ciphertext: ct,
+            attempts: 0,
+            next_attempt_ms: 0,
+            is_leave,
+            welcome: false,
+            order,
+        };
         let msg = StoredMessage {
             id: frame.id,
             conv: conv.id,
             outgoing: true,
             sender_account: me,
-            ts_ms: now,
+            ts_ms: frame.ts_ms,
             reply_to: frame.reply_to,
             content: frame.content.clone(),
             state: DeliveryState::Pending,
@@ -712,7 +810,9 @@ impl Engine {
             conv.last_preview = preview_of(&frame.content);
             conv.sent_since_update += 1;
         }
+        let last_ts = self.last_ts_ms;
         self.commit_state(|s| {
+            put_json(s, NS_META, "last_ts", &last_ts)?; // survives restarts: later messages never get an earlier timestamp
             put_json(s, NS_OUTBOX, &item.id.to_hex(), &item)?;
             if store {
                 put_message(s, &msg)?;
@@ -737,28 +837,71 @@ impl Engine {
             }
             Ok(v)
         })?;
+        let mut items = items;
+        // STRICT per-conversation FIFO: ciphertexts leave in the order they were encrypted. A head that is waiting (back-off), failed or only partly
+        // delivered holds back its successors, so the relay's queue — and therefore the recipient — never sees generation 9 before generation 2.
+        items.sort_by_key(|i| (i.order, i.id.0));
+        // FIFO PER RECIPIENT DEVICE (not per conversation): a ciphertext is never sent to a device while an EARLIER one for the same device is waiting
+        // (back-off), failed or only partly delivered, so each receiver sees generations in order — but one unreachable member (for instance on a
+        // relay that is down) no longer stalls the conversation for everybody else.
+        let mut blocked: std::collections::HashSet<(Id16, Id16)> = std::collections::HashSet::new();
         let mut delivered = 0;
+        // A device that has not yet received its Welcome gets nothing else of that conversation.
+        let welcome_wait: std::collections::HashSet<(Id16, Id16)> =
+            items.iter().filter(|i| i.welcome).flat_map(|i| i.devices.iter().map(move |d| (i.conv, *d))).collect();
         for mut item in items {
-            if item.next_attempt_ms > now || item.attempts >= MAX_OUTBOX_ATTEMPTS {
+            if item.attempts >= MAX_OUTBOX_ATTEMPTS {
+                // Retries exhausted. A user-visible message stays FAILED and keeps holding its successors back (for the same recipients) until the
+                // user retries or deletes it; a control frame (receipt, capability) nobody sees is simply dropped — the next one supersedes it.
+                let visible = self.vault.with_store(|s| Ok(msg_key_for(s, &item.conv, &item.id)?.is_some()))?;
+                if visible || item.welcome || item.is_leave {
+                    blocked.extend(item.devices.iter().map(|d| (item.conv, *d)));
+                } else {
+                    self.vault.with_store(|s| s.delete(NS_OUTBOX, &item.id.to_hex()))?;
+                }
                 continue;
+            }
+            if item.next_attempt_ms > now {
+                blocked.extend(item.devices.iter().map(|d| (item.conv, *d)));
+                continue;
+            }
+            // Recipients that must wait (an earlier item for them is pending, or their Welcome is) are held back; the others go now.
+            let held: Vec<Id16> = item
+                .devices
+                .iter()
+                .filter(|d| blocked.contains(&(item.conv, **d)) || (!item.welcome && welcome_wait.contains(&(item.conv, **d))))
+                .copied()
+                .collect();
+            let live: Vec<Id16> = item.devices.iter().filter(|d| !held.contains(d)).copied().collect();
+            if live.is_empty() {
+                continue; // nothing can leave yet; no attempt is consumed
             }
             let mut remaining: Vec<Id16> = Vec::new();
             let mut net_failed = false;
-            for chunk in item.devices.chunks(cipher_wire::limits::MAX_BATCH_DELIVERIES) {
+            // A peer on another relay is reachable ONLY through its capability: the authenticated path would hit OUR relay, which has never heard of
+            // them and answers `not_found` (counted as delivered) — a message would be silently lost.
+            let conv_remote = self.conversation(&item.conv).map(|c| c.remote).unwrap_or(false);
+            let homed: Option<HomedGroup> = self.conversation(&item.conv).ok().and_then(|c| c.home);
+            // Devices of a cross-relay group that have no known location yet: they wait for their capability and consume NO attempt while doing so.
+            let mut waiting: Vec<Id16> = Vec::new();
+            for chunk in live.chunks(cipher_wire::limits::MAX_BATCH_DELIVERIES) {
                 // Recipients whose inbox capability we hold are reached WITHOUT authenticating (the relay learns neither us nor their stable id).
-                let (anon_chunk, chunk): (Vec<(Id16, Id16)>, Vec<Id16>) = {
-                    let mut with = Vec::new();
-                    let mut without = Vec::new();
-                    for d in chunk {
-                        match self.peer_cap(&item.conv, d) {
-                            Some(c) => with.push((*d, c)),
-                            None => without.push(*d),
-                        }
+                // A capability names the relay it is valid at: peers on another relay are reached THERE, directly from this device (client-mediated,
+                // docs/MULTI_RELAY_PROTOCOL.md §5) and never through the authenticated path, which does not exist for them.
+                let mut by_relay: Vec<RelayGroup> = Vec::new();
+                let mut without = Vec::new();
+                for d in chunk {
+                    match self.peer_cap(&item.conv, d) {
+                        Some(pc) => match by_relay.iter_mut().find(|(r, _)| *r == pc.relay) {
+                            Some((_, v)) => v.push((*d, pc.cap)),
+                            None => by_relay.push((pc.relay, vec![(*d, pc.cap)])),
+                        },
+                        None => without.push(*d),
                     }
-                    (with, without)
-                };
+                }
+                let chunk = without;
                 let mut fallback: Vec<Id16> = Vec::new();
-                if !anon_chunk.is_empty() {
+                for (relay, anon_chunk) in by_relay {
                     let items: Vec<cipher_wire::messages::AnonDelivery> = anon_chunk
                         .iter()
                         .map(|(_, cap)| cipher_wire::messages::AnonDelivery {
@@ -767,7 +910,14 @@ impl Engine {
                             ciphertext: item.ciphertext.clone(),
                         })
                         .collect();
-                    match self.api()?.anon_deliver(items, None) {
+                    let sent = match &relay {
+                        None => self.api()?.anon_deliver(items, None),
+                        Some(r) => match crate::relay_client::RelayEndpoint::from_descriptor(r) {
+                            Ok(ep) => self.api_at(&ep)?.anon_deliver(items, None),
+                            Err(e) => Err(e),
+                        },
+                    };
+                    match sent {
                         Ok(results) => {
                             for ((d, _), r) in anon_chunk.iter().zip(results) {
                                 match r.as_str() {
@@ -776,9 +926,14 @@ impl Engine {
                                         self.last_real_authed = false;
                                     }
                                     "invalid" => {
-                                        // revoked/expired: forget it; the next attempt falls back to the authenticated path until a new one arrives
+                                        // revoked/expired: forget it. A same-relay peer falls back to the authenticated path in this very attempt;
+                                        // a peer on another relay has no such path, so the message waits for their next DeliveryCap.
                                         self.forget_peer_cap(&item.conv, d);
-                                        fallback.push(*d);
+                                        if relay.is_none() {
+                                            fallback.push(*d);
+                                        } else {
+                                            remaining.push(*d);
+                                        }
                                     }
                                     _ => remaining.push(*d),
                                 }
@@ -791,7 +946,20 @@ impl Engine {
                     }
                 }
                 let mut chunk = chunk;
-                chunk.extend(fallback); // revoked/expired capability: authenticated path right now, in the same attempt
+                if conv_remote {
+                    remaining.append(&mut chunk);
+                    remaining.extend(fallback);
+                    continue;
+                }
+                // In a cross-relay group only SOME devices are remote: those are never sent through our relay's authenticated path (it would
+                // answer `not_found`, which counts as delivered), they wait for their capability.
+                let (mut local_here, mut wait_here): (Vec<Id16>, Vec<Id16>) = match &homed {
+                    Some(h) => chunk.drain(..).partition(|d| h.local_devices.contains(d)),
+                    None => (std::mem::take(&mut chunk), Vec::new()),
+                };
+                waiting.append(&mut wait_here);
+                local_here.extend(fallback); // a revoked capability on OUR relay: the authenticated path, right now
+                let chunk = local_here;
                 if chunk.is_empty() {
                     continue;
                 }
@@ -818,7 +986,7 @@ impl Engine {
                     }
                 }
             }
-            if remaining.is_empty() {
+            if remaining.is_empty() && held.is_empty() && waiting.is_empty() {
                 let leaving = item.is_leave;
                 let conv = item.conv;
                 self.vault.with_store(|s| {
@@ -837,10 +1005,18 @@ impl Engine {
                 }
                 delivered += 1;
             } else {
-                item.devices = remaining;
-                item.attempts += 1;
-                item.next_attempt_ms = now + backoff_ms(item.attempts);
-                let failed = item.attempts >= MAX_OUTBOX_ATTEMPTS;
+                let failure = !remaining.is_empty();
+                let mut rest = remaining;
+                rest.extend(held.iter().copied());
+                rest.extend(waiting.iter().copied());
+                blocked.extend(rest.iter().map(|d| (item.conv, *d)));
+                item.devices = rest;
+                let mut failed = false;
+                if failure {
+                    item.attempts += 1;
+                    item.next_attempt_ms = now + backoff_ms(item.attempts);
+                    failed = item.attempts >= MAX_OUTBOX_ATTEMPTS;
+                }
                 let _ = net_failed;
                 self.vault.with_store(|s| {
                     put_json(s, NS_OUTBOX, &item.id.to_hex(), &item)?;
@@ -925,6 +1101,8 @@ impl Engine {
                 s.delete(&ns_m(conv), &key)?;
                 s.put(&ns_mi(conv), &id.to_hex(), b"")?; // tombstone: empty sort key
             }
+            // Deleting a message that has not been delivered yet CANCELS its sending (and releases the messages queued behind it, if it was stuck).
+            s.delete(NS_OUTBOX, &id.to_hex())?;
             Ok(())
         })
     }
@@ -942,6 +1120,11 @@ impl Engine {
                 }
             }
             let hex = conv.to_hex();
+            for id in s.list_ids(NS_OUTBOX)? {
+                if get_json::<OutboxItem>(s, NS_OUTBOX, &id)?.is_some_and(|i| i.conv == *conv) {
+                    s.delete(NS_OUTBOX, &id)?;
+                }
+            }
             for id in s.list_ids(NS_CAPS)?.into_iter().filter(|i| i.contains(hex.as_str())) {
                 s.delete(NS_CAPS, &id)?;
             }
@@ -1040,6 +1223,8 @@ impl Engine {
                 break;
             }
         }
+        // Cross-relay groups: their commits come from the home relay's log, not from the mailbox.
+        self.pull_home(&mut report)?;
         report.conversations_changed.sort();
         report.conversations_changed.dedup();
         Ok(report)
@@ -1089,7 +1274,7 @@ impl Engine {
         }
     }
 
-    fn process_group_message(&mut self, conv: &Conversation, ct: &[u8]) -> Result<ProcessedEx> {
+    pub(super) fn process_group_message(&mut self, conv: &Conversation, ct: &[u8]) -> Result<ProcessedEx> {
         let group = GroupRef(conv.id.0.to_vec());
         for attempt in 0..2 {
             let pinned = self.vault.with_store(|s| IdentityPins::new(s).pinned_devices())?;
@@ -1121,7 +1306,7 @@ impl Engine {
         })
     }
 
-    fn retry_held(&mut self, conv_id: &Id16, report: &mut SyncReport) -> Result<()> {
+    pub(super) fn retry_held(&mut self, conv_id: &Id16, report: &mut SyncReport) -> Result<()> {
         let prefix = conv_id.to_hex();
         for _ in 0..8 {
             let held: Vec<String> =
@@ -1204,6 +1389,17 @@ impl Engine {
             last_self_update_ms: now,
             sent_since_update: 0,
             access_revoked: false,
+            // A DM Welcome that was not stamped by a sequencer came through a capability, i.e. from a peer on another relay.
+            remote: kind == ConvKind::Dm && env.group_seq.is_none(),
+            // The home relay comes ONLY from the MLS-authenticated group metadata; the Welcome's carrier cannot choose it.
+            home: meta.home.clone().map(|relay| HomedGroup {
+                relay,
+                ledger: None,
+                local_devices: Vec::new(),
+                frozen: None,
+                issue: None,
+                superseded_by: None,
+            }),
         };
         // History keys exist only from the epoch this device joined at: no pre-join history, and nothing from a previous membership era.
         let hk = if kind == ConvKind::Group { Some((joined.epoch, self.session()?.mls.export_epoch_key(&joined.group)?)) } else { None };
@@ -1217,7 +1413,7 @@ impl Engine {
         Ok(())
     }
 
-    fn apply_processed(&mut self, conv_id: &Id16, p: ProcessedEx, report: &mut SyncReport) -> Result<()> {
+    pub(super) fn apply_processed(&mut self, conv_id: &Id16, p: ProcessedEx, report: &mut SyncReport) -> Result<()> {
         let (me, _) = self.own_ids()?;
         match p {
             ProcessedEx::Application { plaintext, sender, epoch } => {
@@ -1270,6 +1466,11 @@ impl Engine {
     ) -> Result<()> {
         let mut conv = self.conversation(conv_id)?;
         let now = self.now_ms();
+        if let (Some(h), Some(_)) = (&frame.head, &conv.home) {
+            // Compare the sender's position in the home log with ours: two members shown different histories disagree here.
+            self.check_gossip(conv_id, h)?;
+            conv = self.conversation(conv_id)?; // freezing rewrote the record
+        }
         match frame.content.clone() {
             Content::Text { .. } | Content::Attachment { .. } => {
                 if let Content::Text { body } = &frame.content {
@@ -1344,10 +1545,34 @@ impl Engine {
                     report.conversations_changed.push(*conv_id);
                 }
             }
-            Content::DeliveryCap { cap } => {
-                // Authenticated by MLS (it arrived inside this conversation from this member device): remember it as THEIR inbox capability.
+            Content::DeliveryCap { cap, relay } => {
+                // Authenticated by MLS (it arrived inside this conversation from this member device): remember it as THEIR inbox capability, together
+                // with the relay it is valid at. A malformed descriptor is dropped (the old capability, if any, stays); the sender's relay can never
+                // redirect it, because this frame is end-to-end encrypted.
+                let relay = match relay {
+                    None => None,
+                    Some(d) => match d.validated() {
+                        Ok(d) if self.own_relay.as_ref().is_some_and(|o| o.url() == d.url()) => None, // same relay as ours: local path
+                        Ok(d) => Some(d),
+                        Err(_) => return Ok(()),
+                    },
+                };
                 let key = format!("peer/{}/{}", conv_id.to_hex(), sender_device.to_hex());
-                self.vault.with_store(|s| put_json(s, NS_CAPS, &key, &cap))?;
+                let first_direct = conv.home.is_some()
+                    && self
+                        .vault
+                        .with_store(|s| Ok(s.get(NS_CAPS, &format!("src/{}/{}", conv_id.to_hex(), sender_device.to_hex()))?.is_none()))?;
+                self.vault.with_store(|s| put_json(s, NS_CAPS, &key, &StoredPeerCap::Full(PeerCap { cap, relay })))?;
+                // Whatever was only waiting for this capability must not sit out an exponential back-off that was never about a failure.
+                self.wake_outbox(conv_id)?;
+                if conv.home.is_some() {
+                    self.homed_cap_learned(conv_id, sender_device, first_direct)?;
+                }
+            }
+            Content::GroupCaps { entries } => {
+                if conv.home.is_some() {
+                    self.apply_group_caps(conv_id, sender_device, entries)?;
+                }
             }
             Content::LeaveRequest => {
                 if conv.kind == ConvKind::Group {
@@ -1377,16 +1602,38 @@ impl Engine {
         for (c, m) in pending {
             by.entry(c).or_default().push(m);
         }
+        // A receipt tells the sender "your message reached my device", so it is withheld while the conversation is still an unanswered message
+        // request, and sent once it is accepted. (They used to be discarded, leaving the sender's first message at `Sent` forever.)
+        // Receipts for conversations that no longer exist or are no longer active are dropped.
+        let mut keep: Vec<(Id16, Id16)> = Vec::new();
         for (conv, ids) in by {
-            for chunk in ids.chunks(100) {
-                let frame =
-                    Frame { v: 1, id: rid()?, ts_ms: self.now_ms(), reply_to: None, content: Content::Receipt { ids: chunk.to_vec() } };
-                if self.conversation(&conv).is_ok_and(|c| c.state == ConvState::Active) {
-                    let _ = self.queue_app_message(&conv, frame, false, false);
+            match self.conversation(&conv).map(|c| c.state) {
+                Ok(ConvState::Active) => {
+                    for chunk in ids.chunks(100) {
+                        let frame = Frame {
+                            v: 1,
+                            id: rid()?,
+                            ts_ms: self.next_ts_ms(),
+                            reply_to: None,
+                            content: Content::Receipt { ids: chunk.to_vec() },
+                            head: None,
+                        };
+                        if self.queue_app_message(&conv, frame, false, false).is_err() {
+                            keep.extend(chunk.iter().map(|m| (conv, *m))); // could not be queued now: try again next time
+                        }
+                    }
                 }
+                Ok(ConvState::Requested) => keep.extend(ids.iter().map(|m| (conv, *m))),
+                _ => {}
             }
         }
-        self.vault.with_store(|s| s.delete(NS_META, "pending_receipts"))?;
+        self.vault.with_store(|s| {
+            if keep.is_empty() {
+                s.delete(NS_META, "pending_receipts")
+            } else {
+                put_json(s, NS_META, "pending_receipts", &keep)
+            }
+        })?;
         let _ = self.flush_outbox();
         Ok(())
     }
@@ -1422,8 +1669,8 @@ impl Engine {
         self.guard()?;
         let now = self.now_ms();
         for c in self.list_conversations()? {
-            if c.state != ConvState::Active {
-                continue;
+            if c.state != ConvState::Active || c.remote {
+                continue; // a conversation with a peer on another relay performs no commits (docs/MULTI_RELAY_PROTOCOL.md §9)
             }
             let due = (now.saturating_sub(c.last_self_update_ms) >= SELF_UPDATE_INTERVAL_MS && c.sent_since_update > 0)
                 || c.sent_since_update >= MAX_MSGS_BETWEEN_UPDATES;
@@ -1475,6 +1722,21 @@ const CAP_ROTATE_MS: u64 = 7 * 24 * 3600 * 1000;
 /// Grace for a rotated capability, so sends already in flight do not fail.
 const CAP_ROTATE_GRACE_SECS: u64 = 3600;
 
+/// Where to deliver to one peer device: its capability and, for a peer on another relay, that relay.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PeerCap {
+    pub(crate) cap: Id16,
+    pub(crate) relay: Option<cipher_wire::RelayDescriptor>,
+}
+
+/// Stored form; capabilities saved before multi-relay support are a bare id.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub(crate) enum StoredPeerCap {
+    Full(PeerCap),
+    Legacy(Id16),
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 struct OwnCap {
     cap: Id16,
@@ -1485,9 +1747,32 @@ struct OwnCap {
 }
 
 impl Engine {
-    fn peer_cap(&mut self, conv: &Id16, device: &Id16) -> Option<Id16> {
+    pub(super) fn peer_cap(&mut self, conv: &Id16, device: &Id16) -> Option<PeerCap> {
         let key = format!("peer/{}/{}", conv.to_hex(), device.to_hex());
-        self.vault.with_store(|s| get_json::<Id16>(s, NS_CAPS, &key)).ok().flatten()
+        match self.vault.with_store(|s| get_json::<StoredPeerCap>(s, NS_CAPS, &key)).ok().flatten()? {
+            StoredPeerCap::Legacy(cap) => Some(PeerCap { cap, relay: None }),
+            StoredPeerCap::Full(p) => Some(p),
+        }
+    }
+
+    /// (capability, relay) for a peer device, if known.
+    pub(crate) fn peer_cap_pub(&mut self, conv: &Id16, device: &Id16) -> Option<(Id16, Option<cipher_wire::RelayDescriptor>)> {
+        self.peer_cap(conv, device).map(|p| (p.cap, p.relay))
+    }
+
+    /// Make every outbox item of `conv` due now.
+    pub(super) fn wake_outbox(&mut self, conv: &Id16) -> Result<()> {
+        self.vault.with_store(|s| {
+            for id in s.list_ids(NS_OUTBOX)? {
+                if let Some(mut i) = get_json::<OutboxItem>(s, NS_OUTBOX, &id)? {
+                    if i.conv == *conv && i.next_attempt_ms != 0 {
+                        i.next_attempt_ms = 0;
+                        put_json(s, NS_OUTBOX, &id, &i)?;
+                    }
+                }
+            }
+            Ok(())
+        })
     }
 
     fn forget_peer_cap(&mut self, conv: &Id16, device: &Id16) {
@@ -1531,6 +1816,10 @@ impl Engine {
             if !due {
                 continue;
             }
+            if (c.remote || c.home.is_some()) && self.own_relay.is_none() {
+                // A peer on another relay would take a capability without a relay for one valid at ITS OWN relay and silently fail to deliver.
+                continue;
+            }
             let group = GroupRef(c.id.0.to_vec());
             let (_, me_dev) = self.own_ids()?;
             if !self.session()?.mls.members_detailed(&group)?.iter().any(|m| m.device != me_dev) {
@@ -1540,7 +1829,14 @@ impl Engine {
             if self.api()?.mint_caps(vec![cap]).is_err() {
                 continue;
             }
-            let frame = Frame { v: 1, id: rid()?, ts_ms: now, reply_to: None, content: Content::DeliveryCap { cap } };
+            let frame = Frame {
+                v: 1,
+                id: rid()?,
+                ts_ms: now,
+                reply_to: None,
+                content: Content::DeliveryCap { cap, relay: self.own_relay.clone() },
+                head: None,
+            };
             if self.queue_app_message(&c.id, frame, false, false).is_err() {
                 continue; // the minted capability simply expires unused
             }
@@ -1549,7 +1845,10 @@ impl Engine {
                 revoke.push(o.cap);
             }
             // After a removal the old capability must die at once (the removed member may know it); a routine rotation keeps a grace window.
-            let grace = if stale { 0 } else { CAP_ROTATE_GRACE_SECS };
+            // In a cross-relay group both sides rotate after a removal and each must still be able to deliver its NEW capability through the other's
+            // OLD one: revoking at once would leave every pair waiting for a capability that can only arrive through a revoked one. The removed member
+            // can then deposit undecryptable ciphertext until the grace ends, nothing more.
+            let grace = if stale && c.home.is_none() { 0 } else { CAP_ROTATE_GRACE_SECS };
             let rec = OwnCap { cap, minted_ms: now, revoke: revoke.clone(), revoke_grace_secs: grace };
             self.vault.with_store(|s| {
                 s.atomic(|s| {

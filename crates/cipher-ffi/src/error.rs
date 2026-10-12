@@ -54,7 +54,7 @@ impl From<SecurityError> for CipherError {
             S::Unauthorized(_) => CipherError::Unauthorized,
             S::IdentityUntrusted(_) => CipherError::IdentityUntrusted,
             S::Transport(m) => match m {
-                "network unavailable" | "timeout" | "tls failure" | "io failure" => CipherError::Offline,
+                "network unavailable" | "timeout" | "unavailable" | "tls failure" | "io failure" => CipherError::Offline,
                 "unauthorized" | "rate limited" | "not found" | "conflict" | "payload too large" | "server error" | "request rejected" => {
                     CipherError::Server
                 }

@@ -100,6 +100,15 @@ impl World {
     }
 
     pub fn build(limits: Limits, max_inflight: usize, request_timeout_secs: u64) -> Self {
+        Self::build_with(limits, max_inflight, request_timeout_secs, cipher_wire::limits::CAP_BLOB_QUOTA_BYTES, 1024 * 1024 * 1024)
+    }
+
+    /// A relay with explicit blob storage limits: per delivery capability and in total.
+    pub fn with_blob_limits(cap_quota: u64, total: u64) -> Self {
+        Self::build_with(generous_limits(), 512, 30, cap_quota, total)
+    }
+
+    pub fn build_with(limits: Limits, max_inflight: usize, request_timeout_secs: u64, cap_quota: u64, total_blobs: u64) -> Self {
         let logs = LogBuf::default();
         let sub = tracing_subscriber::fmt().with_writer(logs.clone()).with_ansi(false).with_max_level(tracing::Level::TRACE).finish();
         let guard = tracing::subscriber::set_default(sub);
@@ -128,11 +137,16 @@ impl World {
             max_inflight,
             max_connections: 64,
             request_timeout_secs,
+            body_idle_secs: 20,
+            shared_source: false,
             listen: "127.0.0.1:0".parse().unwrap(),
             tls_cert: None,
             tls_key: None,
             insecure_dev_http: true,
-            max_total_blob_bytes: 1024 * 1024 * 1024,
+            max_total_blob_bytes: total_blobs,
+            tls_handshake_secs: 10,
+            cap_blob_quota_bytes: cap_quota,
+            home_max_groups: 3,
         });
         let clock = Arc::new(SharedClock(ManualClock::new(1_800_000_000)));
         let push = Arc::new(RecordingPush::default());
@@ -157,6 +171,23 @@ impl World {
     pub fn instance(&self, limits: Limits) -> Router {
         let store = Arc::new(PgStore::new(self.pool.clone()));
         let st = Arc::new(AppState::new(store, self.state.cfg.clone(), self.clock.clone(), self.push.clone(), limits));
+        cipher_relay::build_app(st)
+    }
+
+    /// A relay router sharing this world's database but with a short body-idle deadline (stalled-upload tests).
+    pub fn instance_shared_source(&self, limits: Limits) -> Router {
+        let store = Arc::new(PgStore::new(self.pool.clone()));
+        let mut cfg = (*self.state.cfg).clone();
+        cfg.shared_source = true;
+        let st = Arc::new(AppState::new(store, Arc::new(cfg), self.clock.clone(), self.push.clone(), limits));
+        cipher_relay::build_app(st)
+    }
+
+    pub fn instance_with_body_idle(&self, secs: u64) -> Router {
+        let store = Arc::new(PgStore::new(self.pool.clone()));
+        let mut cfg = (*self.state.cfg).clone();
+        cfg.body_idle_secs = secs;
+        let st = Arc::new(AppState::new(store, Arc::new(cfg), self.clock.clone(), self.push.clone(), generous_limits()));
         cipher_relay::build_app(st)
     }
 

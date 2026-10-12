@@ -120,7 +120,14 @@ fun DevicesScreen(vm: AppViewModel, onBack: () -> Unit) {
 }
 
 @Composable
-fun SettingsScreen(state: UiState, vm: AppViewModel, onBack: () -> Unit, onSecurity: () -> Unit, onDevices: () -> Unit) {
+fun SettingsScreen(
+    state: UiState,
+    vm: AppViewModel,
+    onBack: () -> Unit,
+    onSecurity: () -> Unit,
+    onDevices: () -> Unit,
+    onRelay: () -> Unit
+) {
     val ctx = LocalContext.current
     val s = state.settings
     var confirmReset by remember { mutableStateOf(false) }
@@ -197,6 +204,7 @@ fun SettingsScreen(state: UiState, vm: AppViewModel, onBack: () -> Unit, onSecur
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
         OutlinedButton(onClick = onSecurity, modifier = Modifier.fillMaxWidth()) { Text("Security information") }
+        OutlinedButton(onClick = onRelay, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Server and certificate") }
         OutlinedButton(onClick = onDevices, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Devices") }
         OutlinedButton(onClick = { vm.lockNow() }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Lock now") }
         Spacer(Modifier.height(24.dp))
@@ -239,6 +247,8 @@ private fun eventText(k: SecurityEventKind): String = when (k) {
     SecurityEventKind.GROUP_MEMBER_REMOVED -> "A member was removed from a group; the group keys were rotated"
     SecurityEventKind.GROUP_ACCESS_REVOKED -> "You were removed from a group; its history is no longer available here"
     SecurityEventKind.REMOVED_MEMBER_MESSAGE_REJECTED -> "A message from a removed group member was rejected"
+    SecurityEventKind.GROUP_FORK_DETECTED -> "A group's home relay gave members inconsistent histories; the group is frozen"
+    SecurityEventKind.HOME_RELAY_UNAVAILABLE -> "A group's home relay is unusable; membership changes need a new group"
 }
 
 @Composable
@@ -260,7 +270,16 @@ fun SecurityInfoScreen(state: UiState, vm: AppViewModel, onBack: () -> Unit) {
         InfoRow("Unlock", if (state.pinOnly) "PIN only" else "Biometrics / screen lock${if (v?.hasPin == true) " + PIN" else ""}")
         InfoRow("Auto-lock", "On leaving the app, screen off, or after ${vm.host.lockTimeoutSecs()} s of inactivity")
         InfoRow("Server", (vm.host.relayUrl() ?: "—").removePrefix("https://"))
-        InfoRow("Connection", "TLS 1.3 only. No certificate overrides.")
+        InfoRow(
+            "Connection",
+            if (vm.host.relayPin() ==
+                null
+            ) {
+                "TLS 1.3 only. Certificate checked against trusted authorities."
+            } else {
+                "TLS 1.3 only. Server authenticated by the certificate key you pinned."
+            }
+        )
         InfoRow("Message encryption", "MLS (RFC 9420) end-to-end. Keys refresh every 24 h of use or 100 messages.")
         InfoRow("Screenshots", "Blocked inside Cipher")
         Spacer(Modifier.height(12.dp))

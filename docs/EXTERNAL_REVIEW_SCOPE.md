@@ -25,6 +25,8 @@ GroupContext extension `0xF1A0` (roles/tag/name/kind); `authorize_commit` on eve
 ## 6. Device revocation and multi-device
 Not implemented (ST-010/ST-020/ST-033). Reviewer is asked to review the *design constraints* in `docs/RECOVERY_AND_DEVICES.md`, not code.
 
+2026-10-12 scope addition: review the owner-selected account-control recovery, signed directory generations, device linking/revocation and migration proposal in `EXTERNAL_IMPLEMENTATION_PLAN.md`. Also review its UnifiedPush/Web Push integration (especially registration challenge isolation and endpoint SSRF), reduced application envelope, and resumable upload scope/offset/quota/crash-accounting design **before implementation**. Cross-relay group sequencing and successor recovery in `CROSS_RELAY_GROUPS.md`, `engine_home.rs` and their tests are part of the protocol review; any-member membership freeze and relay withholding remain explicit limitations.
+
 ## 7. Persistence and rollback
 `crates/cipher-core/src/storage*.rs`, `vault.rs`, `docs/LOCAL_STORAGE_SECURITY.md`: generation counter, same-session snapshots (ST-016), atomic transactions, `secure_delete`, crash consistency.
 

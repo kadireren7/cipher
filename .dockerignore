@@ -1,0 +1,12 @@
+target
+**/target
+android
+fuzz
+release-artifacts
+.git
+docs
+deploy/data
+*.pem
+*.key
+.env
+.env.*

@@ -28,6 +28,7 @@ import androidx.navigation.navArgument
 import app.cipher.messenger.data.AppViewModel
 import app.cipher.messenger.data.ChatViewModel
 import app.cipher.messenger.ui.screens.ChatListScreen
+import app.cipher.messenger.ui.screens.ContactCardScreen
 import app.cipher.messenger.ui.screens.ConversationScreen
 import app.cipher.messenger.ui.screens.DevicesScreen
 import app.cipher.messenger.ui.screens.GroupInfoScreen
@@ -38,12 +39,14 @@ import app.cipher.messenger.ui.screens.NewConversationScreen
 import app.cipher.messenger.ui.screens.NewGroupScreen
 import app.cipher.messenger.ui.screens.OnboardingFlow
 import app.cipher.messenger.ui.screens.QrScanScreen
+import app.cipher.messenger.ui.screens.RelaySettingsScreen
 import app.cipher.messenger.ui.screens.SecurityInfoScreen
 import app.cipher.messenger.ui.screens.SettingsScreen
 import app.cipher.messenger.ui.screens.VerifyContactScreen
 import app.cipher.messenger.ui.screens.ViewerScreen
 import app.cipher.messenger.ui.theme.CipherTheme
 import kotlinx.coroutines.delay
+import uniffi.cipher_ffi.SecurityEventKind
 
 @Composable
 fun CipherRoot() {
@@ -109,7 +112,8 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
             val scanned by entry.savedStateHandle.getStateFlow<String?>("qr", null).collectAsState()
             LaunchedEffect(scanned) {
                 scanned?.let {
-                    vm.addContactByQr(it, "") { }
+                    // a scanned CONTACT CARD (possibly for a person on another server) is read from their screen: it counts as verified
+                    if (vm.looksLikeCard(it)) vm.addContactByCard(it, "", true) { } else vm.addContactByQr(it, "") { }
                     entry.savedStateHandle["qr"] = null
                 }
             }
@@ -121,8 +125,11 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
                 onScanQr = { nav.navigate("scan") },
                 onNewGroup = { nav.navigate("newgroup") },
                 onVerify = { nav.navigate("verify/$it") },
+                onMyCard = { nav.navigate("mycard") },
             )
         }
+        composable("mycard") { ContactCardScreen(state, vm, onBack = { nav.popBackStack() }) }
+        composable("relay") { RelaySettingsScreen(vm, onBack = { nav.popBackStack() }) }
         composable("newgroup") {
             NewGroupScreen(state, vm, onBack = { nav.popBackStack() }, onCreated = { id -> nav.navigate("chat/$id") { popUpTo("list") } })
         }
@@ -149,10 +156,20 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
         }
         composable("groupinfo/{id}") { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
-            GroupInfoScreen(chat(id), onBack = { nav.popBackStack() }, onMembers = { nav.navigate("members/$id") }, onLeft = {
-                vm.reloadConversations()
-                nav.popBackStack("list", false)
-            })
+            GroupInfoScreen(
+                chat(id),
+                onBack = { nav.popBackStack() },
+                onMembers = { nav.navigate("members/$id") },
+                onLeft = {
+                    vm.reloadConversations()
+                    nav.popBackStack("list", false)
+                },
+                homeUnavailable = state.securityEvents.any { it.kind == SecurityEventKind.HOME_RELAY_UNAVAILABLE && it.subject == id },
+                onReplaced = { newId ->
+                    vm.reloadConversations()
+                    nav.navigate("chat/$newId") { popUpTo("list") }
+                },
+            )
         }
         composable("members/{id}") { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
@@ -182,7 +199,7 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
         composable("settings") {
             SettingsScreen(state, vm, onBack = {
                 nav.popBackStack()
-            }, onSecurity = { nav.navigate("security") }, onDevices = { nav.navigate("devices") })
+            }, onSecurity = { nav.navigate("security") }, onDevices = { nav.navigate("devices") }, onRelay = { nav.navigate("relay") })
         }
         composable("security") { SecurityInfoScreen(state, vm, onBack = { nav.popBackStack() }) }
     }

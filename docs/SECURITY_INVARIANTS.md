@@ -73,6 +73,32 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | PRIV-015 | No direct fallback occurs when all privacy routes are unavailable (engine and release artifact). | partial | 2 |
 | PRIV-016 | Delivery capabilities are unguessable, rotate, can be revoked and expire; a stranger flood cannot starve capability holders; replay is idempotent and bounded. | partial | 4 |
 | PRIV-017 | Cover traffic is bounded, content-free and cannot trigger actions: at most one dummy delivery per tick, random bytes of the real size class, answered `invalid` and stored nowhere. | partial | 3 |
+| MR-001 | A contact card is signed by the issuer's root identity key: flipping any single bit, truncating, extending, retargeting its relay/capability, expiring it or lengthening its lifetime makes it unusable; an onion relay cannot be named without a certificate pin. | automated | 8 |
+| MR-002 | A hostile relay cannot substitute a contact's keys on another relay: the directory answer must contain the card's root key with a valid binding signature before anything is pinned or stored. | automated | 2 |
+| MR-003 | Intro capabilities open exactly three things at the issuer's relay (device records, KeyPackage claims for the issuer's own devices, delivery); ordinary, unknown, expired and revoked capabilities are one indistinguishable not-found; KeyPackage draining and live card count are bounded. | automated | 6 |
+| MR-004 | Alice on relay A and Bob on relay B exchange messages in both directions, in order, including while either is offline, with end-to-end receipts; neither relay holds any record of the other relay's user and no relay-to-relay contact exists. | automated | 3 |
+| MR-005 | A message is never reported as sent while nothing left the device: if the peer's relay is unreachable it stays Pending and is delivered after the relay returns; a remote peer is never reached through the authenticated path (whose `not_found` would count as delivered). | automated | 2 |
+| MR-006 | Cross-relay attachments (image, PDF, video, voice, arbitrary file, thumbnails) are encrypted before upload, stored by both relays as ciphertext only, downloaded by the recipient from his own relay, and fail closed when tampered, truncated, swapped or missing; uploads need a live capability and respect per-capability and global quotas. | automated | 4 |
+| MR-007 | Metadata exposure of first contact is measured: against the mailbox relay, a card-based cross-relay first contact exposes zero signed requests, zero initiator-to-target links, zero stored mentions of the initiator's ids and zero sender hashes. | partial | 1 |
+| MR-008 | A conversation that arrives as a message request gets its delivery receipts once accepted, and outgoing timestamps are strictly increasing so same-millisecond messages keep their order. | automated | 2 |
+| MR-009 | The Android TLS trust component cannot become an accept-all manager: the platform trust manager decides for every host without a pin, a pin compares the full SPKI SHA-256 in constant time with validity dates, and no other file may touch trust-manager or socket-factory APIs. | partial | 2 |
+| MR-010 | Under seeded fault injection (network flaps, responses lost after the relay executed the request, device restarts, relay restarts, clock jumps, same-tick sends) every message reaches the recipient exactly once, in send order, and ends Delivered; messages queued offline leave in encryption order so no generation is lost to MLS out-of-order limits. | automated | 3 |
+| MR-011 | The Android app stack reaches a self-signed onion relay through a real Tor client over the SOCKS privacy route only if the relay presents the pinned SPKI: the correct pin is accepted and the route is reported PROTECTED; a wrong pin and a missing pin (platform CA validation of a self-signed certificate) are refused with a TLS failure, never retried and never downgraded to a direct connection. | partial | 4 |
+| MR-012 | Across app restarts, a restart of the app's relay, an outage of the peer's relay while the app sends, and a burst of messages sent while the app is not running, every message arrives exactly once and in order, an attachment sent around an outage either fails leaving no message or is delivered once and decrypts byte-for-byte, and every message ends DELIVERED by end-to-end receipts with none FAILED; neither relay learns the other relay's user. | partial | 3 |
+| GR-001 | Commits of a cross-relay group are totally ordered by its home relay: a commit is accepted only at the current head by a holder of the head epoch's credentials, exactly one of two concurrent commits wins and the loser rebases, and a retry after a lost response is answered as already accepted (never appended twice). | partial | 4 |
+| GR-002 | Authentication to the home relay is by Ed25519 keys derived from the MLS exporter of one epoch: only members of that epoch can derive them, the relay stores public keys only, a key of epoch e can read entries only up to e+1 and append only at e, a removed member can read its own removal commit and nothing after it, and every authentication failure is indistinguishable. | partial | 5 |
+| GR-003 | A hostile home relay cannot make members accept a rewritten, reordered, replayed, truncated-and-renumbered or rolled-back log, nor substitute the epoch keys: every deviation freezes the group and raises GroupForkDetected; members shown different histories detect it as soon as they exchange one message; withholding the log costs liveness only. | partial | 10 |
+| GR-004 | A malicious member cannot forge membership: receivers re-authorize every commit; an invalid commit consumes a log position and therefore BLOCKS further membership changes (detected, reported, group stays readable), it never changes membership or roles; message delivery does not depend on the home relay. | partial | 3 |
+| GR-005 | Removing a member cuts it off: it loses access, reads nothing sent afterwards, cannot send, and the removal succeeds even when the removed member wins the race for a commit slot. | partial | 1 |
+| GR-006 | Delivery in cross-relay groups: messages from an offline member's peers arrive complete and in order after it returns; one unreachable member relay does not stall the others (outbox ordering is per recipient device); a Welcome for an unreachable relay waits without blocking the group and is delivered before anything else for that device; a member added later reaches and is reached by every member; commits continue after a home-relay restart. | partial | 7 |
+| GR-007 | Least knowledge: the home relay stores no account, device or member identifier for a cross-relay group (opaque tag, ciphertext, public keys); other relays never see the log; every relay holds only ciphertext of attachments (one copy per member relay); bounds protect the home relay (per-group bytes/entries, per-relay group count, per-source and per-tag rate limits). | partial | 5 |
+| GR-008 | The home relay is part of the MLS-authenticated group metadata and cannot change, appear or disappear after creation; ordinary groups encode byte-identically to before; a cross-relay group cannot be created unless the creator's relay is named. | partial | 2 |
+| MR-013 | A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once; one device (or one capability) may have at most 2 uploads in flight. | automated | 3 |
+| MR-014 | On a relay whose clients all arrive from one local address (onion service behind Tor, reverse proxy; or any loopback peer) failed authentication from any client never blocks other clients' valid requests, and per-address buckets are pooled and scaled instead of shared at ordinary size; where the address identifies a client the failed-authentication lockout is unchanged. | automated | 2 |
+| MR-015 | Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts and a 150 s wall-clock budget per logical transfer (no new attempt after it, so retries cannot multiply the per-call deadline), with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message. | partial | 5 |
+| GR-009 | The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged. | automated | 1 |
+| GR-010 | When the home relay of a cross-relay group stays unreachable or no longer recognises the group, the user is told once per streak (sooner for 'does not recognise'), membership changes are refused with a specific reason, messages keep flowing, and a successor group (new id, new home, every member must accept again) can be created; nothing is migrated or re-pointed silently, and a healthy group cannot be 'replaced'. | partial | 1 |
+| MR-016 | A retried attachment upload (same ciphertext, same uploader or delivery capability) returns the original blob id and stores nothing new, so a lost response cannot multiply unreferenced blobs; another uploader or different bytes never receive that id. | partial | 2 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -856,3 +882,302 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
   * `cover_requests_store_nothing_and_share_the_real_message_size_class` (Rust)
   * `delays_stay_inside_the_jitter_window_and_enhanced_is_slower` (Rust)
   * `enhanced_holds_sends_until_the_tick_and_every_tick_has_exactly_one_send_shaped_request` (Rust)
+
+## MR-001 — A contact card is signed by the issuer's root identity key: flipping any single bit, truncating, extending, retargeting its relay/capability, expiring it or lengthening its lifetime makes it unusable; an onion relay cannot be named without a certificate pin.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Card codec exhaustively bit-flipped; descriptor validation unit tests; fuzz target `multi_relay_wire`.
+* **Known gap:** The signature authenticates the card, not the person presenting it: a whole card replaced by an attacker's own pins the attacker's identity (see MR-002).
+* **Tests:**
+  * `flipping_any_single_bit_of_a_card_is_rejected` (Rust)
+  * `truncated_extended_and_foreign_inputs_are_rejected` (Rust)
+  * `a_malicious_relay_cannot_retarget_a_card_without_the_issuers_key` (Rust)
+  * `freshness_is_enforced_and_lifetime_is_bounded` (Rust)
+  * `onion_cards_carry_their_pin_and_cannot_be_issued_without_one` (Rust)
+  * `refuses_everything_that_is_not_plain_https_host_port` (Rust)
+  * `onion_relays_require_a_pin_and_clearnet_relays_may_have_one` (Rust)
+  * `deserialisation_cannot_smuggle_a_noncanonical_or_pinless_onion_descriptor` (Rust)
+
+## MR-002 — A hostile relay cannot substitute a contact's keys on another relay: the directory answer must contain the card's root key with a valid binding signature before anything is pinned or stored.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Engine against two real relays and databases.
+* **Known gap:** First contact without an in-person scan is trust-on-first-use of the card; replacing the WHOLE card with an attacker's own is detectable only by comparing safety numbers.
+* **Tests:**
+  * `a_hostile_relay_cannot_substitute_the_contacts_keys_in_the_directory_answer` (Rust)
+  * `a_card_that_changes_hands_with_a_different_identity_is_never_merged_into_an_existing_contact` (Rust)
+
+## MR-003 — Intro capabilities open exactly three things at the issuer's relay (device records, KeyPackage claims for the issuer's own devices, delivery); ordinary, unknown, expired and revoked capabilities are one indistinguishable not-found; KeyPackage draining and live card count are bounded.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A18
+* **Scope tested:** Real relay router + PostgreSQL.
+* **Known gap:** No last-resort KeyPackage (ST-030): an attacker holding a card can still exhaust the pool within the per-capability and per-target limits.
+* **Tests:**
+  * `a_card_holder_without_an_account_gets_self_authenticating_records_and_key_packages` (Rust)
+  * `ordinary_unknown_guessed_expired_and_revoked_capabilities_are_one_indistinguishable_not_found` (Rust)
+  * `a_card_opens_only_its_issuers_devices` (Rust)
+  * `key_package_draining_through_a_leaked_card_is_bounded` (Rust)
+  * `the_number_of_live_cards_is_bounded_and_garbage_requests_are_rejected` (Rust)
+  * `intro_responses_never_contain_secrets_or_queue_content` (Rust)
+
+## MR-004 — Alice on relay A and Bob on relay B exchange messages in both directions, in order, including while either is offline, with end-to-end receipts; neither relay holds any record of the other relay's user and no relay-to-relay contact exists.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Two relay instances with separate PostgreSQL databases, real engines (in-process transport).
+* **Known gap:** In-process transport, not real TLS/Tor between processes. Cross-relay PCS (key-update commits) and groups are NOT supported (no sequencer): MULTI_RELAY_PROTOCOL.md §9.
+* **Tests:**
+  * `alice_on_relay_a_and_bob_on_relay_b_exchange_messages_both_ways_with_end_to_end_receipts` (Rust)
+  * `a_participant_who_is_offline_receives_everything_in_order_when_back` (Rust)
+  * `a_peer_on_another_relay_is_never_reached_through_the_authenticated_path` (Rust)
+
+## MR-005 — A message is never reported as sent while nothing left the device: if the peer's relay is unreachable it stays Pending and is delivered after the relay returns; a remote peer is never reached through the authenticated path (whose `not_found` would count as delivered).
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Two relays; fault injection on one relay's reachability.
+* **Known gap:** A relay that silently withholds after answering `queued` is still undetectable except by missing receipts (ST-032).
+* **Tests:**
+  * `when_the_peers_relay_is_down_messages_stay_pending_and_are_delivered_after_it_returns` (Rust)
+  * `a_one_to_one_conversation_on_another_relay_performs_no_commits_but_groups_use_a_home_relay` (Rust)
+
+## MR-006 — Cross-relay attachments (image, PDF, video, voice, arbitrary file, thumbnails) are encrypted before upload, stored by both relays as ciphertext only, downloaded by the recipient from his own relay, and fail closed when tampered, truncated, swapped or missing; uploads need a live capability and respect per-capability and global quotas.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A3, A18
+* **Scope tested:** Two relays + databases; files up to ~1 MB in tests; limits in code are 101 MiB per blob.
+* **Known gap:** No resumable/chunked upload: an interrupted upload restarts from zero and leaves an unreferenced blob until its 14-day TTL. Whole blob buffered by the relay (bounded by 8 concurrent uploads). Large-video streaming and parser-bomb behaviour of platform decoders are not covered (ST-034).
+* **Tests:**
+  * `text_image_pdf_video_voice_and_arbitrary_files_cross_relays_and_each_relay_stores_only_ciphertext` (Rust)
+  * `tampered_truncated_swapped_and_missing_blobs_at_the_recipients_relay_fail_closed` (Rust)
+  * `uploads_to_a_foreign_relay_need_a_live_capability_and_respect_quota` (Rust)
+  * `a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_can_be_retried` (Rust)
+
+## MR-007 — Metadata exposure of first contact is measured: against the mailbox relay, a card-based cross-relay first contact exposes zero signed requests, zero initiator-to-target links, zero stored mentions of the initiator's ids and zero sender hashes.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A3
+* **Scope tested:** Request contents and stored data only.
+* **Known gap:** Says nothing about traffic analysis: timing, sizes and source address remain visible to the relay and to colluding observers (NETWORK_ADVERSARY_MODEL.md).
+* **Tests:**
+  * `first_contact_exposure_before_and_after` (Rust)
+
+## MR-008 — A conversation that arrives as a message request gets its delivery receipts once accepted, and outgoing timestamps are strictly increasing so same-millisecond messages keep their order.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Single relay engine tests (Phase 1 regressions).
+* **Known gap:** Timestamps are strictly increasing per sending device only; interleaving between different senders depends on their clocks.
+* **Tests:**
+  * `a_message_that_arrived_as_a_request_becomes_delivered_once_the_recipient_accepts` (Rust)
+  * `messages_sent_within_one_clock_tick_keep_their_order` (Rust)
+
+## MR-009 — The Android TLS trust component cannot become an accept-all manager: the platform trust manager decides for every host without a pin, a pin compares the full SPKI SHA-256 in constant time with validity dates, and no other file may touch trust-manager or socket-factory APIs.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Source-shape guard (static).
+* **Known gap:** The static guard checks only the SHAPE of the component. Its behaviour is exercised separately by MR-011 (JVM TLS 1.3 handshakes and, in CI, an emulator against a real onion service over real Tor). Not run on a physical device; not audited.
+* **Tests:**
+  * `the_pinned_tls_component_cannot_become_an_accept_all_trust_manager` (Rust)
+  * `banned_apis_do_not_appear_in_app_code` (Rust)
+
+## MR-010 — Under seeded fault injection (network flaps, responses lost after the relay executed the request, device restarts, relay restarts, clock jumps, same-tick sends) every message reaches the recipient exactly once, in send order, and ends Delivered; messages queued offline leave in encryption order so no generation is lost to MLS out-of-order limits.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real engines, relay router and PostgreSQL; 8 single-relay and 6 cross-relay seeds x 70 steps; in-process transport.
+* **Known gap:** Not exercised: PostgreSQL restart inside the matrix (covered separately by scripts/test-deploy.py), real network stacks, group conversations, multi-device. Delivery is at-least-once on the wire with dedupe by message id; a relay that withholds after answering `queued` is undetectable (ST-032).
+* **Tests:**
+  * `single_relay_delivery_matrix` (Rust)
+  * `cross_relay_delivery_matrix` (Rust)
+  * `many_messages_queued_offline_all_arrive_after_reconnecting` (Rust)
+
+## MR-011 — The Android app stack reaches a self-signed onion relay through a real Tor client over the SOCKS privacy route only if the relay presents the pinned SPKI: the correct pin is accepted and the route is reported PROTECTED; a wrong pin and a missing pin (platform CA validation of a self-signed certificate) are refused with a TLS failure, never retried and never downgraded to a direct connection.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Emulator (software-backed Keystore) on a GitHub runner; the Tor client runs on the host and the app is its SOCKS client (as with Orbot); public Tor network; both relays are onion services. Workflow android-tor, 3 repetitions per push.
+* **Known gap:** Evidence is CI-only (not run by the local Rust suite). Not a physical device, not Orbot, not the app's own Tor integration; Tor circuit timeouts occur (see MASTER_IMPLEMENTATION_STATUS.md for the recorded flaky runs) and the test retries only 'offline', never a TLS refusal. Passing shows the pin check holds in these runs; it does not show anonymity.
+* **Tests:**
+  * `theCorrectPinIsAcceptedAndTheRouteIsReportedProtected` (Kotlin, `android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt`)
+  * `aWrongPinIsRefusedFailClosed` (Kotlin, `android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt`)
+  * `aSelfSignedOnionRelayWithoutAnyPinIsRefused` (Kotlin, `android/app/src/androidTest/java/app/cipher/messenger/OnionRelayInstrumentedTest.kt`)
+  * `scripts/android-e2e-multirelay.py` (script)
+
+## MR-012 — Across app restarts, a restart of the app's relay, an outage of the peer's relay while the app sends, and a burst of messages sent while the app is not running, every message arrives exactly once and in order, an attachment sent around an outage either fails leaving no message or is delivered once and decrypts byte-for-byte, and every message ends DELIVERED by end-to-end receipts with none FAILED; neither relay learns the other relay's user.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real app stack on an emulator, two independent relays (separate processes/databases), headless peer. Direct route (workflow ci) and real Tor (workflow android-tor). Scripted outages (process stop/start), not packet-level faults.
+* **Known gap:** Not a mid-stream network cut during an upload (only a refused connection; the mid-transfer case is covered at Rust level), no database outage, no multi-device, one emulator model, a handful of repetitions (5/5 direct, Tor mostly green with recorded failures). Retry backoff means recovery takes up to tens of seconds; the driver keeps the peer syncing while the app recovers.
+* **Tests:**
+  * `scripts/android-e2e-multirelay.py` (script)
+  * `single_relay_delivery_matrix` (Rust)
+  * `many_messages_queued_offline_all_arrive_after_reconnecting` (Rust)
+
+## GR-001 — Commits of a cross-relay group are totally ordered by its home relay: a commit is accepted only at the current head by a holder of the head epoch's credentials, exactly one of two concurrent commits wins and the loser rebases, and a retry after a lost response is answered as already accepted (never appended twice).
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real engines on three independent relays + PostgreSQL; home relay = creator's relay.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). Ordering availability depends on one relay; a dead home relay blocks membership changes (messages continue); there is no home migration.
+* **Tests:**
+  * `concurrent_commits_from_two_admins_are_ordered_by_the_home_log_and_the_loser_rebases` (Rust)
+  * `concurrent_commits_one_wins_the_loser_learns_the_head_and_a_lost_response_retry_is_idempotent` (Rust)
+  * `a_lost_response_to_a_commit_that_adds_a_member_is_resolved_and_the_welcome_still_arrives` (Rust)
+  * `creation_then_ordered_appends_form_a_hash_chain_every_member_can_recompute` (Rust)
+
+## GR-002 — Authentication to the home relay is by Ed25519 keys derived from the MLS exporter of one epoch: only members of that epoch can derive them, the relay stores public keys only, a key of epoch e can read entries only up to e+1 and append only at e, a removed member can read its own removal commit and nothing after it, and every authentication failure is indistinguishable.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay API on the real router + PostgreSQL; exporter derivation on real MLS state.
+* **Known gap:** Credentials are shared by all members of an epoch: the home relay can count distinct source addresses polling a group (group size/online pattern) unless the client uses Tor. A member removed between two commits can still race one commit (see GR-004).
+* **Tests:**
+  * `next_epoch_credentials_equal_the_ones_every_member_derives_after_the_commit` (Rust)
+  * `a_removed_member_cannot_derive_the_credentials_of_the_epoch_that_removed_it` (Rust)
+  * `a_key_reads_only_up_to_the_next_entry_so_a_removed_member_cannot_follow_the_group` (Rust)
+  * `requests_are_authenticated_by_epoch_credentials_and_every_failure_looks_the_same` (Rust)
+  * `the_first_writer_owns_a_tag_and_creation_cannot_be_replayed_or_hijacked` (Rust)
+
+## GR-003 — A hostile home relay cannot make members accept a rewritten, reordered, replayed, truncated-and-renumbered or rolled-back log, nor substitute the epoch keys: every deviation freezes the group and raises GroupForkDetected; members shown different histories detect it as soon as they exchange one message; withholding the log costs liveness only.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Verifier unit tests + engines against a rewriting transport.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). A permanent partition whose members never exchange a message cannot be detected by any single-sequencer design. A joiner trusts the chain value at its own add entry on first use (it verifies the epoch keys, not the history before it).
+* **Tests:**
+  * `an_honest_log_verifies_page_by_page_and_resumes_from_any_verified_head` (Rust)
+  * `a_dropped_entry_is_a_gap` (Rust)
+  * `reordered_or_repeated_entries_are_refused` (Rust)
+  * `a_stale_log_is_a_rollback_not_news` (Rust)
+  * `rewritten_commits_or_swapped_epoch_keys_break_the_chain` (Rust)
+  * `two_members_shown_different_histories_disagree_as_soon_as_they_compare_heads` (Rust)
+  * `a_home_relay_that_tampers_with_a_commit_is_caught_and_freezes_membership_changes` (Rust)
+  * `a_home_relay_that_drops_reorders_or_rolls_back_the_log_is_caught` (Rust)
+  * `a_relay_that_only_withholds_the_log_costs_liveness_never_safety` (Rust)
+  * `members_shown_different_histories_by_the_home_relay_detect_it_as_soon_as_they_exchange_a_message` (Rust)
+
+## GR-004 — A malicious member cannot forge membership: receivers re-authorize every commit; an invalid commit consumes a log position and therefore BLOCKS further membership changes (detected, reported, group stays readable), it never changes membership or roles; message delivery does not depend on the home relay.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Engines with forged commits submitted with real credentials.
+* **Known gap:** NOT PREVENTED: any current member can freeze membership changes of a cross-relay group (the relay cannot validate MLS commits); recovery is a new group. This is weaker than a single-relay group, where a stale commit only costs a retry.
+* **Tests:**
+  * `a_malicious_member_cannot_forge_membership_and_invalid_commits_only_block_membership_changes` (Rust)
+  * `garbage_with_attacker_chosen_keys_blocks_membership_changes_and_is_reported_but_messages_flow` (Rust)
+  * `the_home_relay_being_down_blocks_membership_changes_but_not_messages` (Rust)
+
+## GR-005 — Removing a member cuts it off: it loses access, reads nothing sent afterwards, cannot send, and the removal succeeds even when the removed member wins the race for a commit slot.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Engines on three relays with an injected race.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). After a removal, remaining members keep their old inbox capabilities for a grace period (default 1 h) so the new ones can be exchanged; the removed member can deposit undecryptable ciphertext at their relays until then.
+* **Tests:**
+  * `removing_a_member_cuts_it_off_even_when_the_removed_member_commits_first` (Rust)
+
+## GR-006 — Delivery in cross-relay groups: messages from an offline member's peers arrive complete and in order after it returns; one unreachable member relay does not stall the others (outbox ordering is per recipient device); a Welcome for an unreachable relay waits without blocking the group and is delivered before anything else for that device; a member added later reaches and is reached by every member; commits continue after a home-relay restart.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real engines, separate databases, injected outages, restarts and lost responses.
+* **Known gap:** In-process transports and PostgreSQL, separate relay instances; not real TLS or Tor between processes for groups, not a physical device. Self-reviewed design and code (ST-005 independent review open). Capability introductions are hearsay relayed by owners/admins: a malicious member can misdirect messages to other members to a relay it controls (it can already read them); the real recipient then does not get them. Large groups (>~30) send many introduction frames.
+* **Tests:**
+  * `a_member_who_was_offline_receives_everything_in_order_after_returning` (Rust)
+  * `one_unreachable_member_relay_does_not_stall_the_others_and_that_member_catches_up_later` (Rust)
+  * `the_welcome_for_a_member_on_an_unreachable_relay_waits_without_blocking_the_group` (Rust)
+  * `a_member_added_later_learns_everyone_and_can_exchange_messages_with_all_of_them` (Rust)
+  * `commits_continue_after_the_home_relay_restarts_and_members_on_other_relays_follow` (Rust)
+  * `a_group_across_three_relays_carries_text_between_every_pair_of_members` (Rust)
+  * `single_relay_delivery_matrix` (Rust)
+
+## GR-007 — Least knowledge: the home relay stores no account, device or member identifier for a cross-relay group (opaque tag, ciphertext, public keys); other relays never see the log; every relay holds only ciphertext of attachments (one copy per member relay); bounds protect the home relay (per-group bytes/entries, per-relay group count, per-source and per-tag rate limits).
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay database and wire inspection in tests.
+* **Known gap:** The home relay still sees timing, volume and the source addresses that poll a group. Group co-membership is visible to a member's own relay only through the member's own traffic. Not a claim of anonymity.
+* **Tests:**
+  * `the_database_holds_no_account_device_or_member_identifier_for_a_home_group` (Rust)
+  * `members_talk_only_to_their_own_relay_and_the_home_relay_and_no_other_relay_sees_the_group_log` (Rust)
+  * `an_encrypted_attachment_reaches_members_on_every_relay_byte_for_byte_and_relays_hold_only_ciphertext` (Rust)
+  * `bounds_oversized_commits_malformed_bodies_and_a_per_relay_group_budget` (Rust)
+  * `a_group_budget_caps_the_bytes_one_log_may_hold` (Rust)
+
+## GR-008 — The home relay is part of the MLS-authenticated group metadata and cannot change, appear or disappear after creation; ordinary groups encode byte-identically to before; a cross-relay group cannot be created unless the creator's relay is named.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Metadata unit test + engine.
+* **Known gap:** A home relay cannot be migrated; if it is lost the group can no longer change membership (messages continue) and must be replaced.
+* **Tests:**
+  * `ordinary_groups_encode_exactly_as_before_and_the_home_relay_is_immutable_and_validated` (Rust)
+  * `a_cross_relay_group_cannot_be_created_unless_this_relay_is_named` (Rust)
+
+## MR-013 — A peer that stops sending mid-upload (dead link, abandoned Tor circuit, attacker) is cut off after the body-idle deadline with a 408 and its upload slot is released; a burst of stalled uploads cannot starve a well-behaved upload, which waits briefly for a slot instead of failing at once; one device (or one capability) may have at most 2 uploads in flight.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real router + PostgreSQL, streaming request bodies that stall; idle deadline set to 1 s in the test (20 s default, 90 s on the onion profile).
+* **Known gap:** A principal that opens many credentials (many devices) can still occupy the 8 slots; slow-but-steady uploads inside the idle deadline are admitted. The per-principal counter is per relay instance. Not measured against real Tor stalls except through repeated CI runs.
+* **Tests:**
+  * `stalled_authenticated_upload_is_cut_off_and_frees_its_slot` (Rust)
+  * `many_stalled_uploads_do_not_starve_a_good_one` (Rust)
+  * `one_device_cannot_hold_more_than_its_share_of_upload_slots` (Rust)
+
+## MR-014 — On a relay whose clients all arrive from one local address (onion service behind Tor, reverse proxy; or any loopback peer) failed authentication from any client never blocks other clients' valid requests, and per-address buckets are pooled and scaled instead of shared at ordinary size; where the address identifies a client the failed-authentication lockout is unchanged.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real router + PostgreSQL; the shared-source mode is switched by configuration in the test (in production also by a loopback peer address).
+* **Known gap:** In shared-source mode the relay cannot rate-limit one abusive client by address (ST-056); keyed limits and the global in-flight cap remain. Loopback detection assumes the front process is local.
+* **Tests:**
+  * `garbage_requests_cannot_lock_legitimate_users_out_of_a_shared_source_relay` (Rust)
+  * `an_attributable_source_still_gets_the_failed_auth_lockout` (Rust)
+
+## MR-015 — Transfers (attachment upload and download) retry only transient failures (timeout, overload/gateway statuses, dropped link), at most 4 attempts and a 150 s wall-clock budget per logical transfer (no new attempt after it, so retries cannot multiply the per-call deadline), with exponential backoff and jitter, each attempt freshly signed; TLS/pin failures, authorisation failures, rate limits and relay decisions are never retried; a retry cannot create a second message.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Unit tests of the classification, delay and attempt bound; the end-to-end effect over real Tor is only observable in the android-tor workflow.
+* **Known gap:** A lost response to a successful upload leaves an unreferenced blob until its TTL (ST-046). Whether the changes reduce Tor failures is measured only by repeated CI runs (MASTER_IMPLEMENTATION_STATUS.md, Session 5).
+* **Tests:**
+  * `only_transient_failures_are_retried_and_only_a_bounded_number_of_times` (Rust)
+  * `delays_grow_are_capped_and_jittered` (Rust)
+  * `success_after_a_transient_failure_stops_retrying` (Rust)
+  * `the_time_budget_stops_retries_even_with_attempts_left` (Rust)
+  * `statuses_are_classified` (Rust)
+
+## GR-009 — The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged.
+
+* **Status:** automated
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Real router + PostgreSQL with a manual clock advanced by 240 days.
+* **Known gap:** A removed member that keeps polling with its old key keeps the log alive within its read range (ST-059). Single-relay `groups` rows are not refreshed by polls (they are refreshed by the scheduled key-update commits).
+* **Tests:**
+  * `a_group_that_is_still_polled_keeps_its_log_even_without_commits_for_over_six_months` (Rust)
+
+## GR-010 — When the home relay of a cross-relay group stays unreachable or no longer recognises the group, the user is told once per streak (sooner for 'does not recognise'), membership changes are refused with a specific reason, messages keep flowing, and a successor group (new id, new home, every member must accept again) can be created; nothing is migrated or re-pointed silently, and a healthy group cannot be 'replaced'.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Engines on three relays with the home log deleted from the home relay's database.
+* **Known gap:** The home relay cannot be told apart from a hostile one that denies the group, so the response is notification + replacement, not repair. The successor group has no cryptographic link to the old one (members trust the inviting contact). Not tested on a device; no UI exists for the new event or action (ST-048).
+* **Tests:**
+  * `a_home_relay_that_lost_the_group_is_reported_and_a_successor_group_needs_every_member_to_accept_again` (Rust)
+
+## MR-016 — A retried attachment upload (same ciphertext, same uploader or delivery capability) returns the original blob id and stores nothing new, so a lost response cannot multiply unreferenced blobs; another uploader or different bytes never receive that id.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay integration tests against PostgreSQL (signed and capability uploads); not chunked or resumable (a cut upload still restarts from zero).
+* **Known gap:** Resumable/chunked upload (a cut upload restarts from zero) is not implemented (ST-046); an orphan can still arise if a response is lost AND the user then sends different bytes.
+* **Tests:**
+  * `a_retried_upload_returns_the_same_blob_instead_of_a_second_copy` (Rust)
+  * `a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_can_be_retried` (Rust)

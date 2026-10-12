@@ -4,7 +4,7 @@ use crate::config::Config;
 use crate::error::ApiError;
 use crate::push::PushNotifier;
 use crate::ratelimit::KeyHasher;
-use crate::store::{Enqueue, GroupOutcome, PgStore};
+use crate::store::{Enqueue, GroupOutcome, HomeOutcome, PgStore};
 use axum::body::{to_bytes, Body, Bytes};
 use axum::extract::{ConnectInfo, MatchedPath, Path, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use cipher_wire::limits::*;
 use cipher_wire::messages::*;
 use cipher_wire::Id16;
+use futures_util::StreamExt as _;
 use sha2::Digest as _;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -63,6 +64,68 @@ impl Default for Limits {
 /// At most this many blob uploads are buffered at once (8 x 101 MiB worst case ~ 808 MiB).
 const MAX_CONCURRENT_UPLOADS: usize = 8;
 
+/// Multiplier for per-address buckets when many clients share one source address (an onion service sees only its local Tor daemon).
+const SHARED_SOURCE_SCALE: f64 = 25.0;
+
+/// One device (authenticated uploads) or one capability (capability uploads) may have this many uploads in flight at once. Together with the
+/// body-idle deadline this keeps a single credential from occupying all `MAX_CONCURRENT_UPLOADS` slots by trickling bytes.
+const MAX_UPLOADS_PER_PRINCIPAL: u8 = 2;
+
+/// Counts in-flight uploads per principal (a device id or a capability, as bytes); released on drop. In-memory and per relay instance: a limit
+/// on resource use, not a security boundary, so it need not be shared between instances.
+#[derive(Default)]
+struct UploadCounts(std::sync::Mutex<std::collections::HashMap<[u8; 16], u8>>);
+
+struct UploadTicket<'a>(&'a UploadCounts, [u8; 16]);
+
+impl UploadCounts {
+    fn enter(&self, principal: [u8; 16]) -> Option<UploadTicket<'_>> {
+        let mut m = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = m.entry(principal).or_insert(0);
+        if *n >= MAX_UPLOADS_PER_PRINCIPAL {
+            return None;
+        }
+        *n += 1;
+        Some(UploadTicket(self, principal))
+    }
+}
+
+impl Drop for UploadTicket<'_> {
+    fn drop(&mut self) {
+        let mut m = self.0 .0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = m.get_mut(&self.1) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                m.remove(&self.1);
+            }
+        }
+    }
+}
+
+/// How long a new upload may wait for a free slot before it is told to retry (503). A short queue absorbs the bursts of a multi-file send without
+/// letting waiting requests pile up.
+const UPLOAD_SLOT_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Reads exactly the announced body. Unlike `to_bytes` this enforces progress: a peer that stops sending (a dead mobile network, an abandoned Tor
+/// circuit, or an attacker holding the connection) is cut off after `idle` instead of keeping one of the few upload slots until the overall deadline.
+async fn read_body_progress(body: Body, declared: usize, idle: std::time::Duration) -> Result<Bytes, ApiError> {
+    let mut stream = body.into_data_stream();
+    let mut buf = bytes::BytesMut::with_capacity(declared.min(1 << 20));
+    loop {
+        match tokio::time::timeout(idle, stream.next()).await {
+            Err(_) => return Err(ApiError::Timeout),
+            Ok(None) => return Ok(buf.freeze()),
+            Ok(Some(Err(_))) => return Err(ApiError::BadRequest),
+            Ok(Some(Ok(chunk))) => {
+                if buf.len() + chunk.len() > declared {
+                    return Err(ApiError::TooLarge);
+                }
+                buf.extend_from_slice(&chunk);
+            }
+        }
+    }
+}
+
 pub struct AppState {
     pub store: Arc<PgStore>,
     pub cfg: Arc<Config>,
@@ -73,6 +136,7 @@ pub struct AppState {
     inflight: Semaphore,
     /// Large uploads that may be buffered at the same time: bounds worst-case memory to `MAX_CONCURRENT_UPLOADS * MAX_BLOB_BYTES`.
     uploads: Semaphore,
+    upload_counts: UploadCounts,
 }
 
 impl std::fmt::Debug for AppState {
@@ -85,7 +149,31 @@ impl AppState {
     pub fn new(store: Arc<PgStore>, cfg: Arc<Config>, clock: Arc<dyn Clock>, push: Arc<dyn PushNotifier>, limits: Limits) -> Self {
         let keys = KeyHasher::new(cfg.pepper);
         let inflight = Semaphore::new(cfg.max_inflight.max(1));
-        Self { store, cfg, clock, push, limits, keys, inflight, uploads: Semaphore::new(MAX_CONCURRENT_UPLOADS) }
+        Self {
+            store,
+            cfg,
+            clock,
+            push,
+            limits,
+            keys,
+            inflight,
+            uploads: Semaphore::new(MAX_CONCURRENT_UPLOADS),
+            upload_counts: UploadCounts::default(),
+        }
+    }
+
+    /// True when the connection's peer address does not identify the client (see `Config::shared_source`). `None` (in-process tests) is unknown,
+    /// not shared.
+    pub fn is_shared_source(&self, ip: Option<IpAddr>) -> bool {
+        self.cfg.shared_source || ip.is_some_and(|i| i.is_loopback() || i.is_unspecified())
+    }
+
+    /// A per-source-address limit. For a shared source the bucket pools many clients: its size and refill are multiplied so that one client
+    /// cannot exhaust it for everybody on ordinary use, while it still bounds abuse; the global in-flight cap remains the backstop.
+    async fn take_ip(&self, class: &str, ip: Option<IpAddr>, cost: f64, cap: f64, rate: f64) -> Result<bool, ApiError> {
+        let (cap, rate) = if self.is_shared_source(ip) { (cap * SHARED_SOURCE_SCALE, rate * SHARED_SOURCE_SCALE) } else { (cap, rate) };
+        let key = ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
+        self.take(class, key.as_bytes(), cost, cap, rate).await
     }
 
     async fn take(&self, class: &str, id: &[u8], cost: f64, cap: f64, rate: f64) -> Result<bool, ApiError> {
@@ -108,10 +196,15 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/caps", post(mint_caps))
         .route("/v1/caps/revoke", post(revoke_caps))
         .route("/v1/deliver", post(anon_deliver))
+        .route("/v1/intro/directory", post(intro_directory))
+        .route("/v1/intro/key-package", post(intro_key_package))
         .route("/v1/groups/{tag}", get(group_state))
         .route("/v1/groups/{tag}/commit", post(group_commit))
+        .route("/v1/home/{tag}/commit", post(home_commit))
+        .route("/v1/home/{tag}/log", get(home_log))
         .route("/v1/push-token", put(set_push_token))
         .route("/v1/blobs", post(upload_blob))
+        .route("/v1/blobs/by-cap", post(upload_blob_by_cap))
         .route("/v1/blobs/{id}", get(download_blob))
         .route_layer(middleware::from_fn(log_request))
         .layer(middleware::from_fn_with_state(state.clone(), shed_and_timeout))
@@ -151,6 +244,8 @@ async fn log_request(req: Request, next: Next) -> Response {
 }
 
 struct Incoming {
+    home_epoch: Option<u64>,
+    home_sig: Option<Vec<u8>>,
     method: &'static str,
     path_and_query: String,
     authorization: Option<String>,
@@ -168,8 +263,12 @@ async fn read(req: Request<Body>, limit: usize) -> Result<Incoming, ApiError> {
     let path_and_query = req.uri().path_and_query().map(|p| p.as_str().to_owned()).ok_or(ApiError::BadRequest)?;
     let authorization = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).map(str::to_owned);
     let ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+    let (home_epoch, home_sig) = match authorization.as_deref().and_then(cipher_wire::home::parse_auth) {
+        Some((e, sig)) => (Some(e), Some(sig)),
+        None => (None, None),
+    };
     let body = to_bytes(req.into_body(), limit).await.map_err(|_| ApiError::TooLarge)?;
-    Ok(Incoming { method, path_and_query, authorization, ip, body })
+    Ok(Incoming { home_epoch, home_sig, method, path_and_query, authorization, ip, body })
 }
 
 async fn authed(st: &AppState, inc: &Incoming) -> Result<Id16, ApiError> {
@@ -200,8 +299,7 @@ fn validate_new_device(account: &Id16, rec: &DeviceRecord) -> Result<(), ApiErro
 async fn register(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
     let inc = read(req, MAX_JSON_BODY_BYTES).await?;
     let l = st.limits;
-    let ipk = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
-    if !st.take("register", ipk.as_bytes(), 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
+    if !st.take_ip("register", inc.ip, 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
         return Err(ApiError::RateLimited);
     }
     let r: RegisterRequest = parse(&inc.body)?;
@@ -219,8 +317,7 @@ async fn register(State(st): S, req: Request<Body>) -> Result<Response, ApiError
 async fn add_device(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
     let inc = read(req, MAX_JSON_BODY_BYTES).await?;
     let l = st.limits;
-    let ipk = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
-    if !st.take("register", ipk.as_bytes(), 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
+    if !st.take_ip("register", inc.ip, 1.0, f64::from(l.register_burst), l.register_refill_per_sec).await? {
         return Err(ApiError::RateLimited);
     }
     let r: AddDeviceRequest = parse(&inc.body)?;
@@ -354,13 +451,17 @@ async fn upload_blob(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     let (dev, announced) =
         crate::auth::authenticate_body(&st, "POST", &path_and_query, authorization.as_deref(), crate::auth::BodyAuth::Announced, ip)
             .await?;
-    let _slot = st.uploads.try_acquire().map_err(|_| ApiError::Overloaded)?;
-    let body = to_bytes(req.into_body(), declared).await.map_err(|_| ApiError::TooLarge)?;
+    let _ticket = st.upload_counts.enter(dev.0).ok_or(ApiError::RateLimited)?;
+    let _slot = match tokio::time::timeout(UPLOAD_SLOT_WAIT, st.uploads.acquire()).await {
+        Ok(Ok(p)) => p,
+        _ => return Err(ApiError::Overloaded),
+    };
+    let body = read_body_progress(req.into_body(), declared, std::time::Duration::from_secs(st.cfg.body_idle_secs)).await?;
     let actual: [u8; 32] = sha2::Sha256::digest(&body).into();
     if !bool::from(actual.ct_eq(&announced)) {
         return Err(ApiError::BadRequest); // the body is not what the (valid) signature covered
     }
-    let inc = Incoming { method: "POST", path_and_query, authorization, ip, body };
+    let inc = Incoming { home_epoch: None, home_sig: None, method: "POST", path_and_query, authorization, ip, body };
     // Sanity only: the relay cannot verify that the body is encrypted. It enforces the
     // container header and size bounds; the client is responsible for encryption.
     if inc.body.len() < 13 + 16 || inc.body.get(..4) != Some(ATTACHMENT_MAGIC.as_slice()) {
@@ -376,7 +477,52 @@ async fn upload_blob(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     let id = Id16(id);
     let (store, max) = (st.store.clone(), st.cfg.max_total_blob_bytes);
     let body = inc.body;
-    store.put_blob(&id, &body, now, max).await?;
+    let id = store.put_blob(&id, &body, &dev, now, max).await?; // a retry of the same bytes returns the first id
+    Ok((StatusCode::CREATED, Json(BlobCreated { blob_id: id })).into_response())
+}
+
+/// UNAUTHENTICATED attachment upload into the mailbox of the capability holder's CONTACT (docs/MULTI_RELAY_PROTOCOL.md §10): `Authorization: Cap <32 hex>`.
+/// Like the signed upload, the capability and the declared length are checked BEFORE the body is read; usage is bounded per capability (quota),
+/// per source address and globally. The relay cannot tell what the bytes are (only that they carry the container header); it learns the time and the
+/// padded size, never a sender.
+async fn upload_blob_by_cap(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let declared: usize =
+        req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()).and_then(|v| v.parse().ok()).ok_or(ApiError::BadRequest)?;
+    if !(13 + 16..=MAX_BLOB_BYTES).contains(&declared) {
+        return Err(ApiError::TooLarge);
+    }
+    let cap = req
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Cap "))
+        .and_then(|v| Id16::parse(v).ok())
+        .ok_or(ApiError::BadRequest)?;
+    let ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
+    let l = st.limits;
+    let kib = declared as f64 / 1024.0;
+    if !st.take_ip("blob-ip", ip, kib, f64::from(l.blob_bytes_burst), l.blob_bytes_refill_per_sec).await?
+        || !st.take("blob-cap", &cap.0, kib, f64::from(l.blob_bytes_burst), l.blob_bytes_refill_per_sec).await?
+    {
+        return Err(ApiError::RateLimited);
+    }
+    let now = st.clock.now();
+    if !st.store.cap_is_live(&cap, now).await? {
+        return Err(ApiError::NotFound); // unknown, revoked, expired: one outcome, before any body is buffered
+    }
+    let _ticket = st.upload_counts.enter(cap.0).ok_or(ApiError::RateLimited)?;
+    let _slot = match tokio::time::timeout(UPLOAD_SLOT_WAIT, st.uploads.acquire()).await {
+        Ok(Ok(p)) => p,
+        _ => return Err(ApiError::Overloaded),
+    };
+    let body = read_body_progress(req.into_body(), declared, std::time::Duration::from_secs(st.cfg.body_idle_secs)).await?;
+    if body.len() != declared || body.get(..4) != Some(ATTACHMENT_MAGIC.as_slice()) {
+        return Err(ApiError::BadRequest);
+    }
+    let mut id = [0u8; 16];
+    getrandom::fill(&mut id).map_err(|_| ApiError::Internal)?;
+    let id = Id16(id);
+    let id = st.store.put_blob_by_cap(&id, &body, &cap, now, st.cfg.max_total_blob_bytes, st.cfg.cap_blob_quota_bytes).await?;
     Ok((StatusCode::CREATED, Json(BlobCreated { blob_id: id })).into_response())
 }
 
@@ -462,7 +608,7 @@ async fn mint_caps(State(st): S, req: Request<Body>) -> Result<Response, ApiErro
     if !st.take("cap-mint", &me.0, r.caps.len() as f64, 64.0, 64.0 / 3600.0).await? {
         return Err(ApiError::RateLimited);
     }
-    st.store.mint_caps(&me, &r.caps, st.clock.now()).await?;
+    st.store.mint_caps(&me, &r.caps, r.intro, st.clock.now()).await?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -475,15 +621,55 @@ async fn revoke_caps(State(st): S, req: Request<Body>) -> Result<Response, ApiEr
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+/// Shared front of the two unauthenticated intro calls: bounded per source address and per capability, one `NotFound` for every invalid capability.
+async fn intro_gate(st: &AppState, inc: &Incoming) -> Result<(IntroRequest, Id16), ApiError> {
+    let r: IntroRequest = parse(&inc.body)?;
+    if !st.take_ip("intro-ip", inc.ip, 1.0, 60.0, 2.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    if !st.take("intro-cap", &r.cap.0, 1.0, 30.0, 30.0 / 3600.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let dev = st.store.intro_device(&r.cap, st.clock.now()).await?;
+    Ok((r, dev))
+}
+
+/// UNAUTHENTICATED. The issuer's device records, for a holder of the issuer's contact-card capability. The records are self-authenticating (binding
+/// signatures under the issuer's root key, which the card pins), so this endpoint needs no trust in the relay's honesty — only its availability.
+async fn intro_directory(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let (_, dev) = intro_gate(&st, &inc).await?;
+    let (account, _) = st.store.device(&dev).await?.ok_or(ApiError::NotFound)?;
+    let devices = st.store.devices_of(&account).await?;
+    Ok(Json(DirectoryResponse { account_id: account, devices }).into_response())
+}
+
+/// UNAUTHENTICATED. Consume one KeyPackage of a device of the capability issuer's account. Limited per capability (4/h) AND by the same per-target
+/// bucket the authenticated path uses, so leaked cards cannot drain the pool faster than before.
+async fn intro_key_package(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let (r, dev) = intro_gate(&st, &inc).await?;
+    let target = r.device.ok_or(ApiError::BadRequest)?;
+    let (account, _) = st.store.device(&dev).await?.ok_or(ApiError::NotFound)?;
+    let (tacc, _) = st.store.device(&target).await?.ok_or(ApiError::NotFound)?;
+    if tacc != account {
+        return Err(ApiError::NotFound); // a card opens its issuer's devices only
+    }
+    if !st.take("kp-target", &target.0, 1.0, 12.0, 12.0 / 3600.0).await? || !st.take("intro-kp", &r.cap.0, 1.0, 4.0, 4.0 / 3600.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let kp = st.store.pop_key_package(&target).await?.ok_or(ApiError::NotFound)?;
+    Ok(Json(KeyPackageResponse { key_package: kp }).into_response())
+}
+
 /// UNAUTHENTICATED capability delivery. Abuse control is per capability and per (hashed) source address; the relay never learns who the sender is,
 /// only that someone holding a valid capability delivered ciphertext. Unknown/revoked/expired capabilities all answer `invalid`.
 async fn anon_deliver(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
     let inc = read(req, 4 * MAX_JSON_BODY_BYTES).await?;
     let r: AnonDeliverRequest = parse(&inc.body)?;
     let ttl = r.validate().map_err(|_| ApiError::BadRequest)?;
-    let ip = inc.ip.unwrap_or(IpAddr::from([0, 0, 0, 0])).to_string();
     // Source addresses behind a privacy network are shared by many users: generous, but bounded.
-    if !st.take("deliver-ip", ip.as_bytes(), r.deliveries.len() as f64, 600.0, 20.0).await? {
+    if !st.take_ip("deliver-ip", inc.ip, r.deliveries.len() as f64, 600.0, 20.0).await? {
         return Err(ApiError::RateLimited);
     }
     let now = st.clock.now();
@@ -507,4 +693,81 @@ async fn anon_deliver(State(st): S, req: Request<Body>) -> Result<Response, ApiE
         }
     }
     Ok(Json(AnonDeliverResponse { results }).into_response())
+}
+
+// ------------------------------------------------------------------------------------------ home-relay log (cross-relay groups)
+
+/// Verify the request signature with `public` (an Ed25519 key the caller derived from the MLS exporter of the epoch it names). Every failure
+/// is the same `Unauthorized`: an unknown tag, an unknown epoch and a wrong signature are indistinguishable.
+fn home_verify(inc: &Incoming, epoch: u64, public: &[u8; 32]) -> Result<(), ApiError> {
+    let sig = inc.home_sig.as_deref().ok_or(ApiError::Unauthorized)?;
+    let msg = cipher_wire::home::request_message(epoch, inc.method, &inc.path_and_query, &inc.body);
+    if crate::auth::verify_ed25519(public, &msg, sig) {
+        Ok(())
+    } else {
+        Err(ApiError::Unauthorized)
+    }
+}
+
+/// UNAUTHENTICATED by device; authenticated by a group credential. Appends the next commit of a cross-relay group to its ordered log
+/// (compare-and-swap on the head). The relay sees ciphertext and two public keys; it learns no account, device or member list.
+async fn home_commit(State(st): S, Path(tag): Path<String>, req: Request<Body>) -> Result<Response, ApiError> {
+    use cipher_wire::home::{HomeCommitRequest, HomeCommitResponse, HomeStaleResponse};
+    let inc = read(req, 4 * MAX_JSON_BODY_BYTES).await?;
+    let tag = id_param(&tag)?;
+    if !st.take_ip("home-ip", inc.ip, 1.0, 120.0, 4.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let r: HomeCommitRequest = parse(&inc.body)?;
+    let next = r.validate().map_err(|_| ApiError::BadRequest)?;
+    let epoch = inc.home_epoch.ok_or(ApiError::Unauthorized)?;
+    if epoch != r.expected_seq.max(1) {
+        return Err(ApiError::Unauthorized);
+    }
+    if r.expected_seq == 0 {
+        // Creation: there is no earlier epoch to authenticate against. The request is signed with the NEW commit key it announces (proof that the
+        // creator knows it); the tag is a secret derived from the group id, and the first writer wins.
+        home_verify(&inc, epoch, &next.0)?;
+        if !st.take_ip("home-new-ip", inc.ip, 1.0, 6.0, 6.0 / 3600.0).await? {
+            return Err(ApiError::RateLimited);
+        }
+    } else {
+        let (commit_pub, _) = st.store.home_pubs(&tag, r.expected_seq).await?.ok_or(ApiError::Unauthorized)?;
+        home_verify(&inc, epoch, &commit_pub)?;
+        if !st.take("home-tag", &tag.0, 1.0, 30.0, 30.0 / 3600.0).await? {
+            return Err(ApiError::RateLimited);
+        }
+    }
+    match st.store.home_commit(&tag, &r, next, st.clock.now(), st.cfg.home_max_groups).await? {
+        HomeOutcome::Accepted { seq, chain } => Ok(Json(HomeCommitResponse { seq, chain }).into_response()),
+        HomeOutcome::Stale { head_seq, head_chain } => {
+            Ok((StatusCode::CONFLICT, Json(HomeStaleResponse { error: "stale".into(), head_seq, head_chain })).into_response())
+        }
+        HomeOutcome::Full => Err(ApiError::QueueFull),
+    }
+}
+
+/// Read the log. A key of epoch `e` reads entries up to `e + 1` only (see `cipher_wire::home`).
+async fn home_log(State(st): S, Path(tag): Path<String>, req: Request<Body>) -> Result<Response, ApiError> {
+    use cipher_wire::home::{HomeLogResponse, MAX_HOME_PAGE};
+    let inc = read(req, 0).await?;
+    let tag = id_param(&tag)?;
+    if !st.take_ip("home-ip", inc.ip, 1.0, 120.0, 4.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let epoch = inc.home_epoch.ok_or(ApiError::Unauthorized)?;
+    let (_, read_pub) = st.store.home_pubs(&tag, epoch).await?.ok_or(ApiError::Unauthorized)?;
+    home_verify(&inc, epoch, &read_pub)?;
+    if !st.take("home-tag-read", &tag.0, 1.0, 120.0, 0.5).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let after = inc
+        .path_and_query
+        .split_once('?')
+        .and_then(|(_, q)| q.split('&').find_map(|kv| kv.strip_prefix("after=")))
+        .and_then(|v| v.parse::<u64>().ok())
+        .ok_or(ApiError::BadRequest)?;
+    let (entries, head) =
+        st.store.home_log(&tag, after, epoch.saturating_add(1), MAX_HOME_PAGE, st.clock.now()).await?.ok_or(ApiError::Unauthorized)?;
+    Ok(Json(HomeLogResponse { entries, head }).into_response())
 }

@@ -218,6 +218,9 @@ pub trait HttpCallbacks: Send + Sync {
         dest_path: String,
         max_bytes: u64,
     ) -> Result<u16, HttpFault>;
+    /// From now on, for `base_url`, accept ONLY a server certificate whose SubjectPublicKeyInfo SHA-256 equals `spki_sha256_b64` (unpadded base64url),
+    /// and do not validate a CA chain for that host. Must fail (return an error) if this cannot be enforced: the request is then refused.
+    fn pin_relay(&self, base_url: String, spki_sha256_b64: String) -> Result<(), HttpFault>;
 }
 
 #[uniffi::export(foreign)]
@@ -273,6 +276,10 @@ impl HttpTransport for HttpAdapter {
             .download_file(base_url.to_owned(), path.to_owned(), auth.map(str::to_owned), dest.to_owned(), max_bytes)
             .map_err(http_err)
     }
+    fn pin_relay(&self, base_url: &str, spki_sha256: &[u8; 32]) -> Result<(), HttpError> {
+        self.check()?;
+        self.inner.pin_relay(base_url.to_owned(), cipher_wire::b64::encode(spki_sha256)).map_err(http_err)
+    }
 }
 
 #[cfg(test)]
@@ -293,6 +300,9 @@ mod abort_tests {
         fn download_file(&self, _: String, _: String, _: Option<String>, _: String, _: u64) -> Result<u16, HttpFault> {
             self.0.fetch_add(1, Ordering::SeqCst);
             Ok(200)
+        }
+        fn pin_relay(&self, _: String, _: String) -> Result<(), HttpFault> {
+            Err(HttpFault::Tls)
         }
     }
 

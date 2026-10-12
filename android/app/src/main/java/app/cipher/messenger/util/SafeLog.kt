@@ -20,7 +20,18 @@ object SafeLog {
         UI_ERROR,
     }
 
+    /** What kind of call a [net] line describes. Never a path, id or host. */
+    enum class NetKind { API, BLOB }
+
+    /** How a call ended. */
+    enum class NetOutcome { OK, TIMEOUT, ROUTE_UNAVAILABLE, TLS, NETWORK, IO, OTHER }
+
     fun event(code: Code, n: Int = 0) {
         Log.i("Cipher", "${code.name} $n")
+    }
+
+    /** One line per HTTP call: closed enums plus integers only (sequence number, bytes, milliseconds, consecutive failures of that kind). */
+    fun net(kind: NetKind, outcome: NetOutcome, seq: Int, bytes: Int, ms: Int, failsInRow: Int) {
+        Log.i("Cipher", "NET ${kind.name} ${outcome.name} seq=$seq bytes=$bytes ms=$ms failsInRow=$failsInRow")
     }
 }

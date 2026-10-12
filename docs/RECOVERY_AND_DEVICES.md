@@ -1,5 +1,7 @@
 # Recovery, device lists and device revocation (ST-010, ST-020, ST-033)
 
+**Product decision, 2026-10-12:** the owner selected user-held account-control recovery and signed device addition/revocation. [EXTERNAL_IMPLEMENTATION_PLAN.md](EXTERNAL_IMPLEMENTATION_PLAN.md#account-authentication-recovery-and-revocation-st-010-st-020-st-033) specifies the proposal and migration/review requirements. It does not recover old messages. The description below remains the **currently shipped behaviour**, not the future product direction. ST-010 remains open until review, implementation and tests.
+
 ## Recovery — decision: **No cryptographic recovery available.**
 Cipher does not offer account recovery. Identity keys are generated on the device, never leave it, and the vault is bound to a Keystore key. Losing the phone (or an invalidated Keystore key) loses the identity; the user starts a new one and contacts must re-verify.
 Rejected on purpose: email/SMS reset, security questions, server-held or escrowed keys, cloud backup of the vault (backup is disabled in the manifest). Each of these lets someone other than the device holder impersonate the user or decrypt, i.e. weakens the model. A user-held recovery secret (e.g. a printed high-entropy code) has not been designed or reviewed; if ever added it needs ST-005-level review first. Onboarding already tells the user this; key loss never triggers an automatic wipe (tested).

@@ -36,7 +36,8 @@ Start here: [FINAL_SECURITY_REVIEW](FINAL_SECURITY_REVIEW.md) (findings, fixes, 
 | [RETENTION_AND_LOGGING](RETENTION_AND_LOGGING.md) | What the relay keeps, for how long |
 | [PUSH_DESIGN](PUSH_DESIGN.md) | Content-free push design (no provider integrated) |
 | [DELIVERY_SEMANTICS](DELIVERY_SEMANTICS.md) | Sent / delivered meanings; what a relay cannot forge |
-| [RECOVERY_AND_DEVICES](RECOVERY_AND_DEVICES.md) | No cryptographic recovery; device model |
+| [RECOVERY_AND_DEVICES](RECOVERY_AND_DEVICES.md) | Current no-recovery behaviour; selected future account-control recovery |
+| [EXTERNAL_IMPLEMENTATION_PLAN](EXTERNAL_IMPLEMENTATION_PLAN.md) | Owner-selected push/recovery direction; metadata/upload proposals; campaign and release procedures |
 
 ## Android
 | Document | What it covers |

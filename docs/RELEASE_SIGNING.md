@@ -22,4 +22,6 @@ CI **never** receives the release key: pull-request builds get no secrets (no `p
 
 ## Reproducibility
 
+2026-10-12 tooling: `bash scripts/reproduce-release.sh` builds APK and AAB from two clean committed checkouts at different paths with signing variables removed and Gradle's build cache disabled. Results remain ignored under `release-artifacts/repro-*`; preserve them before publishing a claim. `release-hashes.sh` now keeps git/dirty-tree metadata in `PROVENANCE.txt`, so `SHA256SUMS` can be verified with `sha256sum -c`. Neither a script nor an SBOM proves a signed release exists; owner key custody and the APK/AAB signing ceremony remain required.
+
 See `FINAL_SECURITY_REVIEW.md` §Supply chain for the measured result of building twice. Bit-for-bit reproducibility is **not claimed** unless that section says it was achieved.

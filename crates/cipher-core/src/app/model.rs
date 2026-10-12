@@ -69,6 +69,17 @@ pub struct Contact {
     /// Key the user explicitly verified, if any (so a later change is visible even after acknowledgement).
     pub verified_key: Option<Vec<u8>>,
     pub blocked: bool,
+    /// Set for a contact on ANOTHER relay (added through a contact card): where their mailbox lives and the intro capability from their card.
+    /// `None` = same relay as ours (directory lookups and authenticated sends work as before).
+    #[serde(default)]
+    pub home: Option<RemoteHome>,
+}
+
+/// A contact's relay as learned from their signed card (docs/MULTI_RELAY_PROTOCOL.md).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteHome {
+    pub relay: cipher_wire::RelayDescriptor,
+    pub intro: Id16,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -89,6 +100,49 @@ pub struct Conversation {
     /// This device was REMOVED from the group: its history keys were deleted (docs/HISTORY_REVOCATION.md). Not set for a voluntary leave.
     #[serde(default)]
     pub access_revoked: bool,
+    /// The peer lives on another relay: there is no sequencer for this conversation, so it performs NO MLS commits after creation
+    /// (no key-update commits, no membership changes) — docs/MULTI_RELAY_PROTOCOL.md §9.
+    #[serde(default)]
+    pub remote: bool,
+    /// Set for a group with members on different relays: its commits are ordered by the log of a HOME relay (docs/CROSS_RELAY_GROUPS.md §7).
+    #[serde(default)]
+    pub home: Option<HomedGroup>,
+}
+
+/// Client-side state of a cross-relay group.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomedGroup {
+    /// The home relay named by the group's MLS-authenticated metadata (never taken from the relay or a peer).
+    pub relay: cipher_wire::RelayDescriptor,
+    /// What this device has verified of the log. `None` until a joiner has anchored itself at the entry that added it.
+    pub ledger: Option<crate::home::HomeLedger>,
+    /// Devices known to live on OUR relay (reachable through its authenticated path). Every other device of a cross-relay group is reached ONLY
+    /// through its capability and waits for it: guessing "local" would hand a ciphertext to a relay that has never heard of the device, which answers
+    /// `not_found` and looks like a delivery.
+    #[serde(default)]
+    pub local_devices: Vec<Id16>,
+    /// Membership changes are blocked: the log was tampered with or a member submitted invalid commits. Messages keep flowing; commits do not
+    /// until the user replaces the group. A static category, never free text.
+    #[serde(default)]
+    pub frozen: Option<String>,
+    /// The home relay could not be used for a while (see `HomeIssue`). Messages keep flowing; membership changes cannot be made.
+    #[serde(default)]
+    pub issue: Option<HomeIssue>,
+    /// Hex id of the group that replaces this one (`Engine::create_successor_group`); this group stays readable.
+    #[serde(default)]
+    pub superseded_by: Option<String>,
+}
+
+/// Why the commit channel of a cross-relay group is not available, observed over time. Static categories only.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HomeIssue {
+    /// `"unreachable"`: the home relay did not answer (outage, network). `"unrecognized"`: it answered but does not know this group or our
+    /// credentials (log purged, database lost or rolled back, or a hostile relay).
+    pub kind: String,
+    /// Unix seconds of the first failure in the current streak.
+    pub since: u64,
+    /// The user has been told (one event per streak).
+    pub alerted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -100,6 +154,20 @@ pub struct AttachmentRef {
     pub thumb_blob_id: Option<Id16>,
     pub thumb_descriptor: Option<String>,
     pub duration_ms: Option<u32>,
+    /// Cross-relay groups: the SAME ciphertext stored once on every other member relay. `blob_id` is the copy on the sender's relay; a member
+    /// reads the entry for its own relay. Empty (and not serialised) for every other conversation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copies: Vec<BlobCopy>,
+}
+
+/// One relay's copy of an attachment (and of its thumbnail).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BlobCopy {
+    /// Base URL of the relay that holds this copy.
+    pub relay: String,
+    pub blob_id: Id16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumb_blob_id: Option<Id16>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,6 +189,14 @@ pub enum Content {
     /// Control frame: the sender's current delivery capability for this conversation (docs/DELIVERY_CAPABILITIES.md). Never shown, never stored in history.
     DeliveryCap {
         cap: Id16,
+        /// The relay this capability is valid at (None only in frames from before multi-relay support: then it is the sender's and our shared relay).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        relay: Option<cipher_wire::RelayDescriptor>,
+    },
+    /// Cross-relay groups: the capabilities one member knows for the OTHER members, so two members that have never been in contact can reach each other.
+    /// Sent by owners/admins when they learn a new device's capability. A device's own announcement always wins over this hearsay.
+    GroupCaps {
+        entries: Vec<GroupCapEntry>,
     },
 }
 
@@ -133,6 +209,28 @@ pub struct Frame {
     pub ts_ms: u64,
     pub reply_to: Option<Id16>,
     pub content: Content,
+    /// Cross-relay groups only: the sender's verified position in the home relay's log. Members compare it with their own (equivocation
+    /// detection, docs/CROSS_RELAY_GROUPS.md §7.3). Absent everywhere else, so other frames are byte-identical to before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head: Option<LogHead>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LogHead {
+    pub seq: u64,
+    #[serde(with = "cipher_wire::b64")]
+    pub chain: Vec<u8>,
+}
+
+/// One member device's inbox capability as relayed by another member (cross-relay groups: introduces members to each other).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupCapEntry {
+    pub device: Id16,
+    pub cap: Id16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<cipher_wire::RelayDescriptor>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,6 +267,14 @@ pub struct OutboxItem {
     pub next_attempt_ms: u64,
     /// Marks a leave request: once delivered, the local MLS state of the conversation can be dropped.
     pub is_leave: bool,
+    /// A Welcome that creates a conversation at the peer: nothing else of that conversation is sent before it has been accepted by the peer's relay
+    /// (otherwise the peer could receive messages for a group it has not joined yet, and drop them).
+    #[serde(default)]
+    pub welcome: bool,
+    /// Position in the order messages were ENCRYPTED. Items of one conversation must leave in this order: the MLS receiver only keeps keys for a few skipped
+    /// generations, so a message that arrives many generations late is undecryptable and silently lost (0 = stored by an older build).
+    #[serde(default)]
+    pub order: u64,
 }
 
 pub fn msg_sort_key(ts_ms: u64, id: &Id16) -> String {

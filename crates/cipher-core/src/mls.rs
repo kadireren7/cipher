@@ -100,6 +100,12 @@ impl MlsClient {
         self.auth_key.verifying_key().to_bytes()
     }
 
+    /// Sign `msg` with this device's identity key. `pub(crate)`: callers must pass a DOMAIN-SEPARATED message (see `contact_card`); there is no
+    /// general-purpose signing oracle outside the crate.
+    pub(crate) fn sign_identity_raw(&self, msg: &[u8]) -> Result<Vec<u8>> {
+        self.sig.sign(msg).map_err(perr)
+    }
+
     /// Sign an HTTP request canonical string with the transport-auth key
     /// (distinct from the identity key; never leaves this struct).
     pub fn sign_transport(&self, msg: &[u8]) -> [u8; 64] {
@@ -768,6 +774,30 @@ impl MlsClient {
         Ok(Zeroizing::new(key))
     }
 
+    /// Credentials for the group's HOME relay in the current epoch (docs/CROSS_RELAY_GROUPS.md §7.1).
+    pub fn home_keys(&self, group: &GroupRef) -> Result<HomeKeys> {
+        let g = self.load(group)?;
+        home_keys_of(&g, self.provider.crypto(), group)
+    }
+
+    /// The credentials of the epoch that the STAGED (not yet merged) commit creates. Computed on a throw-away copy of the protocol state, so the
+    /// real state is untouched: the committer can hand the home relay the verifiers for the new epoch in the SAME request that carries the commit,
+    /// which is what makes a removal cut the removed member off at once.
+    pub fn home_keys_after_pending_commit(&self, group: &GroupRef) -> Result<HomeKeys> {
+        let tmp = OpenMlsRustCrypto::default();
+        {
+            let src = self.provider.storage().values.read().map_err(|_| SecurityError::Protocol("storage lock"))?;
+            let mut dst = tmp.storage().values.write().map_err(|_| SecurityError::Protocol("storage lock"))?;
+            dst.extend(src.iter().map(|(k, v)| (k.clone(), v.clone())));
+        }
+        let mut g = MlsGroup::load(tmp.storage(), &group_id(group)).map_err(perr)?.ok_or(SecurityError::Protocol("unknown group"))?;
+        if g.pending_commit().is_none() {
+            return Err(SecurityError::Protocol("no pending commit"));
+        }
+        g.merge_pending_commit(&tmp).map_err(perr)?;
+        home_keys_of(&g, tmp.crypto(), group)
+    }
+
     pub fn leave_group_state(&mut self, group: &GroupRef) -> Result<()> {
         let mut g = self.load(group)?;
         g.delete(self.provider.storage()).map_err(perr)
@@ -778,4 +808,32 @@ impl MlsClient {
         self.seen.remove(&h);
         self.seen_order.retain(|x| x != &h);
     }
+}
+
+/// Authentication secrets for a group's home relay, derived from one MLS epoch with the RFC 9420 exporter. Only members of that epoch can compute
+/// them; a member removed by the commit that created the epoch cannot (docs/CROSS_RELAY_GROUPS.md §7.1).
+impl std::fmt::Debug for HomeKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("HomeKeys(redacted)")
+    }
+}
+
+pub struct HomeKeys {
+    pub commit: Zeroizing<[u8; 32]>,
+    pub read: Zeroizing<[u8; 32]>,
+}
+
+pub const HOME_COMMIT_LABEL: &str = "cipher/home/commit/v1";
+pub const HOME_READ_LABEL: &str = "cipher/home/read/v1";
+
+fn home_keys_of(g: &MlsGroup, crypto: &impl openmls_traits::crypto::OpenMlsCrypto, group: &GroupRef) -> Result<HomeKeys> {
+    let mut ctx = Vec::with_capacity(group.0.len() + 8);
+    ctx.extend_from_slice(&group.0);
+    ctx.extend_from_slice(&g.epoch().as_u64().to_be_bytes());
+    let one = |label: &str| -> Result<Zeroizing<[u8; 32]>> {
+        let raw = g.export_secret(crypto, label, &ctx, 32).map_err(perr)?;
+        let key: [u8; 32] = raw.as_slice().try_into().map_err(|_| SecurityError::Protocol("exporter length"))?;
+        Ok(Zeroizing::new(key))
+    };
+    Ok(HomeKeys { commit: one(HOME_COMMIT_LABEL)?, read: one(HOME_READ_LABEL)? })
 }

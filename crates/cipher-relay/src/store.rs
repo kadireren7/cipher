@@ -21,6 +21,20 @@ pub enum Enqueue {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum HomeOutcome {
+    Accepted {
+        seq: u64,
+        chain: Vec<u8>,
+    },
+    Stale {
+        head_seq: u64,
+        head_chain: Vec<u8>,
+    },
+    /// Log or storage budget of this group (or the relay's group budget) exhausted.
+    Full,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum GroupOutcome {
     Accepted(u64),
     Stale(u64),
@@ -58,6 +72,27 @@ impl Lane<'_> {
             Lane::Commit(_) => 2,
         }
     }
+}
+
+/// SHA-256 of the stored (already encrypted) bytes, used only to recognise a retried upload.
+fn blob_body_hash(data: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(data).into()
+}
+
+async fn existing_blob(tx: &Transaction<'_>, owner: &[u8; 32], body_hash: &[u8; 32], now: u64) -> Result<Option<Id16>, ApiError> {
+    let r = tx
+        .query_opt(
+            "SELECT blob_id FROM blobs WHERE owner_hash=$1 AND body_hash=$2 AND expires_at>$3",
+            &[&owner.as_slice(), &body_hash.as_slice(), &(now as i64)],
+        )
+        .await
+        .map_err(internal)?;
+    r.map(|r| {
+        let v: Vec<u8> = r.get(0);
+        <[u8; 16]>::try_from(v.as_slice()).map(Id16).map_err(|_| ApiError::Internal)
+    })
+    .transpose()
 }
 
 pub fn cap_hash(cap: &Id16) -> [u8; 32] {
@@ -101,6 +136,14 @@ impl PgStore {
 
     async fn conn(&self) -> Result<deadpool_postgres::Object, ApiError> {
         self.pool.get().await.map_err(internal)
+    }
+
+    /// Readiness probe: the database answers a trivial query.
+    pub async fn ping(&self) -> bool {
+        match self.conn().await {
+            Ok(c) => c.query_one("SELECT 1", &[]).await.is_ok(),
+            Err(_) => false,
+        }
     }
 
     // ---- accounts / devices ----
@@ -527,7 +570,7 @@ impl PgStore {
     // ---- delivery capabilities (docs/DELIVERY_CAPABILITIES.md) ----
 
     /// Mints `caps` (the caller generated the random ids; the relay stores only their hashes). Bounded per device.
-    pub async fn mint_caps(&self, device: &Id16, caps: &[Id16], now: u64) -> Result<(), ApiError> {
+    pub async fn mint_caps(&self, device: &Id16, caps: &[Id16], intro: bool, now: u64) -> Result<(), ApiError> {
         let mut c = self.conn().await?;
         let tx = c.transaction().await.map_err(internal)?;
         let d = device.0.as_slice();
@@ -537,11 +580,22 @@ impl PgStore {
         if live as usize + caps.len() > MAX_CAPS_PER_DEVICE {
             return Err(ApiError::QueueFull);
         }
+        if intro {
+            // Few cards at a time: every live intro capability is a way for a stranger who holds it to claim KeyPackages.
+            let live_intro: i64 =
+                tx.query_one("SELECT count(*) FROM delivery_caps WHERE device_id=$1 AND intro", &[&d]).await.map_err(internal)?.get(0);
+            if live_intro as usize + caps.len() > MAX_INTRO_CAPS_PER_DEVICE {
+                return Err(ApiError::QueueFull);
+            }
+        }
         let exp = (now + CAP_TTL_SECS) as i64;
         for cap in caps {
             let h = cap_hash(cap);
             match tx
-                .execute("INSERT INTO delivery_caps (cap_hash, device_id, expires_at) VALUES ($1,$2,$3)", &[&h.as_slice(), &d, &exp])
+                .execute(
+                    "INSERT INTO delivery_caps (cap_hash, device_id, expires_at, intro) VALUES ($1,$2,$3,$4)",
+                    &[&h.as_slice(), &d, &exp, &intro],
+                )
                 .await
             {
                 Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
@@ -595,13 +649,34 @@ impl PgStore {
         Ok((dev, r))
     }
 
+    /// The device an INTRO capability belongs to (valid, unexpired, kind intro). Unknown / expired / revoked / ordinary capabilities are one outcome.
+    pub async fn intro_device(&self, cap: &Id16, now: u64) -> Result<Id16, ApiError> {
+        let c = self.conn().await?;
+        let row = c
+            .query_opt(
+                "SELECT device_id FROM delivery_caps WHERE cap_hash=$1 AND intro AND expires_at>$2",
+                &[&cap_hash(cap).as_slice(), &(now as i64)],
+            )
+            .await
+            .map_err(internal)?;
+        match row {
+            Some(r) => id(r.get(0)),
+            None => Err(ApiError::NotFound),
+        }
+    }
+
     // ---- blobs ----
 
-    pub async fn put_blob(&self, blob: &Id16, data: &[u8], now: u64, max_total: u64) -> Result<(), ApiError> {
+    /// Stores `data` and returns its id. A repeat of the SAME bytes by the SAME uploader (a retry after a lost response) returns the existing id and stores nothing.
+    pub async fn put_blob(&self, blob: &Id16, data: &[u8], uploader: &Id16, now: u64, max_total: u64) -> Result<Id16, ApiError> {
+        let (owner, body_hash) = (cap_hash(uploader), blob_body_hash(data));
         let mut c = self.conn().await?;
         let tx = c.transaction().await.map_err(internal)?;
         tx.execute("SELECT pg_advisory_xact_lock(7263002)", &[]).await.map_err(internal)?;
         tx.execute("DELETE FROM blobs WHERE expires_at<=$1", &[&(now as i64)]).await.map_err(internal)?;
+        if let Some(existing) = existing_blob(&tx, &owner, &body_hash, now).await? {
+            return Ok(existing);
+        }
         let total: i64 = tx.query_one("SELECT COALESCE(sum(size_bytes),0)::bigint FROM blobs", &[]).await.map_err(internal)?.get(0);
         if total as u64 + data.len() as u64 > max_total {
             return Err(ApiError::QueueFull);
@@ -609,15 +684,76 @@ impl PgStore {
         let expires = round_up(now.saturating_add(BLOB_TTL_SECS));
         match tx
             .execute(
-                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at) VALUES ($1,$2,$3,$4)",
-                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires],
+                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at, owner_hash, body_hash) VALUES ($1,$2,$3,$4,$5,$6)",
+                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires, &owner.as_slice(), &body_hash.as_slice()],
             )
             .await
         {
             Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
             r => r.map_err(internal)?,
         };
-        tx.commit().await.map_err(internal)
+        tx.commit().await.map_err(internal)?;
+        Ok(*blob)
+    }
+
+    /// Is `cap` a live delivery capability? (Cheap pre-check done BEFORE a request body is read.)
+    pub async fn cap_is_live(&self, cap: &Id16, now: u64) -> Result<bool, ApiError> {
+        let c = self.conn().await?;
+        Ok(c.query_opt("SELECT 1 FROM delivery_caps WHERE cap_hash=$1 AND expires_at>$2", &[&cap_hash(cap).as_slice(), &(now as i64)])
+            .await
+            .map_err(internal)?
+            .is_some())
+    }
+
+    /// Store an encrypted blob under a delivery capability. `NotFound` = the capability is not live; `QueueFull` = per-capability or global quota.
+    pub async fn put_blob_by_cap(
+        &self,
+        blob: &Id16,
+        data: &[u8],
+        cap: &Id16,
+        now: u64,
+        max_total: u64,
+        cap_quota: u64,
+    ) -> Result<Id16, ApiError> {
+        let h = cap_hash(cap);
+        let body_hash = blob_body_hash(data);
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        tx.execute("SELECT pg_advisory_xact_lock(7263002)", &[]).await.map_err(internal)?;
+        tx.execute("DELETE FROM blobs WHERE expires_at<=$1", &[&(now as i64)]).await.map_err(internal)?;
+        if tx
+            .query_opt("SELECT 1 FROM delivery_caps WHERE cap_hash=$1 AND expires_at>$2", &[&h.as_slice(), &(now as i64)])
+            .await
+            .map_err(internal)?
+            .is_none()
+        {
+            return Err(ApiError::NotFound);
+        }
+        if let Some(existing) = existing_blob(&tx, &h, &body_hash, now).await? {
+            return Ok(existing); // a retry of the same ciphertext under the same capability: no second copy, no extra quota
+        }
+        let used: i64 = tx
+            .query_one("SELECT COALESCE(sum(size_bytes),0)::bigint FROM blobs WHERE cap_hash=$1", &[&h.as_slice()])
+            .await
+            .map_err(internal)?
+            .get(0);
+        let total: i64 = tx.query_one("SELECT COALESCE(sum(size_bytes),0)::bigint FROM blobs", &[]).await.map_err(internal)?.get(0);
+        if used as u64 + data.len() as u64 > cap_quota || total as u64 + data.len() as u64 > max_total {
+            return Err(ApiError::QueueFull);
+        }
+        let expires = round_up(now.saturating_add(BLOB_TTL_SECS));
+        match tx
+            .execute(
+                "INSERT INTO blobs (blob_id, size_bytes, data, expires_at, cap_hash, owner_hash, body_hash) VALUES ($1,$2,$3,$4,$5,$5,$6)",
+                &[&blob.0.as_slice(), &(data.len() as i64), &data, &expires, &h.as_slice(), &body_hash.as_slice()],
+            )
+            .await
+        {
+            Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
+            r => r.map_err(internal)?,
+        };
+        tx.commit().await.map_err(internal)?;
+        Ok(*blob)
     }
 
     pub async fn get_blob(&self, blob: &Id16, now: u64) -> Result<Option<Vec<u8>>, ApiError> {
@@ -664,6 +800,156 @@ impl PgStore {
         Ok(r.get(0))
     }
 
+    // ---- home-relay commit log (docs/CROSS_RELAY_GROUPS.md §7) ----
+
+    /// The two public keys that belong to epoch `seq` of a log (None: unknown tag or epoch). Rows are immutable, so a signature checked against
+    /// them outside the transaction that later appends stays valid.
+    pub async fn home_pubs(&self, tag: &Id16, seq: u64) -> Result<Option<([u8; 32], [u8; 32])>, ApiError> {
+        let c = self.conn().await?;
+        let r = c
+            .query_opt("SELECT commit_pub, read_pub FROM home_log WHERE tag=$1 AND seq=$2", &[&tag.0.as_slice(), &(seq as i64)])
+            .await
+            .map_err(internal)?;
+        Ok(r.and_then(|r| {
+            let (c, d): (Vec<u8>, Vec<u8>) = (r.get(0), r.get(1));
+            Some((c.try_into().ok()?, d.try_into().ok()?))
+        }))
+    }
+
+    /// Append one commit: compare-and-swap on the head, atomic with the switch to the next epoch's public keys. The request has ALREADY been
+    /// authenticated by the caller with the keys of epoch `expected_seq`.
+    pub async fn home_commit(
+        &self,
+        tag: &Id16,
+        req: &cipher_wire::home::HomeCommitRequest,
+        next: ([u8; 32], [u8; 32]),
+        now: u64,
+        max_groups: i64,
+    ) -> Result<HomeOutcome, ApiError> {
+        use cipher_wire::home::{chain_genesis, chain_next, MAX_HOME_LOG_ENTRIES};
+        const MAX_GROUP_BYTES: i64 = 8 * 1024 * 1024;
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        let day = (now / 86_400) as i32;
+        let t = tag.0.as_slice();
+        tx.execute("SELECT pg_advisory_xact_lock(hashtextextended(encode($1::bytea,'hex'), 2))", &[&t]).await.map_err(internal)?;
+        let row = tx.query_opt("SELECT head_seq, bytes FROM home_groups WHERE tag=$1 FOR UPDATE", &[&t]).await.map_err(internal)?;
+        let (head, bytes) = match row {
+            None if req.expected_seq == 0 => {
+                let n: i64 = tx.query_one("SELECT count(*) FROM home_groups", &[]).await.map_err(internal)?.get(0);
+                if n >= max_groups {
+                    return Ok(HomeOutcome::Full);
+                }
+                tx.execute("INSERT INTO home_groups (tag, head_seq, touched_day) VALUES ($1, 0, $2)", &[&t, &day])
+                    .await
+                    .map_err(internal)?;
+                (0u64, 0i64)
+            }
+            None => return Ok(HomeOutcome::Stale { head_seq: 0, head_chain: chain_genesis(tag).to_vec() }),
+            Some(r) => (r.get::<_, i64>(0) as u64, r.get::<_, i64>(1)),
+        };
+        let chain_of = |seq: u64| {
+            let tx = &tx;
+            async move {
+                if seq == 0 {
+                    return Ok::<Vec<u8>, ApiError>(chain_genesis(tag).to_vec());
+                }
+                let r = tx.query_one("SELECT chain FROM home_log WHERE tag=$1 AND seq=$2", &[&t, &(seq as i64)]).await.map_err(internal)?;
+                Ok(r.get(0))
+            }
+        };
+        if head != req.expected_seq {
+            // Idempotent retry: this very commit was already appended right after `expected_seq` and the committer lost the answer.
+            let next_row = tx
+                .query_opt("SELECT commit_id, chain FROM home_log WHERE tag=$1 AND seq=$2", &[&t, &((req.expected_seq + 1) as i64)])
+                .await
+                .map_err(internal)?;
+            if let Some(r) = next_row {
+                let id: Vec<u8> = r.get(0);
+                if id.as_slice() == req.commit_id.0.as_slice() {
+                    return Ok(HomeOutcome::Accepted { seq: req.expected_seq + 1, chain: r.get(1) });
+                }
+            }
+            let hc = chain_of(head).await?;
+            return Ok(HomeOutcome::Stale { head_seq: head, head_chain: hc });
+        }
+        if head + 1 > MAX_HOME_LOG_ENTRIES || bytes + req.commit.len() as i64 > MAX_GROUP_BYTES {
+            return Ok(HomeOutcome::Full);
+        }
+        let prev: [u8; 32] = chain_of(head).await?.try_into().map_err(|_| ApiError::Internal)?;
+        let seq = head + 1;
+        let chain = chain_next(&prev, seq, &req.commit_id, &req.commit, &next.0, &next.1);
+        tx.execute(
+            "INSERT INTO home_log (tag, seq, commit_id, commit, chain, commit_pub, read_pub) VALUES ($1,$2,$3,$4,$5,$6,$7)",
+            &[&t, &(seq as i64), &req.commit_id.0.as_slice(), &req.commit, &chain.as_slice(), &next.0.as_slice(), &next.1.as_slice()],
+        )
+        .await
+        .map_err(internal)?;
+        tx.execute(
+            "UPDATE home_groups SET head_seq=$2, bytes=bytes+$3, touched_day=$4 WHERE tag=$1",
+            &[&t, &(seq as i64), &(req.commit.len() as i64), &day],
+        )
+        .await
+        .map_err(internal)?;
+        tx.commit().await.map_err(internal)?;
+        Ok(HomeOutcome::Accepted { seq, chain: chain.to_vec() })
+    }
+
+    /// Entries `after < seq <= min(limit_seq, head)`, oldest first, at most `limit`; plus the head when `limit_seq >= head`.
+    pub async fn home_log(
+        &self,
+        tag: &Id16,
+        after: u64,
+        limit_seq: u64,
+        limit: usize,
+        now: u64,
+    ) -> Result<Option<(Vec<cipher_wire::home::HomeLogEntry>, Option<cipher_wire::home::HomeHead>)>, ApiError> {
+        let c = self.conn().await?;
+        let Some(g) = c.query_opt("SELECT head_seq FROM home_groups WHERE tag=$1", &[&tag.0.as_slice()]).await.map_err(internal)? else {
+            return Ok(None);
+        };
+        // The caller has verified a member's read credential: the group is alive. Application messages never reach the home relay, so a quiet
+        // group has no commits for months; without this its log was purged 180 days after the last COMMIT and its commit channel vanished.
+        // At most one write per group and day.
+        c.execute("UPDATE home_groups SET touched_day=$2 WHERE tag=$1 AND touched_day<$2", &[&tag.0.as_slice(), &((now / 86_400) as i32)])
+            .await
+            .map_err(internal)?;
+        let head = g.get::<_, i64>(0) as u64;
+        let rows = c
+            .query(
+                "SELECT seq, commit_id, commit, chain, commit_pub, read_pub FROM home_log WHERE tag=$1 AND seq>$2 AND seq<=$3 ORDER BY seq LIMIT $4",
+                &[&tag.0.as_slice(), &(after as i64), &(limit_seq.min(head) as i64), &(limit as i64)],
+            )
+            .await
+            .map_err(internal)?;
+        let mut entries = Vec::with_capacity(rows.len());
+        for r in rows {
+            let id: Vec<u8> = r.get(1);
+            entries.push(cipher_wire::home::HomeLogEntry {
+                seq: r.get::<_, i64>(0) as u64,
+                commit_id: Id16(id.try_into().map_err(|_| ApiError::Internal)?),
+                commit: r.get(2),
+                chain: r.get(3),
+                commit_pub: r.get(4),
+                read_pub: r.get(5),
+            });
+        }
+        let head_info = if limit_seq >= head {
+            let chain: Vec<u8> = if head == 0 {
+                cipher_wire::home::chain_genesis(tag).to_vec()
+            } else {
+                c.query_one("SELECT chain FROM home_log WHERE tag=$1 AND seq=$2", &[&tag.0.as_slice(), &(head as i64)])
+                    .await
+                    .map_err(internal)?
+                    .get(0)
+            };
+            Some(cipher_wire::home::HomeHead { seq: head, chain })
+        } else {
+            None
+        };
+        Ok(Some((entries, head_info)))
+    }
+
     // ---- maintenance ----
 
     pub async fn purge(&self, now: u64) -> Result<(), ApiError> {
@@ -690,6 +976,7 @@ impl PgStore {
         }
         let day = (now / 86_400) as i32 - GROUP_IDLE_DAYS;
         tx.execute("DELETE FROM groups WHERE touched_day<=$1", &[&day]).await.map_err(internal)?;
+        tx.execute("DELETE FROM home_groups WHERE touched_day<=$1", &[&day]).await.map_err(internal)?;
         tx.commit().await.map_err(internal)
     }
 }

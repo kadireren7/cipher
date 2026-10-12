@@ -17,6 +17,7 @@ use sha2::Digest as _;
 pub struct RelayEndpoint {
     base: String,
     audience: String,
+    pin: Option<[u8; 32]>,
 }
 
 impl RelayEndpoint {
@@ -27,13 +28,27 @@ impl RelayEndpoint {
         if host.is_empty() || host.contains(['/', '@', '?', '#', ' ']) {
             return Err(SecurityError::Transport("invalid relay url"));
         }
-        Ok(Self { base: format!("https://{host}"), audience: host.to_ascii_lowercase() })
+        Ok(Self { base: format!("https://{host}"), audience: host.to_ascii_lowercase(), pin: None })
     }
 
     /// Test-only: in-process transports have no real URL.
     #[cfg(any(test, feature = "insecure-test-support"))]
     pub fn for_tests(audience: &str) -> Self {
-        Self { base: format!("test://{audience}"), audience: audience.to_owned() }
+        Self { base: format!("test://{audience}"), audience: audience.to_owned(), pin: None }
+    }
+
+    /// Endpoint for a relay named by a descriptor (validated). The pin, if any, is available to the transport through `pin()`.
+    pub fn from_descriptor(d: &cipher_wire::RelayDescriptor) -> Result<Self> {
+        let d = d.clone().validated().map_err(|_| SecurityError::Transport("invalid relay descriptor"))?;
+        let pin = d.pin().map_err(|_| SecurityError::Transport("invalid relay descriptor"))?;
+        let mut e = Self::new(d.url())?;
+        e.pin = pin;
+        Ok(e)
+    }
+
+    /// SHA-256 of the relay certificate's SubjectPublicKeyInfo that the transport must require (instead of a CA chain), if the descriptor carried one.
+    pub fn pin(&self) -> Option<[u8; 32]> {
+        self.pin
     }
 
     pub fn base(&self) -> &str {
@@ -49,6 +64,21 @@ pub enum GroupCommitResult {
     Accepted(u64),
     Stale(u64),
     Gone,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum HomeCommitResult {
+    Accepted {
+        seq: u64,
+        chain: [u8; 32],
+    },
+    /// Another commit took the slot (or this relay's log is shorter/longer than assumed): rebase on `head_seq`.
+    Stale {
+        head_seq: u64,
+        head_chain: [u8; 32],
+    },
+    /// The relay's log or storage budget for this group is exhausted.
+    Full,
 }
 
 #[derive(Debug)]
@@ -97,11 +127,60 @@ fn check(resp: HttpResponse) -> Result<HttpResponse> {
         200..=299 => Ok(resp),
         401 | 403 => Err(SecurityError::Transport("unauthorized")),
         404 => Err(SecurityError::Transport("not found")),
+        408 => Err(SecurityError::Transport("timeout")),
         409 => Err(SecurityError::Transport("conflict")),
         413 => Err(SecurityError::Transport("payload too large")),
         429 => Err(SecurityError::Transport("rate limited")),
+        // Overload / upstream trouble is transient and says nothing about the request: retryable, unlike a plain 500.
+        502..=504 => Err(SecurityError::Transport("unavailable")),
         500..=599 => Err(SecurityError::Transport("server error")),
         _ => Err(SecurityError::Transport("request rejected")),
+    }
+}
+
+/// Failures worth another attempt: the request may never have been processed (timeout, overload, a Tor circuit that died, a dropped link).
+/// NOT retried: TLS/pin failures (fail closed at once), authorisation, rate limits, malformed input, anything the relay decided.
+pub(crate) fn is_transient(e: &SecurityError) -> bool {
+    matches!(e, SecurityError::Transport("timeout" | "unavailable" | "network unavailable" | "io failure"))
+}
+
+pub(crate) const TRANSFER_ATTEMPTS: u32 = 4;
+
+/// Wall-clock budget of ONE logical transfer, measured from its first attempt: once it is spent no further attempt is started. Attempts are bounded by
+/// the platform's per-call deadline (the Android client allows at most 5 minutes), so the worst case is this budget plus one such attempt, never
+/// `TRANSFER_ATTEMPTS` times the per-call deadline. Failing early is the right outcome: the message stays queued and the user (or the outbox) tries again.
+pub(crate) const TRANSFER_BUDGET_MS: u64 = 150_000;
+
+/// Delay before retry number `attempt` (1-based): 1 s, 2 s, 4 s ... capped at 15 s, with up to 50 % random jitter so that many clients (or a
+/// client and the circuits Tor is rebuilding) do not retry in lockstep.
+pub(crate) fn retry_delay_ms(attempt: u32, entropy: u32) -> u64 {
+    let base = (1_000u64 << attempt.saturating_sub(1).min(4)).min(15_000);
+    base + (base / 2) * u64::from(entropy % 1000) / 1000
+}
+
+/// Runs `op` up to `attempts` times, sleeping `retry_delay_ms` between transient failures, and starts no new attempt once `budget_ms` of `elapsed_ms()` has
+/// passed (or would pass during the backoff). `sleep` and the clock are injected so tests neither wait nor depend on real time.
+pub(crate) fn retry_transient<T>(
+    attempts: u32,
+    budget_ms: u64,
+    mut elapsed_ms: impl FnMut() -> u64,
+    mut sleep: impl FnMut(u64),
+    mut entropy: impl FnMut() -> u32,
+    mut op: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut n = 1;
+    loop {
+        match op() {
+            Err(e) if is_transient(&e) && n < attempts => {
+                let delay = retry_delay_ms(n, entropy());
+                if elapsed_ms().saturating_add(delay) >= budget_ms {
+                    return Err(e);
+                }
+                sleep(delay);
+                n += 1;
+            }
+            other => return other,
+        }
     }
 }
 
@@ -209,9 +288,31 @@ impl RelayApi<'_> {
 
     /// Registers capabilities (chosen by us) that let contacts deliver to this device without authenticating.
     pub fn mint_caps(&self, caps: Vec<Id16>) -> Result<()> {
-        let req = MintCapsRequest { caps };
+        self.mint_caps_inner(caps, false)
+    }
+
+    /// Registers an INTRO capability for a contact card (docs/MULTI_RELAY_PROTOCOL.md §4).
+    pub fn mint_intro_cap(&self, cap: Id16) -> Result<()> {
+        self.mint_caps_inner(vec![cap], true)
+    }
+
+    fn mint_caps_inner(&self, caps: Vec<Id16>, intro: bool) -> Result<()> {
+        let req = MintCapsRequest { caps, intro };
         req.validate().map_err(|_| SecurityError::Malformed("mint caps"))?;
         self.send_signed("POST", "/v1/caps", enc(&req)?).map(|_| ())
+    }
+
+    /// UNAUTHENTICATED (card holder → the card issuer's relay, i.e. `self.endpoint`): the issuer's device records. They are self-authenticating, so
+    /// the caller MUST evaluate them against the pinned root key from the card; this call alone proves nothing.
+    pub fn intro_directory(&self, cap: &Id16) -> Result<DirectoryResponse> {
+        json(&self.send_unauth("POST", "/v1/intro/directory", enc(&IntroRequest { cap: *cap, device: None })?)?)
+    }
+
+    /// UNAUTHENTICATED: consume one KeyPackage of one of the issuer's devices.
+    pub fn intro_key_package(&self, cap: &Id16, device: &Id16) -> Result<Vec<u8>> {
+        let r: KeyPackageResponse =
+            json(&self.send_unauth("POST", "/v1/intro/key-package", enc(&IntroRequest { cap: *cap, device: Some(*device) })?)?)?;
+        Ok(r.key_package)
     }
 
     pub fn revoke_caps(&self, caps: Vec<Id16>, grace_secs: Option<u64>) -> Result<()> {
@@ -243,12 +344,38 @@ impl RelayApi<'_> {
     }
 
     pub fn upload_blob(&self, ciphertext: Vec<u8>) -> Result<Id16> {
-        let r: BlobCreated = json(&check(self.send_signed_raw_inner("POST", "/v1/blobs", ciphertext, true)?)?)?;
-        Ok(r.blob_id)
+        self.transfer_retrying(|| {
+            let r: BlobCreated = json(&check(self.send_signed_raw_inner("POST", "/v1/blobs", ciphertext.clone(), true)?)?)?;
+            Ok(r.blob_id)
+        })
     }
 
     /// Upload an already-encrypted blob file; the body hash is computed by streaming (the file is not loaded into memory).
     pub fn upload_blob_file(&self, path: &str) -> Result<Id16> {
+        self.transfer_retrying(|| self.upload_blob_file_once(path))
+    }
+
+    /// Bounded retries with backoff and jitter for transient failures of one transfer. Every attempt is a complete, freshly signed request, so a
+    /// retry can never be mistaken for a replay; a lost response can at worst leave an unreferenced blob that expires by TTL (ST-046) — the message
+    /// that references a blob is only created after a successful upload, so nothing is delivered twice. Only real (https) endpoints sleep.
+    fn transfer_retrying<T>(&self, op: impl FnMut() -> Result<T>) -> Result<T> {
+        let real = self.endpoint.base().starts_with("https://");
+        let started = std::time::Instant::now();
+        retry_transient(
+            TRANSFER_ATTEMPTS,
+            TRANSFER_BUDGET_MS,
+            || u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            |ms| {
+                if real {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            },
+            || crate::rng::array::<4>().map(u32::from_be_bytes).unwrap_or(0),
+            op,
+        )
+    }
+
+    fn upload_blob_file_once(&self, path: &str) -> Result<Id16> {
         use sha2::{Digest, Sha256};
         use std::io::Read;
         let mut f = std::fs::File::open(path).map_err(|_| SecurityError::Transport("cannot read upload file"))?;
@@ -272,18 +399,57 @@ impl RelayApi<'_> {
         Ok(r.blob_id)
     }
 
+    /// UNAUTHENTICATED upload of an encrypted blob file into the mailbox the capability belongs to (`self.endpoint` is that mailbox's relay).
+    pub fn upload_blob_file_by_cap(&self, path: &str, cap: &Id16) -> Result<Id16> {
+        self.transfer_retrying(|| self.upload_blob_file_by_cap_once(path, cap))
+    }
+
+    fn upload_blob_file_by_cap_once(&self, path: &str, cap: &Id16) -> Result<Id16> {
+        let resp = check(self.transport.upload_file(
+            self.endpoint,
+            HttpRequest {
+                method: "POST",
+                path_and_query: "/v1/blobs/by-cap".to_owned(),
+                authorization: Some(format!("Cap {cap}")),
+                body: Vec::new(),
+            },
+            path,
+        )?)?;
+        Ok(json::<BlobCreated>(&resp)?.blob_id)
+    }
+
+    /// Same for an in-memory blob (thumbnails).
+    pub fn upload_blob_by_cap(&self, ciphertext: Vec<u8>, cap: &Id16) -> Result<Id16> {
+        self.transfer_retrying(|| {
+            let resp = check(self.transport.execute(
+                self.endpoint,
+                HttpRequest {
+                    method: "POST",
+                    path_and_query: "/v1/blobs/by-cap".to_owned(),
+                    authorization: Some(format!("Cap {cap}")),
+                    body: ciphertext.clone(),
+                },
+            )?)?;
+            Ok(json::<BlobCreated>(&resp)?.blob_id)
+        })
+    }
+
     pub fn download_blob_file(&self, id: &Id16, dest: &str, max_bytes: u64) -> Result<()> {
         use sha2::{Digest, Sha256};
         let path = format!("/v1/blobs/{id}");
-        let hash: [u8; 32] = Sha256::digest(b"").into();
-        let authorization = self.signed_header_for_hash("GET", &path, &hash)?;
-        let status = self.transport.download_file(
-            self.endpoint,
-            HttpRequest { method: "GET", path_and_query: path, authorization: Some(authorization), body: Vec::new() },
-            dest,
-            max_bytes,
-        )?;
-        check(HttpResponse { status, body: Vec::new() }).map(|_| ())
+        // A retry re-signs and rewrites `dest` from the start (the platform layer truncates it), so a half-written file is never completed by a
+        // second attempt; the caller verifies the container's integrity after the download regardless.
+        self.transfer_retrying(|| {
+            let hash: [u8; 32] = Sha256::digest(b"").into();
+            let authorization = self.signed_header_for_hash("GET", &path, &hash)?;
+            let status = self.transport.download_file(
+                self.endpoint,
+                HttpRequest { method: "GET", path_and_query: path.clone(), authorization: Some(authorization), body: Vec::new() },
+                dest,
+                max_bytes,
+            )?;
+            check(HttpResponse { status, body: Vec::new() }).map(|_| ())
+        })
     }
 
     pub fn send_batch(&self, deliveries: Vec<Delivery>, ttl_secs: Option<u64>) -> Result<Vec<String>> {
@@ -312,6 +478,49 @@ impl RelayApi<'_> {
         }
     }
 
+    /// Append a commit to a cross-relay group's home log. Authenticated by the group credential, not by this device (the relay never learns which
+    /// member or account is calling). `creds` belong to epoch `req.expected_seq` (for a creation: to the NEW epoch 1, which the request announces).
+    pub fn home_commit(
+        &self,
+        tag: &Id16,
+        creds: &crate::home::HomeCreds,
+        req: &cipher_wire::home::HomeCommitRequest,
+    ) -> Result<HomeCommitResult> {
+        use cipher_wire::home::{HomeCommitResponse, HomeStaleResponse};
+        req.validate().map_err(|_| SecurityError::Malformed("home commit"))?;
+        let path = format!("/v1/home/{tag}/commit");
+        let body = enc(req)?;
+        let authorization = Some(creds.sign_commit("POST", &path, &body));
+        let resp = self.transport.execute(self.endpoint, HttpRequest { method: "POST", path_and_query: path, authorization, body })?;
+        let chain32 = |v: &[u8]| -> Result<[u8; 32]> { v.try_into().map_err(|_| SecurityError::Transport("malformed response")) };
+        match resp.status {
+            200..=299 => {
+                let r: HomeCommitResponse = json(&resp)?;
+                Ok(HomeCommitResult::Accepted { seq: r.seq, chain: chain32(&r.chain)? })
+            }
+            409 => {
+                let r: HomeStaleResponse = json(&resp)?;
+                Ok(HomeCommitResult::Stale { head_seq: r.head_seq, head_chain: chain32(&r.head_chain)? })
+            }
+            429 if json::<serde_json::Value>(&resp).ok().and_then(|v| v.get("error")?.as_str().map(str::to_owned)).as_deref()
+                == Some("queue full") =>
+            {
+                Ok(HomeCommitResult::Full)
+            }
+            _ => check(resp).map(|_| HomeCommitResult::Full),
+        }
+    }
+
+    /// Read entries after `after` with the read key of `creds.epoch` (see `cipher_wire::home`: a key reads up to the entry after its own epoch).
+    pub fn home_log(&self, tag: &Id16, creds: &crate::home::HomeCreds, after: u64) -> Result<cipher_wire::home::HomeLogResponse> {
+        let path = format!("/v1/home/{tag}/log?after={after}");
+        let authorization = Some(creds.sign_read("GET", &path, &[]));
+        let resp = check(
+            self.transport.execute(self.endpoint, HttpRequest { method: "GET", path_and_query: path, authorization, body: Vec::new() })?,
+        )?;
+        json(&resp)
+    }
+
     pub fn download_blob(&self, id: &Id16) -> Result<Vec<u8>> {
         Ok(self.send_signed("GET", &format!("/v1/blobs/{id}"), Vec::new())?.body)
     }
@@ -329,5 +538,107 @@ mod tests {
             assert!(RelayEndpoint::new(bad).is_err(), "{bad}");
         }
         assert!(RelayEndpoint::new("https://relay.example:8443/").is_ok());
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod retry_tests {
+    use super::*;
+
+    fn t(m: &'static str) -> SecurityError {
+        SecurityError::Transport(m)
+    }
+
+    #[test]
+    fn delays_grow_are_capped_and_jittered() {
+        assert_eq!(retry_delay_ms(1, 0), 1_000);
+        assert_eq!(retry_delay_ms(2, 0), 2_000);
+        assert_eq!(retry_delay_ms(3, 0), 4_000);
+        assert_eq!(retry_delay_ms(9, 0), 15_000);
+        assert!(retry_delay_ms(1, 999) > 1_400 && retry_delay_ms(1, 999) <= 1_500);
+        assert_ne!(retry_delay_ms(2, 100), retry_delay_ms(2, 900), "jitter actually varies the delay");
+    }
+
+    #[test]
+    fn only_transient_failures_are_retried_and_only_a_bounded_number_of_times() {
+        for (e, retried) in [
+            ("timeout", true),
+            ("unavailable", true),
+            ("network unavailable", true),
+            ("io failure", true),
+            ("tls failure", false),
+            ("unauthorized", false),
+            ("rate limited", false),
+            ("server error", false),
+            ("conflict", false),
+        ] {
+            let mut calls = 0;
+            let mut slept = Vec::new();
+            let r: Result<()> = retry_transient(
+                4,
+                u64::MAX,
+                || 0,
+                |ms| slept.push(ms),
+                || 0,
+                || {
+                    calls += 1;
+                    Err(t(e))
+                },
+            );
+            assert!(r.is_err());
+            assert_eq!(calls, if retried { 4 } else { 1 }, "{e}");
+            assert_eq!(slept.len(), if retried { 3 } else { 0 }, "{e}");
+        }
+    }
+
+    #[test]
+    fn success_after_a_transient_failure_stops_retrying() {
+        let mut calls = 0;
+        let r = retry_transient(
+            4,
+            u64::MAX,
+            || 0,
+            |_| {},
+            || 0,
+            || {
+                calls += 1;
+                if calls < 3 {
+                    Err(t("timeout"))
+                } else {
+                    Ok(calls)
+                }
+            },
+        );
+        assert_eq!(r.unwrap(), 3);
+    }
+
+    #[test]
+    fn the_time_budget_stops_retries_even_with_attempts_left() {
+        // every attempt "takes" 100 s on the injected clock and the budget is 150 s
+        let clock = std::cell::Cell::new(0u64);
+        let mut calls = 0;
+        let r: Result<()> = retry_transient(
+            4,
+            150_000,
+            || clock.get(),
+            |ms| clock.set(clock.get() + ms),
+            || 0,
+            || {
+                calls += 1;
+                clock.set(clock.get() + 100_000);
+                Err(t("timeout"))
+            },
+        );
+        assert!(matches!(r, Err(SecurityError::Transport("timeout"))), "the last transient error is returned, not masked");
+        assert_eq!(calls, 2, "100 s + backoff fits the budget, so a second attempt runs; after 200 s no third attempt may start");
+    }
+
+    #[test]
+    fn statuses_are_classified() {
+        let c = |s| check(HttpResponse { status: s, body: vec![] }).unwrap_err();
+        assert!(is_transient(&c(408)));
+        assert!(is_transient(&c(502)) && is_transient(&c(503)) && is_transient(&c(504)));
+        assert!(!is_transient(&c(500)) && !is_transient(&c(401)) && !is_transient(&c(429)) && !is_transient(&c(413)));
     }
 }

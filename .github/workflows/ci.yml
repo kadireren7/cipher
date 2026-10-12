@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    branches: [main, feat/self-hosted-multi-relay]
   pull_request:
 
 # Least privilege: CI never needs to write to the repo.
@@ -82,9 +82,10 @@ jobs:
         run: |
           cargo test --locked -p cipher-core --all-features \
             --test mls_protocol --test vault_security --test attachments --test verification \
-            --test static_guards --test parsers_property
+            --test static_guards --test parsers_property --test contact_card
           cargo test --locked -p cipher-ffi --test boundary_guards --test boundary_behaviour --test android_guards
-          cargo test --locked -p cipher-relay --test security_invariants --test tls --test postgres_relay --test engine_dm --test engine_groups --test engine_attachments
+          cargo test --locked -p cipher-relay --test security_invariants --test tls --test postgres_relay --test engine_dm --test engine_groups --test engine_attachments \
+            --test intro --test multi_relay --test delivery_matrix --test metadata_measurement
       - name: Every invariant maps to tests that exist (renaming/deleting one fails CI)
         run: python3 scripts/check_invariants.py
       - name: Invariants doc is generated from the registry (no drift)
@@ -105,8 +106,13 @@ jobs:
         run: cargo install --locked cargo-deny@0.20.2 cargo-audit@0.22.2
       - name: cargo deny (advisories, licenses, bans incl. no OpenSSL/native-tls, sources)
         run: cargo deny check
-      - name: cargo audit (warnings are errors; the one reviewed exception is in .cargo/audit.toml)
+      - name: cargo audit (warnings are errors; the reviewed exceptions, with their evidence, are in .cargo/audit.toml)
         run: cargo audit --deny warnings
+      - name: SBOM (CycloneDX) is generated from the lockfiles and is reproducible
+        run: |
+          python3 scripts/gen_sbom.py -o /tmp/sbom-1.cdx.json
+          python3 scripts/gen_sbom.py -o /tmp/sbom-2.cdx.json
+          cmp /tmp/sbom-1.cdx.json /tmp/sbom-2.cdx.json
 
   android:
     name: android (unit tests / ktlint / lint / debug + release build)
@@ -148,7 +154,8 @@ jobs:
     name: android instrumented tests (emulator, software Keystore)
     runs-on: ubuntu-24.04
     needs: android
-    # NOTE: written but NOT yet executed on GitHub runners (no remote exists). It needs KVM; see scripts/ci-emulator-tests.sh.
+    timeout-minutes: 60
+    # Needs KVM; see scripts/ci-emulator-tests.sh.
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -161,6 +168,55 @@ jobs:
           sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
       - name: Boot an API 34 x86_64 emulator and run connectedDebugAndroidTest
         run: bash scripts/ci-emulator-tests.sh
+      - name: Upload emulator/test logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: emulator-logs
+          path: |
+            android/app/build/reports/androidTests/
+            android/app/build/outputs/androidTest-results/
+            /tmp/emulator-logcat.txt
+          if-no-files-found: ignore
+
+  android-e2e-multirelay:
+    name: android two-relay end-to-end (emulator, 2 relays, offline + attachments)
+    runs-on: ubuntu-24.04
+    needs: android
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_PASSWORD: devonly-not-a-secret
+        ports: ["55432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      CIPHER_E2E: multirelay
+      CIPHER_E2E_PG_HOST: 127.0.0.1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+      - name: Boot an API 34 emulator and run the two-relay end-to-end driver
+        run: bash scripts/ci-emulator-tests.sh
+      - name: Upload E2E logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: e2e-multirelay-logs
+          path: |
+            /tmp/e2e-multirelay.txt
+            /tmp/emulator-logcat.txt
+            /tmp/cipher-mr-e2e-*/*.log
+          if-no-files-found: ignore
 
   secrets:
     name: secret scanning

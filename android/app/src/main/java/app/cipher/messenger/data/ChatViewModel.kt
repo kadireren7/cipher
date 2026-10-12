@@ -34,6 +34,8 @@ class ChatViewModel(app: Application, val convId: String) : AndroidViewModel(app
     var replyTo by mutableStateOf<MessageFfi?>(null)
     var uploading by mutableStateOf<Float?>(null)
         private set
+    var creatingSuccessor by mutableStateOf(false)
+        private set
 
     private fun fail(e: Throwable) {
         error = humanize(e)
@@ -225,4 +227,19 @@ class ChatViewModel(app: Application, val convId: String) : AndroidViewModel(app
     }
 
     fun refreshKeys() = admin { it.refreshKeys(convId) }
+
+    /** The group's home relay is lost or blocked: make a NEW group with the same members (each must accept again) and open it. */
+    fun createSuccessor(onDone: (String) -> Unit) {
+        if (creatingSuccessor) return
+        creatingSuccessor = true
+        viewModelScope.launch {
+            try {
+                onDone(host.call { it.createSuccessorGroup(convId) })
+            } catch (e: Exception) {
+                fail(e)
+            } finally {
+                creatingSuccessor = false
+            }
+        }
+    }
 }

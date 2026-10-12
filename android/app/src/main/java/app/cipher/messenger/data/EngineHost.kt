@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import androidx.fragment.app.FragmentActivity
 import app.cipher.messenger.BuildConfig
 import app.cipher.messenger.net.OkHttpCallbacks
+import app.cipher.messenger.net.RelayAddress
 import app.cipher.messenger.net.RouteConfig
 import app.cipher.messenger.net.RouteStatus
 import app.cipher.messenger.net.RouteTracker
@@ -33,6 +34,7 @@ class EngineHost(private val app: Application, private val activityProvider: () 
 
     private val configDir = File(app.noBackupFilesDir, "config").apply { mkdirs() }
     private val relayFile = File(configDir, "relay.url")
+    private val relayPinFile = File(configDir, "relay.pin")
     private val timeoutFile = File(configDir, "lock_timeout_secs")
 
     @Volatile private var engine: CipherEngine? = null
@@ -59,6 +61,9 @@ class EngineHost(private val app: Application, private val activityProvider: () 
         http = OkHttpCallbacks(routeConfig, routeTracker)
         engine = null
     }
+
+    /** Pin (unpadded URL-safe base64 of the SHA-256 of the relay certificate's public key) the relay is authenticated by instead of a CA chain; null = CA validation. */
+    fun relayPin(): String? = relayPinFile.takeIf { it.exists() }?.readText()?.trim()?.takeIf { it.isNotEmpty() }
 
     fun relayUrl(): String? = relayFile.takeIf { it.exists() }?.readText()?.trim()?.takeIf { it.startsWith("https://") }
 
@@ -106,10 +111,22 @@ class EngineHost(private val app: Application, private val activityProvider: () 
         }
     }
 
-    fun configureRelay(url: String) {
-        require(url.startsWith("https://")) { "https required" }
-        relayFile.writeText(url.trim())
+    /** [address] must come from [RelayAddress.parse] (validated; an onion address always carries its pin). */
+    fun configureRelay(address: RelayAddress) {
+        require(address.url.startsWith("https://")) { "https required" }
+        require(!address.isOnion || address.pinB64 != null) { "onion relays need a pin" }
+        relayFile.writeText(address.url)
+        if (address.pinB64 != null) relayPinFile.writeText(address.pinB64) else relayPinFile.delete()
         engine = null
+    }
+
+    /**
+     * Replaces ONLY the pin of the configured relay (the operator rotated its certificate). A relay can be pinned to one key per process, so the new pin
+     * takes effect when the app is restarted; until then connections keep using the old one (and fail if the certificate really changed).
+     */
+    fun updateRelayPin(pinB64: String) {
+        require(RelayAddress.normalisePin(pinB64) == pinB64) { "not a normalised pin" }
+        relayPinFile.writeText(pinB64)
     }
 
     private fun build(): CipherEngine {
@@ -122,6 +139,8 @@ class EngineHost(private val app: Application, private val activityProvider: () 
             requireUserAuth = requireUserAuth(),
             extraSourceDir = null,
         )
+        // A pinned relay (e.g. an onion service with a self-signed certificate) is authenticated ONLY by its pin; this must be registered before the first request.
+        relayPin()?.let { http.pinRelay(url, it) }
         return CipherEngine(settings, AndroidKeystoreCallbacks(app, BiometricGate(activityProvider)), http)
     }
 

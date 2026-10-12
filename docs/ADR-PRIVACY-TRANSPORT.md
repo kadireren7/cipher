@@ -27,3 +27,19 @@ Cipher's client sends **every** relay request (TLS 1.3 to the relay, unchanged) 
 * Properties **inherited from Tor and NOT verified here:** IP separation across entry/exit, multi-hop non-collusion, circuit isolation. Cipher does not isolate streams per identity (Orbot default). Not tested: Android DNS behaviour for the proxy itself, Doze, real carrier networks, battery.
 * **Not provided:** protection from a global passive adversary, end-to-end timing correlation, hiding Tor usage from the ISP, anonymity of the account (account/device ids are stable pseudonyms to the relay).
 * **Relay operator note:** behind Tor many users share exit IPs; per-IP limits must be generous (`/v1/deliver` uses a per-capability bucket plus a generous per-source bucket).
+
+
+## Deadlines on the privacy route (hardening pass, 2026-10-11)
+Why not "just raise every timeout": each deadline guards a different failure and a longer one hides the failure it guards. Current layers:
+
+| Layer | Where | Value | What it bounds |
+| --- | --- | --- | --- |
+| Connection establishment (TCP to the SOCKS proxy + SOCKS CONNECT, i.e. Tor circuit / rendezvous build) | `OkHttpCallbacks.connectTimeout` | 120 s privacy route, 10 s direct dev route | One circuit build. Tor itself abandons a stalled build after ~60 s and retries, so a shorter limit cuts off a retry about to succeed |
+| TLS handshake and waiting for response bytes | `readTimeout` (OkHttp has no separate handshake timer) | 60 s | No progress from the relay. Relay side: `CIPHER_RELAY_TLS_HANDSHAKE_SECS` (10 s direct, 60 s onion) |
+| Sending the request body | `writeTimeout` | 60 s | A stalled upload on the client side |
+| Whole call | `callTimeout` | 5 min | Absolute bound for one attempt |
+| Relay: request body progress | `CIPHER_RELAY_BODY_IDLE_SECS` | 20 s, 90 s onion | A peer that stops sending (frees the upload slot) |
+| Relay: whole request | `CIPHER_RELAY_REQUEST_TIMEOUT_SECS` | 30 s (x4 for blobs), 120 s onion | Absolute bound per request |
+| Core: transfers | `relay_client::TRANSFER_ATTEMPTS` | 4 attempts, 1/2/4 s + ≤ 50 % jitter | Transient failures only (timeout, 408, 502–504, dropped link); each attempt is a freshly signed request; TLS/pin failures are never retried |
+
+Properties that did not change: the proxy is fixed and there is no direct fallback; a pin mismatch is a TLS fault, not retried and not downgraded; OkHttp's own connection-failure retry is left at its default (turning it off broke existing network-attack tests), so a stale pooled connection may still cause the transport to re-send a signed request once; the relay's replay protection rejects the duplicate and the core retry then re-signs. Duplicate submission cannot happen at message level because a message is created only after its blob upload succeeded; a lost response can leave one unreferenced blob until its TTL (ST-046). Whether these values reduce failures over real Tor is measured by repeated runs of the `android-tor` workflow (Session 5, `MASTER_IMPLEMENTATION_STATUS.md`); they were chosen from the observed Tor log behaviour, not tuned against the result.
