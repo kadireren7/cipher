@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PictureAsPdf
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -117,6 +118,11 @@ fun ConversationScreen(
     val active = conv?.state == ConvStateFfi.ACTIVE
     val peer = vm.members.firstOrNull { !it.isMe }
     var actionsFor by remember { mutableStateOf<MessageFfi?>(null) }
+    var searching by remember { mutableStateOf(false) }
+    var query by remember { mutableStateOf("") }
+    val needle = query.trim()
+    val shown = if (searching && needle.isNotEmpty()) vm.messages.filter { ChatViewModel.matches(it, needle) } else vm.messages.toList()
+    LaunchedEffect(searching) { if (searching) vm.loadAllHistory() }
 
     Scaffold(
         modifier = Modifier.imePadding(),
@@ -124,6 +130,17 @@ fun ConversationScreen(
             TopAppBar(
                 navigationIcon = { IconAction(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack) },
                 title = {
+                    if (searching) {
+                        PrivateTextField(
+                            value = query,
+                            onValueChange = { query = it.take(200) },
+                            placeholder = { Text("Search this conversation") },
+                            singleLine = true,
+                            shape = CipherShape.field,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        return@TopAppBar
+                    }
                     Row(
                         Modifier.clickable {
                             if (isGroup) onInfo() else peer?.let { onVerify(it.accountId) }
@@ -151,7 +168,17 @@ fun ConversationScreen(
                         }
                     }
                 },
-                actions = { if (isGroup) IconAction(Icons.Default.MoreVert, "Group info", onInfo) },
+                actions = {
+                    if (searching) {
+                        IconAction(Icons.Default.Close, "Close search") {
+                            searching = false
+                            query = ""
+                        }
+                    } else {
+                        IconAction(Icons.Default.Search, "Search this conversation") { searching = true }
+                        if (isGroup) IconAction(Icons.Default.MoreVert, "Group info", onInfo)
+                    }
+                },
             )
         },
         bottomBar = {
@@ -165,10 +192,14 @@ fun ConversationScreen(
         Column(Modifier.fillMaxSize().padding(pad)) {
             vm.error?.let { Banner(it, error = true, actionLabel = "Dismiss") { vm.error = null } }
             vm.uploading?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
-            if (vm.messages.isEmpty()) {
+            if (shown.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Text(
-                        "Messages are end-to-end encrypted.\nSay hello 👋",
+                        if (searching && needle.isNotEmpty()) {
+                            if (vm.loadingOlder) "Searching\u2026" else "No matches among the ${vm.messages.size} messages checked."
+                        } else {
+                            "Messages are end-to-end encrypted.\nSay hello."
+                        },
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(32.dp)
                     )
@@ -180,8 +211,8 @@ fun ConversationScreen(
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    items(vm.messages, key = { it.id }) { m ->
-                        val prevSender = vm.messages.getOrNull(vm.messages.indexOf(m) + 1)?.senderAccount
+                    items(shown, key = { it.id }) { m ->
+                        val prevSender = shown.getOrNull(shown.indexOf(m) + 1)?.senderAccount
                         MessageBubble(m, isGroup && !m.outgoing && prevSender != m.senderAccount, vm, onOpenAttachment, onLong = {
                             actionsFor =
                                 m

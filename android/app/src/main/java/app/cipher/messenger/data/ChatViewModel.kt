@@ -105,6 +105,31 @@ class ChatViewModel(app: Application, val convId: String) : AndroidViewModel(app
         }
     }
 
+    /**
+     * Search support. Nothing is indexed or stored: the whole history (up to [maxMessages]) is paged into the in-memory list that already holds decrypted
+     * messages for display, and the screen filters it. The list is dropped with the ViewModel.
+     */
+    fun loadAllHistory(maxMessages: Int = SEARCH_LIMIT) {
+        if (loadingOlder || cursor == null) return
+        loadingOlder = true
+        viewModelScope.launch {
+            try {
+                while (messages.size < maxMessages) {
+                    val c = cursor ?: break
+                    val page = host.call { it.getHistory(convId, c, 100u) }
+                    val ids = messages.map { it.id }.toSet()
+                    messages.addAll(page.items.filter { it.id !in ids })
+                    cursor = page.nextCursor
+                    hasMore = page.nextCursor != null
+                }
+            } catch (e: Exception) {
+                fail(e)
+            } finally {
+                loadingOlder = false
+            }
+        }
+    }
+
     fun send(text: String) {
         val reply = replyTo?.id
         replyTo = null
@@ -241,5 +266,14 @@ class ChatViewModel(app: Application, val convId: String) : AndroidViewModel(app
                 creatingSuccessor = false
             }
         }
+    }
+
+    companion object {
+        const val SEARCH_LIMIT = 3000
+
+        /** Case-insensitive match on the text body or the attachment's file name. */
+        fun matches(m: MessageFfi, query: String): Boolean =
+            !m.unavailable &&
+                (m.text.contains(query, ignoreCase = true) || m.attachment?.filename?.contains(query, ignoreCase = true) == true)
     }
 }
