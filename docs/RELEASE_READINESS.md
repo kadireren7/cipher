@@ -12,6 +12,20 @@
 
 **Hardening pass (2026-10-11, Session 5 in `MASTER_IMPLEMENTATION_STATUS.md`):** fixed a lock-out of whole onion relays by invalid requests (ST-056), upload-slot exhaustion (ST-057), non-retried transient failures in file transfer (ST-055), silent purge of live groups' home logs (ST-058), and made a lost home relay visible with a successor-group path (ST-052). **The release gates are unchanged and not met:** the physical-device matrix (ST-001/028), independent review (ST-005), push (ST-017), signed reproducible release (ST-014), chunked uploads (ST-046), group UI (ST-048) and a clean, repeated Tor CI record are all still open, so Cipher is **not** private-beta-ready. Tor CI after the pass: 11 of 12 repetitions green, one phase-timeout hang (Session 5); in Session 6 a further 12 of 15 (80 %), the three failures being Tor-side (corrupt directory data at bootstrap, a hidden-service descriptor fetch that never completed) and one test poll — a clean, repeated Tor record does **not** exist yet (ST-055/ST-060).
 
+## Classification as of 2026-10-28 (Session 8; supersedes the table above where they differ)
+
+| Level | Verdict | Gate evidence / what blocks it |
+| --- | --- | --- |
+| Development | **YES** | `ci` 7/7 green on 40698655145 (Rust + PostgreSQL, audit, secrets, invariants, Android unit/ktlint/lint/release+AAB, 62 instrumented tests, two-relay emulator E2E). |
+| Experimental self-hosting | **YES** for technical operators | Docker Compose relay, backup/restore, upgrade/rollback tested in CI (`self-hosting acceptance`); onion relay tested over live Tor. Operators must read `KNOWN_LIMITATIONS.md`. |
+| Internal testing (the team, on devices it controls) | **YES, with an unsigned developer build** | CI uploads an unsigned APK/AAB with hashes; sideload only. Testers must be told it is experimental. |
+| Private beta (invited outsiders) | **NO** | Open: physical-device matrix (ST-028), no push/background delivery (ST-017/042), no signed release or key plan, no licence, informed-tester process, independent review for any claim beyond "experimental". |
+| Public beta | **NO** | Plus: independent audit (ST-005), signed reproducible release, store/legal review (privacy policy and terms are drafts), group-recovery and notification gaps. |
+| Production | **NO** | Plus soak/load/incident evidence, audited protocols. |
+
+Gates that remain **external** and cannot be closed from this repository: physical Android devices (StrongBox/TEE/OEM/Doze), an independent security review, a signing key and its custody plan, a licence decision, a push distributor, legal review of the privacy policy/terms, store accounts.
+Tor evidence: 20 of 20 consecutive indexed `android-tor` samples green on one commit (38208859706), emulator + host Tor; this is not a failure-rate guarantee.
+
 Passing tests are evidence about the behaviours they test. They are not proof of security or anonymity.
 
 ## 1. Build instructions (Rust, relay)
