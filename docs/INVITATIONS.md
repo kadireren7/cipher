@@ -1,6 +1,6 @@
 # Private invitations — design (ST-065)
 
-**Status: DESIGN ONLY. Nothing in this file is implemented, and no invitation button may ship before the protocol below exists and passes its tests.** Self-reviewed; it needs the independent review (ST-005) like every other composition here.
+**Status (2026-10-29): partially implemented, NOT usable by a user yet.** Done and tested: the link codec and policy limits (`cipher-wire`), the key derivation, AEAD preview and request MAC (`cipher-core::invite`), and the relay storage and six endpoints with PostgreSQL tests (§11 steps 1–2, invariants INV-001..007). **Not built:** the client engine (create, lookup, join-request signing and HPKE wrapping, issuer-side verification and the MLS Add, §11 step 3), FFI, the cross-relay E2E and malicious-client tests (steps 4–5) and every Android screen (step 6). **No invitation button may ship before steps 3–5 pass.** Self-reviewed; it needs the independent review (ST-005) like every other composition here.
 
 ## 1. What is being built, and what is not
 
@@ -89,13 +89,13 @@ A 1:1 invitation **is** the Contact Card (QR or link) that already exists: its i
 | **Accidental exposure** | the link is never written to logs (`SafeLog` takes closed codes only; the relay does not log); on Android it is copied with the **sensitive-content clipboard flag**, shown behind the screen's secure flag (no screenshots), and excluded from backup. No analytics SDK exists. |
 | **Downgrade** | `https`/pinned `.onion` only; unknown `version` is refused; no cleartext path. |
 
-## 11. Implementation plan and tests (none done)
+## 11. Implementation plan and tests
 
-1. `cipher-wire`: link codec, derived keys, preview/request types, strict parsing. Tests: round trips, tamper, unknown version, oversized fields.
-2. Relay: migration, the six endpoints, rate limits. Tests (real PostgreSQL): authorisation of every endpoint (a non-issuer cannot poll/resolve/revoke; an unauthenticated caller can only look up/request), slot atomicity under concurrency, expiry, revocation, uniform `invalid`, no id/secret in logs.
-3. `cipher-core`: create / lookup / request / verify / approve, wired to the existing Add flow. Tests: valid join, wrong `k_mac`, forged signature, replayed nonce, second request by the same joiner, revoked-after-request, expired, `auto` limits, **history not decryptable by the new member**, forged Add by a non-admin rejected by receivers.
-4. Cross-relay E2E (emulator driver): issuer on relay A, joiner on relay B, join, message both ways, revoked and expired invites.
-5. Malicious-client tests: a hostile joiner flooding requests, a hostile relay dropping/reordering, a leaked link used by two parties.
-6. Android: Invitations screen (create with mode/expiry/limit, share link/QR, pending requests with safety numbers, revoke), scan/paste to join, message-request handling for 1:1. UI tests for each state, including expired/revoked.
+1. **DONE** `cipher-wire`: link codec, derived keys, preview/request types, strict parsing. Tests: round trips, tamper, unknown version, oversized fields.
+2. **DONE** Relay: migration, the six endpoints, rate limits. Tests (real PostgreSQL): authorisation of every endpoint (a non-issuer cannot poll/resolve/revoke; an unauthenticated caller can only look up/request), slot atomicity under concurrency, expiry, revocation, uniform `invalid`, no id/secret in logs.
+3. **NOT DONE** `cipher-core` engine: create / lookup / request / verify / approve, wired to the existing Add flow. Tests: valid join, wrong `k_mac`, forged signature, replayed nonce, second request by the same joiner, revoked-after-request, expired, `auto` limits, **history not decryptable by the new member**, forged Add by a non-admin rejected by receivers.
+4. **NOT DONE** Cross-relay E2E (emulator driver): issuer on relay A, joiner on relay B, join, message both ways, revoked and expired invites.
+5. **NOT DONE** Malicious-client tests: a hostile joiner flooding requests, a hostile relay dropping/reordering, a leaked link used by two parties.
+6. **NOT DONE** Android: Invitations screen (create with mode/expiry/limit, share link/QR, pending requests with safety numbers, revoke), scan/paste to join, message-request handling for 1:1. UI tests for each state, including expired/revoked.
 
-Only after steps 1–5 pass does step 6 expose anything to users.
+Steps 1–2 also include the primitives of step 3 (derivation, preview AEAD, request MAC). Only after steps 3–5 pass does step 6 expose anything to users.
