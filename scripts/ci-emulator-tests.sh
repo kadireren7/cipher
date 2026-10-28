@@ -40,7 +40,7 @@ bash scripts/make-test-ca.sh
 python3 -m pip install --quiet cryptography
 python3 scripts/adversarial-tls-servers.py &
 sleep 3
-trap '"$SDK/platform-tools/adb" logcat -d > /tmp/emulator-logcat.txt 2>&1 || true; mkdir -p /tmp/design-gallery; "$SDK/platform-tools/adb" pull /sdcard/Android/data/app.cipher.messenger.debug/files/design-gallery/. /tmp/design-gallery/ >/dev/null 2>&1 || true' EXIT
+trap '"$SDK/platform-tools/adb" logcat -d > /tmp/emulator-logcat.txt 2>&1 || true; mkdir -p /tmp/design-gallery; "$SDK/platform-tools/adb" pull /sdcard/Pictures/cipher-gallery/. /tmp/design-gallery/ >/dev/null 2>&1 || true' EXIT
 if [ "${CIPHER_E2E:-}" = "multirelay" ] || [ "${CIPHER_E2E:-}" = "tor" ]; then
   if [ "${CIPHER_E2E}" = "tor" ]; then
     # A REAL Tor client from the distribution; the driver starts its own instance (own DataDirectory, SocksPort 127.0.0.1:9150) and two hidden services.

@@ -1,6 +1,8 @@
 package app.cipher.messenger.gallery
 
+import android.content.ContentValues
 import android.graphics.Bitmap
+import android.provider.MediaStore
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -31,7 +33,6 @@ import app.cipher.messenger.ui.screens.ConversationRow
 import app.cipher.messenger.ui.screens.InputBar
 import app.cipher.messenger.ui.screens.MessageBubble
 import app.cipher.messenger.ui.theme.CipherTheme
-import java.io.File
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -57,8 +58,21 @@ class DesignGalleryInstrumentedTest {
 
     @get:Rule val rule = createComposeRule()
 
-    private val out: File by lazy {
-        File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "design-gallery").apply { mkdirs() }
+    /** Saved through MediaStore into Pictures/cipher-gallery: app-private storage is deleted when Gradle uninstalls the app after the run. */
+    private fun save(name: String, bmp: Bitmap): Long {
+        val resolver = InstrumentationRegistry.getInstrumentation().targetContext.contentResolver
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, "image/png")
+            put(MediaStore.Images.Media.RELATIVE_PATH, "Pictures/cipher-gallery")
+        }
+        val uri = checkNotNull(resolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)) { "MediaStore insert failed" }
+        var size = 0L
+        resolver.openOutputStream(uri)!!.use { out ->
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            size = bmp.byteCount.toLong()
+        }
+        return size
     }
 
     private fun msg(
@@ -190,9 +204,8 @@ class DesignGalleryInstrumentedTest {
         }
         rule.waitForIdle()
         val bmp = rule.onRoot().captureToImage().asAndroidBitmap()
-        val f = File(out, "$name-${if (dark) "dark" else "light"}-fs${(fontScale * 100).toInt()}-w$widthDp.png")
-        f.outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
-        assertTrue(f.length() > 0)
+        val file = "$name-${if (dark) "dark" else "light"}-fs${(fontScale * 100).toInt()}-w$widthDp.png"
+        assertTrue(save(file, bmp) > 0)
     }
 
     @Test fun listDark() = shoot("list", true, 1.0f, 360) { ListScene() }
