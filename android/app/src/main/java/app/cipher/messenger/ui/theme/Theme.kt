@@ -64,7 +64,7 @@ data class CipherColors(
     val verified: Color,
 )
 
-private val DarkCipher = CipherColors(
+internal val DarkCipher = CipherColors(
     bubbleIn = Color(0xFF1E2422),
     onBubbleIn = Color(0xFFE8ECEA),
     bubbleOut = Color(0xFF1D4A3C),
@@ -75,7 +75,7 @@ private val DarkCipher = CipherColors(
     verified = Color(0xFF7FCBB0),
 )
 
-private val LightCipher = CipherColors(
+internal val LightCipher = CipherColors(
     bubbleIn = Color(0xFFFFFFFF),
     onBubbleIn = Color(0xFF1A1F1D),
     bubbleOut = Color(0xFFD3EADF),
@@ -86,7 +86,7 @@ private val LightCipher = CipherColors(
     verified = Color(0xFF1F6F5A),
 )
 
-private val Dark = darkColorScheme(
+internal val DarkScheme = darkColorScheme(
     primary = Color(0xFF7FCBB0),
     onPrimary = Color(0xFF07251C),
     primaryContainer = Color(0xFF1D4A3C),
@@ -114,7 +114,7 @@ private val Dark = darkColorScheme(
     onTertiary = Color(0xFF2E1F00),
 )
 
-private val Light = lightColorScheme(
+internal val LightScheme = lightColorScheme(
     primary = Color(0xFF1F6F5A),
     onPrimary = Color.White,
     primaryContainer = Color(0xFFD3EADF),
@@ -203,6 +203,11 @@ object CipherTheme {
 @Composable
 fun CipherTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
     CompositionLocalProvider(LocalCipherColors provides if (dark) DarkCipher else LightCipher) {
-        MaterialTheme(colorScheme = if (dark) Dark else Light, typography = AppTypography, shapes = AppShapes, content = content)
+        MaterialTheme(
+            colorScheme = if (dark) DarkScheme else LightScheme,
+            typography = AppTypography,
+            shapes = AppShapes,
+            content = content
+        )
     }
 }

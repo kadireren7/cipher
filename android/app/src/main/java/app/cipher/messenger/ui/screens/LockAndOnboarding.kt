@@ -40,7 +40,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import app.cipher.messenger.BuildConfig
 import app.cipher.messenger.data.AppViewModel
 import app.cipher.messenger.data.UiState
@@ -337,7 +336,9 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                     "If Android resets your secure keys (for example after changing biometrics), Cipher data on this phone becomes unreadable."
                 )
                 Bullet("Your contacts will see a warning if your identity ever changes.")
-                Bullet("Cipher hides message content, not the fact that you use it. Servers still see when you connect and roughly how much you send.")
+                Bullet(
+                    "Cipher hides message content, not the fact that you use it. Servers still see when you connect and roughly how much you send."
+                )
                 Spacer(Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { understood = !understood }) {
                     Checkbox(understood, { understood = it })
