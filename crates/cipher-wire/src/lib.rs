@@ -10,6 +10,7 @@
 pub mod b64;
 pub mod home;
 pub mod ids;
+pub mod invite;
 pub mod limits;
 pub mod messages;
 pub mod relay_desc;
