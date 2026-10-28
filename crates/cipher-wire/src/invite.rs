@@ -179,6 +179,97 @@ impl InvitePolicy {
     }
 }
 
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+// Relay API bodies (docs/INVITATIONS.md §5). Every body rejects unknown fields; every byte string is bounded; the relay never sees the secret.
+// ----------------------------------------------------------------------------------------------------------------------------------------------
+use crate::ids::Id16;
+use serde::{Deserialize, Serialize};
+
+/// An AEAD preview is `nonce(12) || ciphertext || tag(16)` over at most 2048 bytes of plaintext.
+pub const MAX_PREVIEW_BLOB: usize = 12 + 2048 + 16;
+/// An encrypted join request holds a KeyPackage, an identity and a reply capability, HPKE-wrapped: kilobytes, never megabytes.
+pub const MAX_REQUEST_BLOB: usize = 16 * 1024;
+/// How many live invitations one device may keep at the relay.
+pub const MAX_LIVE_INVITES_PER_DEVICE: usize = 20;
+/// Pending requests returned to the issuer per poll.
+pub const MAX_POLL_REQUESTS: usize = 100;
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreateInviteRequest {
+    pub id: Id16,
+    #[serde(with = "crate::b64")]
+    pub preview: Vec<u8>,
+    pub lifetime_ms: u64,
+    pub max_uses: u32,
+}
+
+impl CreateInviteRequest {
+    /// Lifetime and use limits are decided by [`InvitePolicy`] (mode is the issuer's own business: the relay validates the stricter `Approval` bounds).
+    pub fn validate(&self) -> Result<(), InviteError> {
+        if self.preview.is_empty() || self.preview.len() > MAX_PREVIEW_BLOB {
+            return Err(InviteError::Policy("preview size"));
+        }
+        InvitePolicy { lifetime_ms: self.lifetime_ms, max_uses: self.max_uses, mode: JoinMode::Approval }.validate()
+    }
+}
+
+/// Lookup (unauthenticated) and revoke (issuer device) both name an invitation by its identifier.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InviteIdRequest {
+    pub id: Id16,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteLookupResponse {
+    #[serde(with = "crate::b64")]
+    pub preview: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InviteSubmitRequest {
+    pub id: Id16,
+    #[serde(with = "crate::b64")]
+    pub body: Vec<u8>,
+}
+
+impl InviteSubmitRequest {
+    pub fn validate(&self) -> Result<(), InviteError> {
+        if self.body.is_empty() || self.body.len() > MAX_REQUEST_BLOB {
+            return Err(InviteError::Policy("request size"));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InviteSubmitResponse {
+    pub request_id: Id16,
+}
+
+/// One pending request for the issuing device. `id_hash` (base64url) lets the issuer's client find which of ITS invitations it belongs to.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InvitePending {
+    pub request_id: Id16,
+    pub id_hash: String,
+    #[serde(with = "crate::b64")]
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct InvitePollResponse {
+    pub requests: Vec<InvitePending>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InviteResolveRequest {
+    pub request_id: Id16,
+    pub approved: bool,
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {

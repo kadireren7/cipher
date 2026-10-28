@@ -950,6 +950,143 @@ impl PgStore {
         Ok(Some((entries, head_info)))
     }
 
+    // ---- invitations (docs/INVITATIONS.md §5) ----
+    // The relay stores SHA-256 of the identifier, an opaque preview and opaque requests. It can enforce expiry, a use counter, revocation and who may
+    // poll/resolve/revoke; it cannot read, forge or admit anything.
+
+    /// Creates an invitation for `issuer`. A bounded number may be live per device (expired ones are purged first).
+    pub async fn create_invite(
+        &self,
+        issuer: &Id16,
+        id_hash: &[u8; 32],
+        preview: &[u8],
+        lifetime_secs: u64,
+        max_uses: u32,
+        now: u64,
+    ) -> Result<(), ApiError> {
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        let d = issuer.0.as_slice();
+        tx.execute("SELECT 1 FROM devices WHERE device_id=$1 FOR UPDATE", &[&d]).await.map_err(internal)?;
+        tx.execute("DELETE FROM invites WHERE issuer_device=$1 AND expires_at<=$2", &[&d, &(now as i64)]).await.map_err(internal)?;
+        let live: i64 = tx.query_one("SELECT count(*) FROM invites WHERE issuer_device=$1", &[&d]).await.map_err(internal)?.get(0);
+        if live as usize >= cipher_wire::invite::MAX_LIVE_INVITES_PER_DEVICE {
+            return Err(ApiError::QueueFull);
+        }
+        let expires = (now + lifetime_secs) as i64;
+        match tx
+            .execute(
+                "INSERT INTO invites (id_hash, issuer_device, preview, expires_at, max_uses, created_at) VALUES ($1,$2,$3,$4,$5,$6)",
+                &[&id_hash.as_slice(), &d, &preview, &expires, &(max_uses as i32), &(now as i64)],
+            )
+            .await
+        {
+            Err(e) if is_unique(&e) => return Err(ApiError::Conflict),
+            Err(e) => return Err(internal(e)),
+            Ok(_) => {}
+        }
+        tx.commit().await.map_err(internal)
+    }
+
+    /// The preview of a LIVE invitation (not expired, not revoked, a use left). Every other case, including "used up", is the same `NotFound`.
+    pub async fn invite_preview(&self, id_hash: &[u8; 32], now: u64) -> Result<Vec<u8>, ApiError> {
+        let c = self.conn().await?;
+        let row = c
+            .query_opt(
+                "SELECT preview FROM invites WHERE id_hash=$1 AND NOT revoked AND expires_at>$2 AND used<max_uses",
+                &[&id_hash.as_slice(), &(now as i64)],
+            )
+            .await
+            .map_err(internal)?;
+        row.map(|r| r.get::<_, Vec<u8>>(0)).ok_or(ApiError::NotFound)
+    }
+
+    /// Takes one use slot and stores the opaque request, atomically: the guarded UPDATE re-evaluates `used < max_uses` under the row lock, so two
+    /// concurrent requests can never both take the last slot.
+    pub async fn submit_invite_request(&self, id_hash: &[u8; 32], body: &[u8], now: u64) -> Result<Id16, ApiError> {
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        let claimed = tx
+            .execute(
+                "UPDATE invites SET used=used+1 WHERE id_hash=$1 AND NOT revoked AND expires_at>$2 AND used<max_uses",
+                &[&id_hash.as_slice(), &(now as i64)],
+            )
+            .await
+            .map_err(internal)?;
+        if claimed == 0 {
+            return Err(ApiError::NotFound);
+        }
+        let row = tx
+            .query_one(
+                "INSERT INTO invite_requests (request_id, id_hash, body, created_at)
+                 VALUES (decode(replace(gen_random_uuid()::text, '-', ''), 'hex'), $1, $2, $3) RETURNING request_id",
+                &[&id_hash.as_slice(), &body, &(now as i64)],
+            )
+            .await
+            .map_err(internal)?;
+        let request = id(row.get(0))?;
+        tx.commit().await.map_err(internal)?;
+        Ok(request)
+    }
+
+    /// The pending requests of the issuing device's live invitations, oldest first.
+    pub async fn invite_pending(&self, issuer: &Id16, now: u64) -> Result<Vec<(Id16, [u8; 32], Vec<u8>)>, ApiError> {
+        let c = self.conn().await?;
+        let rows = c
+            .query(
+                "SELECT r.request_id, r.id_hash, r.body FROM invite_requests r JOIN invites i ON i.id_hash = r.id_hash
+                 WHERE i.issuer_device=$1 AND r.state=0 AND NOT i.revoked AND i.expires_at>$2
+                 ORDER BY r.created_at, r.request_id LIMIT $3",
+                &[&issuer.0.as_slice(), &(now as i64), &(cipher_wire::invite::MAX_POLL_REQUESTS as i64)],
+            )
+            .await
+            .map_err(internal)?;
+        rows.into_iter()
+            .map(|r| {
+                let hash: [u8; 32] = r.get::<_, Vec<u8>>(1).try_into().map_err(|_| ApiError::Internal)?;
+                Ok((id(r.get(0))?, hash, r.get::<_, Vec<u8>>(2)))
+            })
+            .collect()
+    }
+
+    /// Closes a pending request of one of `issuer`'s own invitations. A rejected request returns its slot. A request that is unknown, already
+    /// resolved, or belongs to someone else's invitation is the same `NotFound`.
+    pub async fn resolve_invite_request(&self, issuer: &Id16, request: &Id16, approved: bool) -> Result<(), ApiError> {
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        let row = tx
+            .query_opt(
+                "SELECT r.id_hash FROM invite_requests r JOIN invites i ON i.id_hash = r.id_hash
+                 WHERE r.request_id=$1 AND i.issuer_device=$2 AND r.state=0 FOR UPDATE OF r, i",
+                &[&request.0.as_slice(), &issuer.0.as_slice()],
+            )
+            .await
+            .map_err(internal)?
+            .ok_or(ApiError::NotFound)?;
+        let hash: Vec<u8> = row.get(0);
+        let state: i16 = if approved { 1 } else { 2 };
+        tx.execute("UPDATE invite_requests SET state=$1 WHERE request_id=$2", &[&state, &request.0.as_slice()]).await.map_err(internal)?;
+        if !approved {
+            tx.execute("UPDATE invites SET used=used-1 WHERE id_hash=$1 AND used>0", &[&hash.as_slice()]).await.map_err(internal)?;
+        }
+        tx.commit().await.map_err(internal)
+    }
+
+    /// Revokes one of `issuer`'s own invitations at once and drops its still-pending requests.
+    pub async fn revoke_invite(&self, issuer: &Id16, id_hash: &[u8; 32]) -> Result<(), ApiError> {
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        let n = tx
+            .execute("UPDATE invites SET revoked=true WHERE id_hash=$1 AND issuer_device=$2", &[&id_hash.as_slice(), &issuer.0.as_slice()])
+            .await
+            .map_err(internal)?;
+        if n == 0 {
+            return Err(ApiError::NotFound);
+        }
+        tx.execute("DELETE FROM invite_requests WHERE id_hash=$1 AND state=0", &[&id_hash.as_slice()]).await.map_err(internal)?;
+        tx.commit().await.map_err(internal)
+    }
+
     // ---- maintenance ----
 
     pub async fn purge(&self, now: u64) -> Result<(), ApiError> {
@@ -970,6 +1107,7 @@ impl PgStore {
             "DELETE FROM blobs WHERE expires_at<=$1",
             "DELETE FROM request_nonces WHERE expires_at<=$1",
             "DELETE FROM delivery_caps WHERE expires_at<=$1",
+            "DELETE FROM invites WHERE expires_at<=$1",
             "DELETE FROM rate_buckets WHERE updated<=$1::bigint - 86400",
         ] {
             tx.execute(sql, &[&n]).await.map_err(internal)?;

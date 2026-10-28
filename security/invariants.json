@@ -2628,6 +2628,177 @@
         }
       ],
       "gap": "Resumable/chunked upload (a cut upload restarts from zero) is not implemented (ST-046); an orphan can still arise if a response is lost AND the user then sends different bytes."
+    },
+    {
+      "id": "INV-001",
+      "statement": "An invitation link, and everything derived from it (lookup id, preview key, request MAC key), never reveals the secret in Debug output, logs or relay storage; the relay stores only SHA-256 of the identifier and ciphertext it cannot read.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Codec/crypto unit tests and relay integration tests against PostgreSQL. Design only beyond that: docs/INVITATIONS.md (ST-065).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "the_debug_output_never_contains_the_secret"
+        },
+        {
+          "kind": "rust",
+          "name": "secrets_are_random_and_never_printed"
+        },
+        {
+          "kind": "rust",
+          "name": "the_stored_identifier_is_a_domain_separated_hash_of_the_id"
+        },
+        {
+          "kind": "rust",
+          "name": "the_logs_never_contain_the_identifier_the_preview_or_a_request"
+        }
+      ],
+      "gap": "The link codec, key derivation and relay storage exist; the client engine, FFI and Android clipboard/screen protections are NOT built, so no link is created or shown to a user yet. Not independently reviewed (ST-005)."
+    },
+    {
+      "id": "INV-002",
+      "statement": "An invitation preview is authenticated encryption bound to ITS invitation: any change, truncation, another invitation's keys, or a blob moved to another identifier fails; nonces are never reused.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Unit tests of cipher-core::invite.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_preview_round_trips_and_is_not_readable_without_the_secret"
+        },
+        {
+          "kind": "rust",
+          "name": "any_change_to_a_preview_is_detected"
+        },
+        {
+          "kind": "rust",
+          "name": "a_preview_is_bound_to_its_invitation_id"
+        },
+        {
+          "kind": "rust",
+          "name": "nonces_are_never_reused_and_oversize_is_refused"
+        }
+      ],
+      "gap": "Only the primitive is implemented; the preview contents (group name, inviter identity) and their authentication of the inviter are not built. Not independently reviewed (ST-005)."
+    },
+    {
+      "id": "INV-003",
+      "statement": "A join request is accepted only with a MAC under the link-derived key: a relay that knows only the identifier, a different link, or a modified request cannot produce one that verifies.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Unit tests of cipher-core::invite.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_request_tag_proves_possession_of_the_link"
+        },
+        {
+          "kind": "rust",
+          "name": "the_request_tag_is_domain_separated"
+        }
+      ],
+      "gap": "The MAC exists; the canonical join-request format, the joiner's signature, the HPKE wrapping to the admin device and the issuer-side verification are NOT built."
+    },
+    {
+      "id": "INV-004",
+      "statement": "Only the issuing device can poll, resolve or revoke an invitation and its requests; every other caller, authenticated or not, gets the same answer as for a non-existent object.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Relay integration tests against PostgreSQL.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "only_the_issuing_device_can_poll_resolve_or_revoke_and_nothing_unauthenticated_can"
+        }
+      ],
+      "gap": "Relay side only; the client that polls and resolves does not exist yet. A compromised issuing device is out of scope (it can admit anyone it may admit today)."
+    },
+    {
+      "id": "INV-005",
+      "statement": "Unknown, expired, revoked and used-up invitations are indistinguishable to an unauthenticated caller (status, body and the point at which a flood is throttled), so identifiers cannot be enumerated or probed for state.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Relay integration tests against PostgreSQL; one source address and one clock.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "unknown_expired_revoked_and_used_up_invitations_are_one_indistinguishable_not_found"
+        },
+        {
+          "kind": "rust",
+          "name": "unauthenticated_calls_are_rate_limited_per_invitation_and_the_limit_is_no_oracle"
+        }
+      ],
+      "gap": "Measured from one source address with a manual clock; timing side channels and a relay operator watching lookups are not covered (a relay can see that an invitation was looked up and when)."
+    },
+    {
+      "id": "INV-006",
+      "statement": "An invitation can never admit more requests than its use limit, including under concurrency; a rejection returns its slot, an approval consumes it, and expiry or revocation ends the invitation and hides its pending requests.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Relay integration tests against PostgreSQL (12 concurrent requests, 3 slots).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "concurrent_requests_can_never_take_more_slots_than_the_invitation_has"
+        },
+        {
+          "kind": "rust",
+          "name": "a_use_slot_is_taken_once_and_a_rejection_returns_it"
+        },
+        {
+          "kind": "rust",
+          "name": "expiry_and_revocation_end_an_invitation_and_hide_its_pending_requests"
+        }
+      ],
+      "gap": "Relay-side counters only; the issuer's own local re-check before admitting, replay dedupe by nonce, and the MLS Add itself are NOT built."
+    },
+    {
+      "id": "INV-007",
+      "statement": "Invitation lifetime, use count and automatic admission are bounded in one place (at most 7 days and 100 uses; automatic admission at most 24 hours and 10 uses); links parse strictly and every input at the relay is size-bounded.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Unit tests of the policy and codec; relay validation tests.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "the_default_policy_is_valid_and_the_limits_are_enforced"
+        },
+        {
+          "kind": "rust",
+          "name": "malformed_links_are_refused"
+        },
+        {
+          "kind": "rust",
+          "name": "creation_is_bounded_and_validated"
+        },
+        {
+          "kind": "rust",
+          "name": "one_device_can_keep_only_a_bounded_number_of_live_invitations"
+        }
+      ],
+      "gap": "Relay and codec only; automatic admission is not implemented anywhere yet, so its caps are enforced only as a policy function."
     }
   ]
 }

@@ -99,6 +99,13 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | GR-009 | The home-relay log of a group that is still being polled is not purged for lack of commits (application messages never reach the home relay, so a quiet group has no commits for months); a log nobody touches for the idle period is still purged. | automated | 1 |
 | GR-010 | When the home relay of a cross-relay group stays unreachable or no longer recognises the group, the user is told once per streak (sooner for 'does not recognise'), membership changes are refused with a specific reason, messages keep flowing, and a successor group (new id, new home, every member must accept again) can be created; nothing is migrated or re-pointed silently, and a healthy group cannot be 'replaced'. | partial | 1 |
 | MR-016 | A retried attachment upload (same ciphertext, same uploader or delivery capability) returns the original blob id and stores nothing new, so a lost response cannot multiply unreferenced blobs; another uploader or different bytes never receive that id. | partial | 2 |
+| INV-001 | An invitation link, and everything derived from it (lookup id, preview key, request MAC key), never reveals the secret in Debug output, logs or relay storage; the relay stores only SHA-256 of the identifier and ciphertext it cannot read. | partial | 4 |
+| INV-002 | An invitation preview is authenticated encryption bound to ITS invitation: any change, truncation, another invitation's keys, or a blob moved to another identifier fails; nonces are never reused. | partial | 4 |
+| INV-003 | A join request is accepted only with a MAC under the link-derived key: a relay that knows only the identifier, a different link, or a modified request cannot produce one that verifies. | partial | 2 |
+| INV-004 | Only the issuing device can poll, resolve or revoke an invitation and its requests; every other caller, authenticated or not, gets the same answer as for a non-existent object. | partial | 1 |
+| INV-005 | Unknown, expired, revoked and used-up invitations are indistinguishable to an unauthenticated caller (status, body and the point at which a flood is throttled), so identifiers cannot be enumerated or probed for state. | partial | 2 |
+| INV-006 | An invitation can never admit more requests than its use limit, including under concurrency; a rejection returns its slot, an approval consumes it, and expiry or revocation ends the invitation and hides its pending requests. | partial | 3 |
+| INV-007 | Invitation lifetime, use count and automatic admission are bounded in one place (at most 7 days and 100 uses; automatic admission at most 24 hours and 10 uses); links parse strictly and every input at the relay is size-bounded. | partial | 4 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -1181,3 +1188,79 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 * **Tests:**
   * `a_retried_upload_returns_the_same_blob_instead_of_a_second_copy` (Rust)
   * `a_transfer_interrupted_by_the_network_creates_no_message_leaves_no_files_and_can_be_retried` (Rust)
+
+## INV-001 — An invitation link, and everything derived from it (lookup id, preview key, request MAC key), never reveals the secret in Debug output, logs or relay storage; the relay stores only SHA-256 of the identifier and ciphertext it cannot read.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Codec/crypto unit tests and relay integration tests against PostgreSQL. Design only beyond that: docs/INVITATIONS.md (ST-065).
+* **Known gap:** The link codec, key derivation and relay storage exist; the client engine, FFI and Android clipboard/screen protections are NOT built, so no link is created or shown to a user yet. Not independently reviewed (ST-005).
+* **Tests:**
+  * `the_debug_output_never_contains_the_secret` (Rust)
+  * `secrets_are_random_and_never_printed` (Rust)
+  * `the_stored_identifier_is_a_domain_separated_hash_of_the_id` (Rust)
+  * `the_logs_never_contain_the_identifier_the_preview_or_a_request` (Rust)
+
+## INV-002 — An invitation preview is authenticated encryption bound to ITS invitation: any change, truncation, another invitation's keys, or a blob moved to another identifier fails; nonces are never reused.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Unit tests of cipher-core::invite.
+* **Known gap:** Only the primitive is implemented; the preview contents (group name, inviter identity) and their authentication of the inviter are not built. Not independently reviewed (ST-005).
+* **Tests:**
+  * `a_preview_round_trips_and_is_not_readable_without_the_secret` (Rust)
+  * `any_change_to_a_preview_is_detected` (Rust)
+  * `a_preview_is_bound_to_its_invitation_id` (Rust)
+  * `nonces_are_never_reused_and_oversize_is_refused` (Rust)
+
+## INV-003 — A join request is accepted only with a MAC under the link-derived key: a relay that knows only the identifier, a different link, or a modified request cannot produce one that verifies.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Unit tests of cipher-core::invite.
+* **Known gap:** The MAC exists; the canonical join-request format, the joiner's signature, the HPKE wrapping to the admin device and the issuer-side verification are NOT built.
+* **Tests:**
+  * `a_request_tag_proves_possession_of_the_link` (Rust)
+  * `the_request_tag_is_domain_separated` (Rust)
+
+## INV-004 — Only the issuing device can poll, resolve or revoke an invitation and its requests; every other caller, authenticated or not, gets the same answer as for a non-existent object.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay integration tests against PostgreSQL.
+* **Known gap:** Relay side only; the client that polls and resolves does not exist yet. A compromised issuing device is out of scope (it can admit anyone it may admit today).
+* **Tests:**
+  * `only_the_issuing_device_can_poll_resolve_or_revoke_and_nothing_unauthenticated_can` (Rust)
+
+## INV-005 — Unknown, expired, revoked and used-up invitations are indistinguishable to an unauthenticated caller (status, body and the point at which a flood is throttled), so identifiers cannot be enumerated or probed for state.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay integration tests against PostgreSQL; one source address and one clock.
+* **Known gap:** Measured from one source address with a manual clock; timing side channels and a relay operator watching lookups are not covered (a relay can see that an invitation was looked up and when).
+* **Tests:**
+  * `unknown_expired_revoked_and_used_up_invitations_are_one_indistinguishable_not_found` (Rust)
+  * `unauthenticated_calls_are_rate_limited_per_invitation_and_the_limit_is_no_oracle` (Rust)
+
+## INV-006 — An invitation can never admit more requests than its use limit, including under concurrency; a rejection returns its slot, an approval consumes it, and expiry or revocation ends the invitation and hides its pending requests.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Relay integration tests against PostgreSQL (12 concurrent requests, 3 slots).
+* **Known gap:** Relay-side counters only; the issuer's own local re-check before admitting, replay dedupe by nonce, and the MLS Add itself are NOT built.
+* **Tests:**
+  * `concurrent_requests_can_never_take_more_slots_than_the_invitation_has` (Rust)
+  * `a_use_slot_is_taken_once_and_a_rejection_returns_it` (Rust)
+  * `expiry_and_revocation_end_an_invitation_and_hide_its_pending_requests` (Rust)
+
+## INV-007 — Invitation lifetime, use count and automatic admission are bounded in one place (at most 7 days and 100 uses; automatic admission at most 24 hours and 10 uses); links parse strictly and every input at the relay is size-bounded.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2, A4
+* **Scope tested:** Unit tests of the policy and codec; relay validation tests.
+* **Known gap:** Relay and codec only; automatic admission is not implemented anywhere yet, so its caps are enforced only as a policy function.
+* **Tests:**
+  * `the_default_policy_is_valid_and_the_limits_are_enforced` (Rust)
+  * `malformed_links_are_refused` (Rust)
+  * `creation_is_bounded_and_validated` (Rust)
+  * `one_device_can_keep_only_a_bounded_number_of_live_invitations` (Rust)

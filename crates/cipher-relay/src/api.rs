@@ -12,6 +12,8 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use cipher_wire::invite::{id_hash, CreateInviteRequest, InviteIdRequest, InviteLookupResponse, InvitePending, InvitePollResponse};
+use cipher_wire::invite::{InviteResolveRequest, InviteSubmitRequest, InviteSubmitResponse};
 use cipher_wire::limits::*;
 use cipher_wire::messages::*;
 use cipher_wire::Id16;
@@ -198,6 +200,12 @@ pub fn build_app(state: Arc<AppState>) -> Router {
         .route("/v1/deliver", post(anon_deliver))
         .route("/v1/intro/directory", post(intro_directory))
         .route("/v1/intro/key-package", post(intro_key_package))
+        .route("/v1/invites", post(invite_create))
+        .route("/v1/invites/lookup", post(invite_lookup))
+        .route("/v1/invites/request", post(invite_request))
+        .route("/v1/invites/pending", get(invite_pending))
+        .route("/v1/invites/resolve", post(invite_resolve))
+        .route("/v1/invites/revoke", post(invite_revoke))
         .route("/v1/groups/{tag}", get(group_state))
         .route("/v1/groups/{tag}/commit", post(group_commit))
         .route("/v1/home/{tag}/commit", post(home_commit))
@@ -660,6 +668,88 @@ async fn intro_key_package(State(st): S, req: Request<Body>) -> Result<Response,
     }
     let kp = st.store.pop_key_package(&target).await?.ok_or(ApiError::NotFound)?;
     Ok(Json(KeyPackageResponse { key_package: kp }).into_response())
+}
+
+// ---- invitations (docs/INVITATIONS.md §5) ----
+
+/// Authenticated: the issuing device creates an invitation. The relay stores only SHA-256 of the identifier and an opaque preview.
+async fn invite_create(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let me = authed(&st, &inc).await?;
+    let r: CreateInviteRequest = parse(&inc.body)?;
+    r.validate().map_err(|_| ApiError::BadRequest)?;
+    if !st.take("invite-create", &me.0, 1.0, 20.0, 20.0 / 3600.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    st.store.create_invite(&me, &id_hash(&r.id.0), &r.preview, r.lifetime_ms / 1000, r.max_uses, st.clock.now()).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Front of the two unauthenticated invitation calls: bounded per source address and per invitation (keyed by the hash, never the identifier).
+/// An unknown, expired, revoked or used-up invitation is one and the same `NotFound`, at the same cost.
+async fn invite_gate(st: &AppState, inc: &Incoming, id: &Id16) -> Result<[u8; 32], ApiError> {
+    let h = id_hash(&id.0);
+    if !st.take_ip("invite-ip", inc.ip, 1.0, 60.0, 2.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    if !st.take("invite-id", &h, 1.0, 30.0, 30.0 / 3600.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    Ok(h)
+}
+
+/// UNAUTHENTICATED. The AEAD preview of a live invitation, for whoever holds the link (the relay cannot read it).
+async fn invite_lookup(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let r: InviteIdRequest = parse(&inc.body)?;
+    let h = invite_gate(&st, &inc, &r.id).await?;
+    let preview = st.store.invite_preview(&h, st.clock.now()).await?;
+    Ok(Json(InviteLookupResponse { preview }).into_response())
+}
+
+/// UNAUTHENTICATED. Submit an opaque join request; this takes one use slot. The relay learns that someone asked, and when, nothing else.
+async fn invite_request(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, 2 * MAX_JSON_BODY_BYTES).await?;
+    let r: InviteSubmitRequest = parse(&inc.body)?;
+    r.validate().map_err(|_| ApiError::BadRequest)?;
+    let h = invite_gate(&st, &inc, &r.id).await?;
+    let request_id = st.store.submit_invite_request(&h, &r.body, st.clock.now()).await?;
+    Ok(Json(InviteSubmitResponse { request_id }).into_response())
+}
+
+/// Authenticated: the pending requests of the caller's own invitations. Another device's invitations are never visible.
+async fn invite_pending(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let me = authed(&st, &inc).await?;
+    if !st.take("invite-poll", &me.0, 1.0, 60.0, 1.0).await? {
+        return Err(ApiError::RateLimited);
+    }
+    let requests = st
+        .store
+        .invite_pending(&me, st.clock.now())
+        .await?
+        .into_iter()
+        .map(|(request_id, hash, body)| InvitePending { request_id, id_hash: cipher_wire::b64::encode(&hash), body })
+        .collect();
+    Ok(Json(InvitePollResponse { requests }).into_response())
+}
+
+/// Authenticated: the issuer approves or rejects one pending request of its own invitation. A rejection returns the slot.
+async fn invite_resolve(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let me = authed(&st, &inc).await?;
+    let r: InviteResolveRequest = parse(&inc.body)?;
+    st.store.resolve_invite_request(&me, &r.request_id, r.approved).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// Authenticated: the issuer revokes its own invitation now.
+async fn invite_revoke(State(st): S, req: Request<Body>) -> Result<Response, ApiError> {
+    let inc = read(req, MAX_JSON_BODY_BYTES).await?;
+    let me = authed(&st, &inc).await?;
+    let r: InviteIdRequest = parse(&inc.body)?;
+    st.store.revoke_invite(&me, &id_hash(&r.id.0)).await?;
+    Ok(StatusCode::NO_CONTENT.into_response())
 }
 
 /// UNAUTHENTICATED capability delivery. Abuse control is per capability and per (hashed) source address; the relay never learns who the sender is,
