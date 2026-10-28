@@ -1,7 +1,7 @@
 [advisories]
 # Compile-time-only transitive proc-macro (hax-lib-macros <- libcrux <- hpke-rs <- openmls_rust_crypto).
 # Unmaintained, no known vulnerability. Tracked in docs/SECURITY_TODO.md; re-evaluate on each OpenMLS bump.
-ignore = ["RUSTSEC-2026-0173", "RUSTSEC-2026-0330", "RUSTSEC-2026-0331", "RUSTSEC-2026-0387"]
+ignore = ["RUSTSEC-2026-0173", "RUSTSEC-2026-0330", "RUSTSEC-2026-0331", "RUSTSEC-2026-0387", "RUSTSEC-2026-0374"]
 # RUSTSEC-2026-0330 / -0331 (libcrux-kem 0.0.9: panics on short hybrid seeds/keys). libcrux-kem is in Cargo.lock only as an INACTIVE optional dependency of
 # the hpke-rs-libcrux backend, which Cipher does not build (it uses hpke-rs-rust-crypto). Evidence, 2026-10-10:
 #   cargo tree --workspace --all-features --target all -e all | grep -c libcrux-kem   ->  0
@@ -12,3 +12,7 @@ ignore = ["RUSTSEC-2026-0173", "RUSTSEC-2026-0330", "RUSTSEC-2026-0331", "RUSTSE
 # (cargo tree -i crypto-bigint). Cipher's only MLS ciphersuite is MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519 (crates/cipher-core/src/mls.rs): X25519 and Ed25519
 # are not implemented with crypto-bigint, and no Cipher code calls p256/ecdsa. The P-256 code is linked but unused by the suite we negotiate. No compatible upgrade
 # exists (the parent pins elliptic-curve 0.13). REMOVE this ignore when OpenMLS/hpke-rs move to elliptic-curve >= 0.14, or if a P-256 suite is ever enabled.
+# RUSTSEC-2026-0374 (basic-toml 0.1.10: UNMAINTAINED, no vulnerability). Reviewed exception, 2026-10-28 (ST-061).
+# Reached only through askama_derive <- askama <- uniffi_bindgen, i.e. the Kotlin-binding GENERATOR (the `cli`/`bindgen` features that run at build time).
+# Evidence: `cargo tree -p cipher-ffi -e normal -i basic-toml` prints nothing, so it is not in the shipped library's dependency graph.
+# Remove when uniffi_bindgen moves off it.
