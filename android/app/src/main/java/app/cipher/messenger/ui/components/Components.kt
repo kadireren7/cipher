@@ -113,7 +113,7 @@ fun SecureDialog(
 @Composable
 fun TrustBadge(trust: TrustStateFfi, modifier: Modifier = Modifier) {
     val (icon, tint, label) = when (trust) {
-        TrustStateFfi.VERIFIED -> Triple(Icons.Default.Verified, MaterialTheme.colorScheme.tertiary, "Verified")
+        TrustStateFfi.VERIFIED -> Triple(Icons.Default.Verified, app.cipher.messenger.ui.theme.CipherTheme.colors.verified, "Verified")
         TrustStateFfi.UNVERIFIED -> Triple(Icons.Default.GppMaybe, MaterialTheme.colorScheme.onSurfaceVariant, "Not verified")
         TrustStateFfi.IDENTITY_CHANGED -> Triple(Icons.Default.ErrorOutline, MaterialTheme.colorScheme.error, "Identity changed")
     }

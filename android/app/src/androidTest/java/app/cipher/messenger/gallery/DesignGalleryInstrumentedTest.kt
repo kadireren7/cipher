@@ -199,7 +199,11 @@ class DesignGalleryInstrumentedTest {
         rule.setContent {
             val d = LocalDensity.current
             CompositionLocalProvider(LocalDensity provides Density(d.density, fontScale)) {
-                CipherTheme(dark) { Column(Modifier.width(widthDp.dp).fillMaxWidth()) { content() } }
+                CipherTheme(dark) {
+                    androidx.compose.material3.Surface(color = MaterialTheme.colorScheme.background) {
+                        Column(Modifier.width(widthDp.dp).fillMaxWidth()) { content() }
+                    }
+                }
             }
         }
         rule.waitForIdle()
