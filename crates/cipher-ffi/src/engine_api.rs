@@ -275,6 +275,50 @@ impl CipherEngine {
         self.with(|e| e.add_contact_by_card(&card, &name, scanned_in_person).map(|c| ContactFfi::from(&c)))
     }
 
+    // ---- invitations (docs/INVITATIONS.md) ----
+
+    /// Creates an invitation link for a group the caller owns or administers (`automatic`: admit requesters without a person deciding, capped at 10
+    /// uses and 24 hours; the default is an admin approving each request). The link is returned once.
+    pub fn create_invite(&self, conversation_id: String, lifetime_ms: u64, max_uses: u32, automatic: bool) -> R<InviteCreatedFfi> {
+        let c = v::id(&conversation_id, "conversation id")?;
+        let mode = if automatic { cipher_wire::invite::JoinMode::Auto } else { cipher_wire::invite::JoinMode::Approval };
+        let policy = cipher_wire::invite::InvitePolicy { lifetime_ms, max_uses, mode };
+        self.with(|e| e.create_invite(&c, policy).map(|i| InviteCreatedFfi::from(&i)))
+    }
+
+    pub fn list_invites(&self, conversation_id: String) -> R<Vec<InviteInfoFfi>> {
+        let c = v::id(&conversation_id, "conversation id")?;
+        self.with(|e| e.list_invites(&c).map(|l| l.iter().map(InviteInfoFfi::from).collect()))
+    }
+
+    pub fn revoke_invite(&self, invite_id: String) -> R<()> {
+        let i = v::id(&invite_id, "invite id")?;
+        self.with(|e| e.revoke_invite(&i))
+    }
+
+    /// What a link holder may see before asking to join (read from the inviter's relay; the relay cannot read it).
+    pub fn preview_invite(&self, link: String) -> R<InvitePreviewFfi> {
+        bounded(&link, cipher_wire::invite::MAX_LINK_LEN, "invitation link")?;
+        self.with(|e| e.preview_invite(&link).map(|p| InvitePreviewFfi::from(&p)))
+    }
+
+    /// Asks to join. Returns the relay's request id; nothing is joined until an admin approves and the Welcome arrives with a later sync.
+    pub fn request_to_join(&self, link: String, display_name: String) -> R<String> {
+        bounded(&link, cipher_wire::invite::MAX_LINK_LEN, "invitation link")?;
+        bounded(&display_name, v::MAX_NAME_BYTES, "name")?;
+        self.with(|e| e.request_to_join(&link, &display_name).map(|r| r.to_hex()))
+    }
+
+    /// Fetches and verifies new join requests; returns every request waiting for an admin's decision.
+    pub fn poll_join_requests(&self) -> R<Vec<JoinRequestFfi>> {
+        self.with(|e| e.poll_join_requests().map(|l| l.iter().map(JoinRequestFfi::from).collect()))
+    }
+
+    pub fn resolve_join_request(&self, request_id: String, approve: bool) -> R<()> {
+        let r = v::id(&request_id, "request id")?;
+        self.with(|e| e.resolve_join_request(&r, approve))
+    }
+
     /// Verify an existing contact with their QR code (must be that contact's own code).
     pub fn verify_contact_by_qr(&self, account_id: String, qr_payload: String) -> R<ContactFfi> {
         let a = v::id(&account_id, "account id")?;

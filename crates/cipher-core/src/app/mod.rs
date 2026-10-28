@@ -4,6 +4,7 @@ pub mod codec;
 pub mod engine;
 mod engine_att;
 mod engine_home;
+mod engine_invite;
 mod engine_msg;
 mod engine_remote;
 pub mod groupmeta;
@@ -14,3 +15,4 @@ pub mod transport;
 pub use engine::{Engine, EngineConfig, PublicIdentity, Settings, VaultStatus};
 #[cfg(any(test, feature = "insecure-test-support"))]
 pub use engine_home::HomeForgery;
+pub use engine_invite::{InviteCreated, InviteInfo, InvitePreview, JoinRequestView};

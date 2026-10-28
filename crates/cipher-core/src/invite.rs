@@ -5,7 +5,9 @@
 //!
 //! * `id`    : what the relay is asked for (the relay stores only `id_hash(id)`);
 //! * `k_enc` : the AEAD key of the PREVIEW, so the relay cannot read the group name or the inviter;
-//! * `k_mac` : binds a join request to possession of the link, so a relay that merely knows `id` cannot forge a request the admin would accept.
+//! * `k_req` : the AEAD key of a JOIN REQUEST. Producing a request that opens under it proves possession of the link, and the relay (which knows
+//!   `id` but not `s`) can neither read a request nor forge one the issuer would accept. The request itself is additionally signed by the joiner's
+//!   identity key (see `app::engine_invite`), so a link holder cannot add somebody else's account.
 //!
 //! No MLS group secret, epoch secret or private identity key is ever an input or an output here.
 use crate::error::{Result, SecurityError};
@@ -14,7 +16,6 @@ use chacha20poly1305::aead::{Aead, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, KeyInit, Nonce};
 use cipher_wire::invite::{SECRET_LEN, VERSION};
 use hkdf::Hkdf;
-use hmac::{Hmac, Mac};
 use sha2::Sha256;
 use zeroize::Zeroizing;
 
@@ -23,6 +24,8 @@ const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
 /// A preview is a group name, a display name and a public identity: kilobytes would only be an attempt to hide something in it.
 pub const MAX_PREVIEW_LEN: usize = 2048;
+/// A join request is a signed contact card plus a short name: well under this.
+pub const MAX_REQUEST_LEN: usize = 4096;
 
 /// The invitation secret. Zeroised on drop; `Debug` is redacted.
 pub struct InviteSecret(Zeroizing<[u8; SECRET_LEN]>);
@@ -50,19 +53,19 @@ impl InviteSecret {
         let hk = Hkdf::<Sha256>::new(Some(SALT), self.0.as_slice());
         let mut id = [0u8; 16];
         let mut k_enc = Zeroizing::new([0u8; 32]);
-        let mut k_mac = Zeroizing::new([0u8; 32]);
+        let mut k_req = Zeroizing::new([0u8; 32]);
         // Output lengths are far below the HKDF limit (255 * 32 bytes): these cannot fail.
         let _ = hk.expand(b"cipher-inv-v1/id", &mut id);
         let _ = hk.expand(b"cipher-inv-v1/enc", k_enc.as_mut_slice());
-        let _ = hk.expand(b"cipher-inv-v1/mac", k_mac.as_mut_slice());
-        InviteKeys { id, k_enc, k_mac }
+        let _ = hk.expand(b"cipher-inv-v1/req", k_req.as_mut_slice());
+        InviteKeys { id, k_enc, k_req }
     }
 }
 
 pub struct InviteKeys {
     id: [u8; 16],
     k_enc: Zeroizing<[u8; 32]>,
-    k_mac: Zeroizing<[u8; 32]>,
+    k_req: Zeroizing<[u8; 32]>,
 }
 
 impl core::fmt::Debug for InviteKeys {
@@ -77,23 +80,22 @@ impl InviteKeys {
         &self.id
     }
 
-    fn aad(&self) -> [u8; 17] {
-        let mut a = [0u8; 17];
+    /// `id || version || kind`: ties a blob to ONE invitation and to ONE purpose, so a preview can never be replayed as a request or vice versa.
+    fn aad(&self, kind: u8) -> [u8; 18] {
+        let mut a = [0u8; 18];
         a[..16].copy_from_slice(&self.id);
         a[16] = VERSION;
+        a[17] = kind;
         a
     }
 
-    /// `nonce(12) || ChaCha20-Poly1305(k_enc, plaintext, aad = id || version)`. The AAD ties the blob to ONE invitation: a preview copied to
-    /// another invitation does not open.
-    pub fn seal_preview(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
-        if plaintext.len() > MAX_PREVIEW_LEN {
-            return Err(SecurityError::Malformed("invitation preview too large"));
+    fn seal(&self, key: &[u8; 32], kind: u8, plaintext: &[u8], max: usize) -> Result<Vec<u8>> {
+        if plaintext.len() > max {
+            return Err(SecurityError::Malformed("invitation blob too large"));
         }
         let nonce: [u8; NONCE_LEN] = rng::array()?;
-        let cipher = ChaCha20Poly1305::new(Key::from_slice(self.k_enc.as_slice()));
-        let ct = cipher
-            .encrypt(Nonce::from_slice(&nonce), Payload { msg: plaintext, aad: &self.aad() })
+        let ct = ChaCha20Poly1305::new(Key::from_slice(key))
+            .encrypt(Nonce::from_slice(&nonce), Payload { msg: plaintext, aad: &self.aad(kind) })
             .map_err(|_| SecurityError::CryptoAuthFailed)?;
         let mut out = Vec::with_capacity(NONCE_LEN + ct.len());
         out.extend_from_slice(&nonce);
@@ -101,33 +103,32 @@ impl InviteKeys {
         Ok(out)
     }
 
-    pub fn open_preview(&self, blob: &[u8]) -> Result<Vec<u8>> {
-        if blob.len() < NONCE_LEN + TAG_LEN || blob.len() > NONCE_LEN + MAX_PREVIEW_LEN + TAG_LEN {
-            return Err(SecurityError::Malformed("invitation preview size"));
+    fn open(&self, key: &[u8; 32], kind: u8, blob: &[u8], max: usize) -> Result<Vec<u8>> {
+        if blob.len() < NONCE_LEN + TAG_LEN || blob.len() > NONCE_LEN + max + TAG_LEN {
+            return Err(SecurityError::Malformed("invitation blob size"));
         }
         let (nonce, ct) = blob.split_at(NONCE_LEN);
-        ChaCha20Poly1305::new(Key::from_slice(self.k_enc.as_slice()))
-            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: &self.aad() })
+        ChaCha20Poly1305::new(Key::from_slice(key))
+            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: &self.aad(kind) })
             .map_err(|_| SecurityError::CryptoAuthFailed)
     }
 
-    fn mac(&self, canonical: &[u8]) -> Hmac<Sha256> {
-        // HMAC accepts any key length: this cannot fail.
-        let mut m =
-            <Hmac<Sha256> as Mac>::new_from_slice(self.k_mac.as_slice()).unwrap_or_else(|_| unreachable!("HMAC takes any key length"));
-        m.update(b"cipher-join-v1\0");
-        m.update(canonical);
-        m
+    /// `nonce(12) || ChaCha20-Poly1305(k_enc, plaintext, aad = id || version || 'P')`.
+    pub fn seal_preview(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.seal(&self.k_enc, b'P', plaintext, MAX_PREVIEW_LEN)
     }
 
-    /// `HMAC-SHA256(k_mac, "cipher-join-v1\0" || canonical_request)`: proof that the requester holds the link.
-    pub fn request_tag(&self, canonical: &[u8]) -> [u8; 32] {
-        self.mac(canonical).finalize().into_bytes().into()
+    pub fn open_preview(&self, blob: &[u8]) -> Result<Vec<u8>> {
+        self.open(&self.k_enc, b'P', blob, MAX_PREVIEW_LEN)
     }
 
-    /// Constant-time verification. A wrong length, wrong key or any change to the request fails identically.
-    pub fn verify_request_tag(&self, canonical: &[u8], tag: &[u8]) -> Result<()> {
-        self.mac(canonical).verify_slice(tag).map_err(|_| SecurityError::CryptoAuthFailed)
+    /// `nonce(12) || ChaCha20-Poly1305(k_req, plaintext, aad = id || version || 'R')`. Only a holder of the link can produce one that opens.
+    pub fn seal_request(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
+        self.seal(&self.k_req, b'R', plaintext, MAX_REQUEST_LEN)
+    }
+
+    pub fn open_request(&self, blob: &[u8]) -> Result<Vec<u8>> {
+        self.open(&self.k_req, b'R', blob, MAX_REQUEST_LEN)
     }
 }
 
@@ -147,16 +148,16 @@ mod tests {
         let again = keys(1);
         assert_eq!(a.id(), again.id());
         assert_eq!(a.k_enc.as_slice(), again.k_enc.as_slice());
-        assert_eq!(a.k_mac.as_slice(), again.k_mac.as_slice());
+        assert_eq!(a.k_req.as_slice(), again.k_req.as_slice());
         let b = keys(2);
         assert_ne!(a.id(), b.id());
         assert_ne!(a.k_enc.as_slice(), b.k_enc.as_slice());
-        assert_ne!(a.k_mac.as_slice(), b.k_mac.as_slice());
-        // the preview key and the MAC key are independent, and neither is the id or the secret
-        assert_ne!(a.k_enc.as_slice(), a.k_mac.as_slice());
+        assert_ne!(a.k_req.as_slice(), b.k_req.as_slice());
+        // the preview key and the request key are independent, and neither is the id or the secret
+        assert_ne!(a.k_enc.as_slice(), a.k_req.as_slice());
         assert_ne!(&a.k_enc[..16], a.id().as_slice());
         assert_ne!(&a.k_enc[..16], [1u8; 16].as_slice());
-        assert_ne!(&a.k_mac[..16], [1u8; 16].as_slice());
+        assert_ne!(&a.k_req[..16], [1u8; 16].as_slice());
     }
 
     #[test]
@@ -197,7 +198,7 @@ mod tests {
         // Same key material but a different id (as if a relay moved the blob to another invitation row) must not open.
         let k = keys(1);
         let blob = k.seal_preview(b"x").unwrap();
-        let moved = InviteKeys { id: [9u8; 16], k_enc: Zeroizing::new(*k.k_enc), k_mac: Zeroizing::new(*k.k_mac) };
+        let moved = InviteKeys { id: [9u8; 16], k_enc: Zeroizing::new(*k.k_enc), k_req: Zeroizing::new(*k.k_req) };
         assert!(moved.open_preview(&blob).is_err());
     }
 
@@ -212,30 +213,35 @@ mod tests {
     }
 
     #[test]
-    fn a_request_tag_proves_possession_of_the_link() {
+    fn a_request_opens_only_for_a_holder_of_the_link() {
         let k = keys(1);
-        let req = b"canonical request bytes";
-        let tag = k.request_tag(req);
-        assert!(k.verify_request_tag(req, &tag).is_ok());
-        // a relay that only knows the id (not s) derives different keys and cannot produce a tag the issuer accepts
-        let relay_guess = keys(2).request_tag(req);
-        assert!(k.verify_request_tag(req, &relay_guess).is_err());
-        // any change to the request, and any bad tag length, fail the same way
-        assert!(k.verify_request_tag(b"canonical request byteS", &tag).is_err());
-        assert!(k.verify_request_tag(req, &tag[..31]).is_err());
-        assert!(k.verify_request_tag(req, &[0u8; 32]).is_err());
-        assert!(k.verify_request_tag(req, &[]).is_err());
-        let mut flipped = tag;
-        flipped[0] ^= 1;
-        assert!(k.verify_request_tag(req, &flipped).is_err());
+        let req = b"signed join request";
+        let blob = k.seal_request(req).unwrap();
+        assert_eq!(k.open_request(&blob).unwrap(), req);
+        // a relay that only knows the id (not s) derives different keys: it can neither read nor forge a request the issuer would accept
+        assert!(keys(2).open_request(&blob).is_err());
+        assert!(k.open_request(&keys(2).seal_request(req).unwrap()).is_err());
+        for i in 0..blob.len() {
+            let mut t = blob.clone();
+            t[i] ^= 1;
+            assert!(k.open_request(&t).is_err(), "byte {i}");
+        }
+        for n in 0..blob.len() {
+            assert!(k.open_request(&blob[..n]).is_err(), "truncated to {n}");
+        }
+        assert!(k.seal_request(&vec![0u8; MAX_REQUEST_LEN]).is_ok());
+        assert!(k.seal_request(&vec![0u8; MAX_REQUEST_LEN + 1]).is_err());
     }
 
     #[test]
-    fn the_request_tag_is_domain_separated() {
-        // It is not the bare HMAC of the message under the same key: the label keeps it from being a tag for anything else, and vice versa.
+    fn a_preview_and_a_request_cannot_stand_in_for_each_other() {
         let k = keys(1);
-        let mut bare = <Hmac<Sha256> as Mac>::new_from_slice(k.k_mac.as_slice()).unwrap();
-        bare.update(b"m");
-        assert_ne!(k.request_tag(b"m").as_slice(), bare.finalize().into_bytes().as_slice());
+        let preview = k.seal_preview(b"x").unwrap();
+        let request = k.seal_request(b"x").unwrap();
+        assert!(k.open_request(&preview).is_err(), "a preview is not a request");
+        assert!(k.open_preview(&request).is_err(), "a request is not a preview");
+        // even with the SAME key, the purpose byte in the AAD separates them
+        let same_key = k.seal(&k.k_enc, b'R', b"x", MAX_REQUEST_LEN).unwrap();
+        assert!(k.open_preview(&same_key).is_err());
     }
 }

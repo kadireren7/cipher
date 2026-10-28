@@ -2656,7 +2656,7 @@
           "name": "the_logs_never_contain_the_identifier_the_preview_or_a_request"
         }
       ],
-      "gap": "The link codec, key derivation and relay storage exist; the client engine, FFI and Android clipboard/screen protections are NOT built, so no link is created or shown to a user yet. Not independently reviewed (ST-005)."
+      "gap": "The engine, relay and codec exist and are tested; FFI and the Android clipboard/screen protections are NOT built, so no link is shown to a user yet. Not independently reviewed (ST-005)."
     },
     {
       "id": "INV-002",
@@ -2685,28 +2685,32 @@
           "name": "nonces_are_never_reused_and_oversize_is_refused"
         }
       ],
-      "gap": "Only the primitive is implemented; the preview contents (group name, inviter identity) and their authentication of the inviter are not built. Not independently reviewed (ST-005)."
+      "gap": "The preview's contents are the issuer's own unauthenticated claims (group name, inviter name and key): they are not proof of who issued the link; identity is established by the safety-number comparison after joining. Not independently reviewed (ST-005)."
     },
     {
       "id": "INV-003",
-      "statement": "A join request is accepted only with a MAC under the link-derived key: a relay that knows only the identifier, a different link, or a modified request cannot produce one that verifies.",
+      "statement": "A join request opens only under the key derived from the invitation link: a relay that knows only the identifier, a different link, or a modified request cannot produce one the issuer accepts, and a request can never be mistaken for a preview or the reverse.",
       "status": "partial",
       "threats": [
         "A2",
         "A4"
       ],
-      "scope": "Unit tests of cipher-core::invite.",
+      "scope": "Unit tests of cipher-core::invite and engine tests against two relays and PostgreSQL.",
       "tests": [
         {
           "kind": "rust",
-          "name": "a_request_tag_proves_possession_of_the_link"
+          "name": "a_request_opens_only_for_a_holder_of_the_link"
         },
         {
           "kind": "rust",
-          "name": "the_request_tag_is_domain_separated"
+          "name": "a_preview_and_a_request_cannot_stand_in_for_each_other"
+        },
+        {
+          "kind": "rust",
+          "name": "a_request_sealed_under_a_different_link_is_dropped"
         }
       ],
-      "gap": "The MAC exists; the canonical join-request format, the joiner's signature, the HPKE wrapping to the admin device and the issuer-side verification are NOT built."
+      "gap": "Confidentiality of a request rests on the link secret, not on a key of the issuing device: whoever later obtains the link AND the relay's stored requests can read them (no forward secrecy). HPKE to a device key needs a static device encryption key that does not exist yet."
     },
     {
       "id": "INV-004",
@@ -2723,7 +2727,7 @@
           "name": "only_the_issuing_device_can_poll_resolve_or_revoke_and_nothing_unauthenticated_can"
         }
       ],
-      "gap": "Relay side only; the client that polls and resolves does not exist yet. A compromised issuing device is out of scope (it can admit anyone it may admit today)."
+      "gap": "A compromised issuing device is out of scope (it can admit anyone it may admit today). The Android client that polls and resolves does not exist yet."
     },
     {
       "id": "INV-005",
@@ -2769,7 +2773,7 @@
           "name": "expiry_and_revocation_end_an_invitation_and_hide_its_pending_requests"
         }
       ],
-      "gap": "Relay-side counters only; the issuer's own local re-check before admitting, replay dedupe by nonce, and the MLS Add itself are NOT built."
+      "gap": "Relay counters and the issuer's local re-check are tested; a relay that DROPS requests (liveness) or reports different counts to different parties is not defended against; Android UI not built."
     },
     {
       "id": "INV-007",
@@ -2798,7 +2802,133 @@
           "name": "one_device_can_keep_only_a_bounded_number_of_live_invitations"
         }
       ],
-      "gap": "Relay and codec only; automatic admission is not implemented anywhere yet, so its caps are enforced only as a policy function."
+      "gap": "Automatic admission is implemented in the engine and tested for its caps; its use from the Android UI is not built, and its higher risk (first requesters in) is documented, not removed."
+    },
+    {
+      "id": "INV-008",
+      "statement": "Nobody can be admitted through somebody else's account: a join request must be signed by the identity key named in the attached contact card, over this invitation's id and a fresh nonce, so a link holder cannot add a victim using the victim's public card.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Engine tests against two relays and PostgreSQL (a request signed by another key is dropped and its slot returned).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_link_holder_cannot_get_somebody_elses_account_added_with_their_public_card"
+        }
+      ],
+      "gap": "Possession of the card owner's identity key is what is proven; a joiner who really controls an account can still ask. Not independently reviewed (ST-005)."
+    },
+    {
+      "id": "INV-009",
+      "statement": "A link never admits anyone by itself: the issuing admin approves, or automatic admission applies its caps; a rejected request adds nobody and returns its slot; the same nonce or account cannot be admitted twice; an account already in the group is refused.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Engine tests against two relays and PostgreSQL.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_link_holder_on_the_same_relay_joins_after_approval_and_sees_no_earlier_history"
+        },
+        {
+          "kind": "rust",
+          "name": "a_rejection_returns_the_slot_and_the_requester_is_not_added"
+        },
+        {
+          "kind": "rust",
+          "name": "replaying_a_captured_request_does_not_admit_twice_or_take_a_second_place"
+        },
+        {
+          "kind": "rust",
+          "name": "an_account_that_is_already_a_member_cannot_be_admitted_again"
+        },
+        {
+          "kind": "rust",
+          "name": "automatic_admission_admits_within_its_caps_and_only_the_first_requester_for_a_single_use"
+        }
+      ],
+      "gap": "A forwarded or stolen link lets its holder ASK; in approval mode the admin must compare the requester out of band, in automatic mode the first holders within the limits get in (documented in INVITATIONS.md \u00a710)."
+    },
+    {
+      "id": "INV-010",
+      "statement": "A member admitted through an invitation gets no access to messages sent before the admission: the Welcome opens the group at the epoch of the Add.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Engine test through the real MLS Add and Welcome (a message sent before the admission is not readable by the new member).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_link_holder_on_the_same_relay_joins_after_approval_and_sees_no_earlier_history"
+        }
+      ],
+      "gap": "This is the property of MLS and the per-epoch history keys (HISTORY_REVOCATION.md), tested end to end for one join; not tested over many epochs or with a malicious relay delaying the Welcome."
+    },
+    {
+      "id": "INV-011",
+      "statement": "A revoked, expired or used-up invitation admits nobody, including a request that was already waiting.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Engine tests against two relays and PostgreSQL.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_revoked_or_expired_invitation_cannot_admit_even_a_request_already_waiting"
+        },
+        {
+          "kind": "rust",
+          "name": "a_used_up_invitation_admits_nobody_else"
+        }
+      ],
+      "gap": "Expiry is checked against the issuing device's clock; a device with a wrong clock admits late or early."
+    },
+    {
+      "id": "INV-012",
+      "statement": "Only an owner or admin can create an invitation or decide a request; one-to-one conversations have no invitation links; automatic admission cannot exceed 10 uses and 24 hours.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Engine tests; the MLS Add itself is additionally authorised by every receiver (GROUP_SECURITY.md \u00a73).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "only_an_owner_or_admin_can_create_an_invitation_or_decide_a_request"
+        }
+      ],
+      "gap": "A compromised admin device can admit anyone it may admit today."
+    },
+    {
+      "id": "INV-013",
+      "statement": "A group without a home relay never admits a joiner whose account is on another relay, and refuses before any contact is stored or any commit is attempted; a group with a home relay does admit one, through the existing cross-relay Add and Welcome.",
+      "status": "partial",
+      "threats": [
+        "A2",
+        "A4"
+      ],
+      "scope": "Engine tests with two relays and two PostgreSQL databases.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_link_holder_on_another_relay_cannot_join_a_group_that_has_no_home_relay"
+        },
+        {
+          "kind": "rust",
+          "name": "a_link_holder_on_another_relay_joins_a_group_that_has_a_home_relay"
+        }
+      ],
+      "gap": "Cross-relay groups are experimental and self-reviewed only (ST-005, ST-051..054); tested in-process, not over Tor or on devices."
     }
   ]
 }

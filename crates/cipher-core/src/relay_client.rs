@@ -315,6 +315,47 @@ impl RelayApi<'_> {
         Ok(r.key_package)
     }
 
+    // ---- invitations (docs/INVITATIONS.md §5) ----
+
+    /// Authenticated (the issuing device, at its own relay): creates an invitation. The relay stores the preview ciphertext and SHA-256 of `id`.
+    pub fn invite_create(&self, id: Id16, preview: Vec<u8>, lifetime_ms: u64, max_uses: u32) -> Result<()> {
+        let req = cipher_wire::invite::CreateInviteRequest { id, preview, lifetime_ms, max_uses };
+        req.validate().map_err(|_| SecurityError::Malformed("invitation"))?;
+        self.send_signed("POST", "/v1/invites", enc(&req)?).map(|_| ())
+    }
+
+    /// UNAUTHENTICATED (link holder → the issuer's relay, i.e. `self.endpoint`): the AEAD preview of a live invitation.
+    pub fn invite_lookup(&self, id: &Id16) -> Result<Vec<u8>> {
+        let r: cipher_wire::invite::InviteLookupResponse =
+            json(&self.send_unauth("POST", "/v1/invites/lookup", enc(&cipher_wire::invite::InviteIdRequest { id: *id })?)?)?;
+        Ok(r.preview)
+    }
+
+    /// UNAUTHENTICATED: submit an opaque (sealed) join request; this takes one use slot at the relay.
+    pub fn invite_submit(&self, id: &Id16, body: Vec<u8>) -> Result<Id16> {
+        let req = cipher_wire::invite::InviteSubmitRequest { id: *id, body };
+        req.validate().map_err(|_| SecurityError::Malformed("join request"))?;
+        let r: cipher_wire::invite::InviteSubmitResponse = json(&self.send_unauth("POST", "/v1/invites/request", enc(&req)?)?)?;
+        Ok(r.request_id)
+    }
+
+    /// Authenticated: the pending requests of this device's own invitations.
+    pub fn invite_pending(&self) -> Result<Vec<cipher_wire::invite::InvitePending>> {
+        let r: cipher_wire::invite::InvitePollResponse = json(&self.send_signed("GET", "/v1/invites/pending", Vec::new())?)?;
+        Ok(r.requests)
+    }
+
+    /// Authenticated: closes one pending request. A rejection returns its slot at the relay.
+    pub fn invite_resolve(&self, request_id: Id16, approved: bool) -> Result<()> {
+        self.send_signed("POST", "/v1/invites/resolve", enc(&cipher_wire::invite::InviteResolveRequest { request_id, approved })?)
+            .map(|_| ())
+    }
+
+    /// Authenticated: revokes one of this device's invitations at once.
+    pub fn invite_revoke(&self, id: &Id16) -> Result<()> {
+        self.send_signed("POST", "/v1/invites/revoke", enc(&cipher_wire::invite::InviteIdRequest { id: *id })?).map(|_| ())
+    }
+
     pub fn revoke_caps(&self, caps: Vec<Id16>, grace_secs: Option<u64>) -> Result<()> {
         let req = RevokeCapsRequest { caps, grace_secs };
         req.validate().map_err(|_| SecurityError::Malformed("revoke caps"))?;

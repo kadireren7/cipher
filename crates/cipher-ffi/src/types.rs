@@ -252,6 +252,97 @@ impl From<&Contact> for ContactFfi {
     }
 }
 
+// ---- invitations (docs/INVITATIONS.md). No type carries the invitation secret: the link is returned once, at creation, and nowhere else.
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InviteCreatedFfi {
+    pub invite_id: String,
+    /// Shown once (QR code / copy). Treat it like a password: whoever holds it may ask to join.
+    pub link: String,
+    pub expires_ms: u64,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InviteInfoFfi {
+    pub invite_id: String,
+    pub conversation_id: String,
+    pub expires_ms: u64,
+    pub max_uses: u32,
+    pub admitted: u32,
+    pub auto_admission: bool,
+    pub revoked: bool,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InvitePreviewFfi {
+    pub group_name: String,
+    pub inviter_name: String,
+    pub inviter_account_id: String,
+    pub auto_admission: bool,
+    pub expires_ms: u64,
+    /// False: only people on the inviter's relay can join this group.
+    pub accepts_other_relays: bool,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct JoinRequestFfi {
+    pub request_id: String,
+    pub invite_id: String,
+    pub conversation_id: String,
+    pub account_id: String,
+    pub name: String,
+    /// Compare with the person out of band before approving.
+    pub safety_number: String,
+    pub received_ms: u64,
+}
+
+impl From<&cipher_core::app::InviteCreated> for InviteCreatedFfi {
+    fn from(c: &cipher_core::app::InviteCreated) -> Self {
+        Self { invite_id: c.id.to_hex(), link: c.link.clone(), expires_ms: c.expires_ms }
+    }
+}
+
+impl From<&cipher_core::app::InviteInfo> for InviteInfoFfi {
+    fn from(i: &cipher_core::app::InviteInfo) -> Self {
+        Self {
+            invite_id: i.id.to_hex(),
+            conversation_id: i.conversation.to_hex(),
+            expires_ms: i.expires_ms,
+            max_uses: i.max_uses,
+            admitted: i.admitted,
+            auto_admission: i.auto_admission,
+            revoked: i.revoked,
+        }
+    }
+}
+
+impl From<&cipher_core::app::InvitePreview> for InvitePreviewFfi {
+    fn from(p: &cipher_core::app::InvitePreview) -> Self {
+        Self {
+            group_name: p.group_name.clone(),
+            inviter_name: p.inviter_name.clone(),
+            inviter_account_id: p.inviter_account.to_hex(),
+            auto_admission: p.auto_admission,
+            expires_ms: p.expires_ms,
+            accepts_other_relays: p.accepts_other_relays,
+        }
+    }
+}
+
+impl From<&cipher_core::app::JoinRequestView> for JoinRequestFfi {
+    fn from(r: &cipher_core::app::JoinRequestView) -> Self {
+        Self {
+            request_id: r.request_id.to_hex(),
+            invite_id: r.invite.to_hex(),
+            conversation_id: r.conversation.to_hex(),
+            account_id: r.account.to_hex(),
+            name: r.name.clone(),
+            safety_number: r.safety_number.clone(),
+            received_ms: r.received_ms,
+        }
+    }
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct ConversationFfi {
     pub id: String,

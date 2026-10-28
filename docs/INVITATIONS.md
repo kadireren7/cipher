@@ -1,6 +1,8 @@
 # Private invitations — design (ST-065)
 
-**Status (2026-10-29): partially implemented, NOT usable by a user yet.** Done and tested: the link codec and policy limits (`cipher-wire`), the key derivation, AEAD preview and request MAC (`cipher-core::invite`), and the relay storage and six endpoints with PostgreSQL tests (§11 steps 1–2, invariants INV-001..007). **Not built:** the client engine (create, lookup, join-request signing and HPKE wrapping, issuer-side verification and the MLS Add, §11 step 3), FFI, the cross-relay E2E and malicious-client tests (steps 4–5) and every Android screen (step 6). **No invitation button may ship before steps 3–5 pass.** Self-reviewed; it needs the independent review (ST-005) like every other composition here.
+**Status (2026-10-29): the protocol is implemented and tested end to end in the engine and relay; it is NOT yet usable by a person.** Done: link codec and limits (`cipher-wire`), key derivation and AEAD (`cipher-core::invite`), relay storage and six endpoints, and the engine (`create_invite`, `preview_invite`, `request_to_join`, `poll_join_requests`, `resolve_join_request`, `revoke_invite`, `list_invites`) with 13 engine tests over two relays and two PostgreSQL databases, 10 relay tests and unit tests (invariants INV-001..013). **Not built:** the FFI surface, every Android screen and the Android clipboard/screen protections, and the 1:1 use limit (§9). **No invitation button may ship before the FFI and UI exist AND have their own tests.** Self-reviewed; it needs the independent review (ST-005) like every other composition here.
+
+**Deviations from the first draft of this document (decided while implementing):** (1) the join request is sealed with an AEAD key derived from the link (`k_req`), not HPKE-encrypted to the admin device, because no static device encryption key exists; a separate MAC became redundant (the AEAD authenticates). The cost is stated in INV-003's gap: no forward secrecy for requests. (2) The request carries the joiner's signed **contact card** and is **signed with the joiner's identity key** over the invitation id and a nonce; on approval the admin uses the existing `add_contact_by_card` and `add_group_members`, so no new KeyPackage or Add code exists. (3) A group created without a home relay refuses joiners from other relays (the preview says so); only groups with a home relay take them.
 
 ## 1. What is being built, and what is not
 
@@ -28,9 +30,9 @@ Not built here: joining without any admin online (MLS needs an existing member t
 | --- | --- | --- |
 | `id` (16 B) | lookup key at the relay; the relay stores only `SHA-256(id)` | relay learns `id` when it is used (not `s`) |
 | `k_enc` (AEAD key) | encrypts the **preview** (§4) so the relay cannot read it | link holders only |
-| `k_mac` (HMAC key) | binds a join request to possession of the link (§6) | link holders and the issuing admin |
+| `k_req` (AEAD key) | seals a join request; a request that opens under it proves possession of the link (§6) | link holders and the issuing admin |
 
-A relay that knows `id` (it sees it on every use) can submit junk but **cannot produce a valid `k_mac` tag**, so the admin's client rejects it. A database leak exposes only `SHA-256(id)`.
+A relay that knows `id` (it sees it on every use) can submit junk but **cannot produce a request that opens under `k_req`**, so the admin's client drops it. A database leak exposes only `SHA-256(id)`.
 
 ## 4. Link / QR format
 
@@ -55,12 +57,11 @@ All unauthenticated calls are rate-limited per hashed source **and** per invite,
 
 ## 6. Join request (joiner → issuer)
 
-`req = { v, id, joiner_root_key, joiner_account, key_package(s), reply: { relay_descriptor, delivery_cap }, nonce(16), ts }`, then
-`tag = HMAC(k_mac, canonical(req))` and `sig = Ed25519(joiner_root_key, "cipher-join-v1\0" || canonical(req) || tag)`; the whole `(req, tag, sig)` is **HPKE-encrypted to the issuing admin device's public key** and posted. The relay sees only an opaque blob and its size class.
+The joiner's engine builds `r` = JSON `{v, id, nonce(16), ts, name, card}` where `card` is the joiner's own **contact card** (signed by the joiner's root key; carries the relay and an intro capability), and signs the exact string `r` with the joiner's **identity key**: `sig = Ed25519(root_key, "cipher-join-v1\0" || r)`. The envelope `{r, s}` is sealed with `ChaCha20-Poly1305(k_req, aad = id || version || 'R')` and posted to the issuer's relay. The relay sees an opaque blob and its size. The card's intro capability is therefore never readable by the relay.
 
 ## 7. Issuer side: approval, admission, history
 
-1. **Verify** (all must hold, else drop silently and count): the invite is still live in *local* state (not revoked/expired/used up — the local state is authoritative, the relay's counters are an optimisation); `tag` verifies under `k_mac`; `sig` verifies; `(id, nonce)` unseen; the joiner account has no other request on this invite; the KeyPackage is signed by the joiner's identity and matches `joiner_root_key`.
+1. **Verify** (all must hold, else drop silently and count): the invite is still live in *local* state (not revoked/expired/used up — the local state is authoritative, the relay's counters are an optimisation); the request opens under `k_req`; the card verifies and `sig` verifies under the card's root key; `(id, nonce)` unseen; the joiner account has no other request on this invite; the card's own relay later confirms the same root key before anything is pinned (`add_contact_by_card`).
 2. **Decide.** `approval` mode (the default): the admin sees who is asking (display name if given, account id, **safety number**) and taps Approve/Reject. `auto` mode is allowed only with `max_uses ≤ 10` and expiry ≤ 24 h, only while the issuing admin's device is online, and still produces the normal MLS Add; every auto-admission is listed in the admin's activity log and the group.
 3. **Admit.** The issuing client runs the existing Add flow: `authorize_commit` → MLS Add commit through the group's sequencer/home relay → **Welcome** sent client-mediated to the joiner's `reply` mailbox. Receivers re-verify the commit exactly as for any Add; a relay cannot add anyone, and a non-admin who learned a link cannot add anyone.
 4. **History protection.** A Welcome opens the group **from the epoch of the Add**. No earlier application message is re-encrypted, forwarded or re-sent; per-epoch keys (`HISTORY_REVOCATION.md`) mean the new member cannot derive earlier epoch secrets. Tests assert that a message sent before the Add cannot be decrypted by the new member, and that the app never replays history on join.
@@ -83,19 +84,20 @@ A 1:1 invitation **is** the Contact Card (QR or link) that already exists: its i
 | **Reuse beyond the limit** | the relay refuses slots past `max_uses`; the issuer re-checks locally before admitting. |
 | **Leaked / forwarded link** | Whoever holds it may *ask*. In `approval` mode (default) nobody enters without an admin seeing the requester. In `auto` mode the first holders within the limit enter: this is why `auto` is capped (≤ 10 uses, ≤ 24 h) and logged. **A link is a bearer secret: forwarding it forwards the right to ask.** Residual and documented. |
 | **Stolen before the intended joiner uses it** | the attacker may be admitted instead (`auto`) or shown as a different requester (`approval`): the admin compares the safety number with the person out of band. |
-| **Hostile relay** | cannot read the preview or requests; cannot forge a valid request (needs `k_mac`); cannot admit; can **drop or delay** requests (liveness) and see that an invite was looked up/used and when, plus source addresses unless Tor is used. |
+| **Hostile relay** | cannot read the preview or requests; cannot forge a valid request (needs `k_req`); cannot admit; can **drop or delay** requests (liveness) and see that an invite was looked up/used and when, plus source addresses unless Tor is used. |
 | **Malicious joiner** | can only ask; cannot read the group before the Welcome; spam is bounded by slots, pending caps and revocation. |
 | **Compromised admin device** | can admit anyone it is authorised to admit (same as today); out of scope. |
 | **Accidental exposure** | the link is never written to logs (`SafeLog` takes closed codes only; the relay does not log); on Android it is copied with the **sensitive-content clipboard flag**, shown behind the screen's secure flag (no screenshots), and excluded from backup. No analytics SDK exists. |
 | **Downgrade** | `https`/pinned `.onion` only; unknown `version` is refused; no cleartext path. |
 
-## 11. Implementation plan and tests
+## 11. Implementation status and tests
 
-1. **DONE** `cipher-wire`: link codec, derived keys, preview/request types, strict parsing. Tests: round trips, tamper, unknown version, oversized fields.
-2. **DONE** Relay: migration, the six endpoints, rate limits. Tests (real PostgreSQL): authorisation of every endpoint (a non-issuer cannot poll/resolve/revoke; an unauthenticated caller can only look up/request), slot atomicity under concurrency, expiry, revocation, uniform `invalid`, no id/secret in logs.
-3. **NOT DONE** `cipher-core` engine: create / lookup / request / verify / approve, wired to the existing Add flow. Tests: valid join, wrong `k_mac`, forged signature, replayed nonce, second request by the same joiner, revoked-after-request, expired, `auto` limits, **history not decryptable by the new member**, forged Add by a non-admin rejected by receivers.
-4. **NOT DONE** Cross-relay E2E (emulator driver): issuer on relay A, joiner on relay B, join, message both ways, revoked and expired invites.
-5. **NOT DONE** Malicious-client tests: a hostile joiner flooding requests, a hostile relay dropping/reordering, a leaked link used by two parties.
-6. **NOT DONE** Android: Invitations screen (create with mode/expiry/limit, share link/QR, pending requests with safety numbers, revoke), scan/paste to join, message-request handling for 1:1. UI tests for each state, including expired/revoked.
+1. **DONE** `cipher-wire`: link codec, limits, API bodies. Tests: round trips, tamper, truncation, unknown version, non-canonical encoding, oversize, redacted `Debug`, property tests.
+2. **DONE** Relay: migration `0011`, six endpoints, rate limits. 10 tests on real PostgreSQL: authorisation of every endpoint, atomic slots under concurrency, expiry, revocation, uniform `invalid`, bounded inputs, no identifier or request bytes in the logs.
+3. **DONE** `cipher-core` engine. Tests in `engine_invites.rs` (13): valid join with no earlier history, forced add with a stolen card, a request sealed under another link, replay of a captured request, rejection returning the slot, revoked/expired/used-up invitations (including a request already waiting), non-admin refusal, caps on automatic admission, already-a-member, a plain group refusing a joiner from another relay, a homed group admitting one across relays, and no link text in either vault or in the relay's logs.
+4. **PARTLY DONE** Cross-relay: covered in-process by test 3 (two relays, two databases). Not run through the emulator driver over Tor.
+5. **PARTLY DONE** Malicious-client tests: forged card, wrong link, replay, flooding bounded by slots and rate limits. Not done: a hostile relay that drops, reorders or withholds a Welcome during admission; a joiner whose relay is down at approval time.
+6. **NOT DONE** FFI and Android: Invitations screen (create with mode/expiry/limit, share link/QR, pending requests with safety numbers, revoke), scan/paste to join, message-request handling. UI tests for every state.
+7. **NOT DONE** 1:1 use limit on the intro capability (§9) and the Android sensitive-clipboard flag.
 
-Steps 1–2 also include the primitives of step 3 (derivation, preview AEAD, request MAC). Only after steps 3–5 pass does step 6 expose anything to users.
+Only after 6 exists and is tested does anything become visible to users.
