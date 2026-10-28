@@ -12,6 +12,7 @@ ignore = [
   # dependency of hax-lib-macros <- libcrux-* <- hpke-rs <- openmls_rust_crypto; it is not linked into
   # the shipped binaries' runtime logic. No upgrade exists. Re-evaluate on every OpenMLS bump.
   { id = "RUSTSEC-2026-0173", reason = "compile-time-only transitive proc-macro in libcrux/hax; tracked in docs/SECURITY_TODO.md" },
+  { id = "RUSTSEC-2026-0387", reason = "crypto-bigint 0.5.5 via p256 in openmls_rust_crypto; Cipher negotiates only the X25519/Ed25519 suite and calls no P-256 code; ST-061" },
 ]
 
 [licenses]
