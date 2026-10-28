@@ -11,6 +11,7 @@ pub mod error;
 pub mod events;
 pub mod history;
 pub mod home;
+pub mod invite;
 pub mod kdf;
 pub mod keystore;
 pub mod mls;

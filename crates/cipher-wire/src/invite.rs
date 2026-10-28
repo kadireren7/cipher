@@ -20,6 +20,16 @@ pub const MAX_USES: u32 = 100;
 pub const AUTO_MAX_USES: u32 = 10;
 pub const AUTO_MAX_LIFETIME_MS: u64 = 24 * 3_600_000;
 
+/// What a relay stores and looks up by: `SHA-256("cipher-inv-idhash-v1" || 0x00 || id)`. The relay never keeps `id` itself, so a database leak
+/// does not hand out usable invitation identifiers (docs/INVITATIONS.md §3).
+pub fn id_hash(id: &[u8; 16]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(b"cipher-inv-idhash-v1\0");
+    h.update(id);
+    h.finalize().into()
+}
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum InviteError {
     #[error("not a Cipher invitation link")]
@@ -257,6 +267,17 @@ mod tests {
         u.extend_from_slice(url);
         assert_eq!(InviteLink::parse(&wrap(&u)), Err(InviteError::Relay(RelayDescError::Url)));
         assert_eq!(InviteLink::parse(""), Err(InviteError::Prefix));
+    }
+
+    #[test]
+    fn the_stored_identifier_is_a_domain_separated_hash_of_the_id() {
+        let a = id_hash(&[1u8; 16]);
+        assert_eq!(a, id_hash(&[1u8; 16]));
+        assert_ne!(a, id_hash(&[2u8; 16]));
+        assert_ne!(a.as_slice(), [1u8; 16].as_slice());
+        // not the plain hash of the id: the label separates it from every other use of SHA-256 over 16 bytes
+        use sha2::{Digest, Sha256};
+        assert_ne!(a.as_slice(), Sha256::digest([1u8; 16]).as_slice());
     }
 
     #[test]
