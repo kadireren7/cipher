@@ -9,4 +9,5 @@
 * **Attachments:** single-blob upload up to the relay limit; no resumable/chunked transfer (ST-046); an abandoned upload can leave an orphan ciphertext blob on the relay until it expires.
 * **Search:** only in-conversation search exists: in memory over the decrypted history of one open chat (up to 3000 messages), no persistent index, discarded when the screen closes. There is no cross-conversation search.
 * **Tor reliability:** circuit stalls surface as "offline" and are retried within bounded budgets. A 20-sample CI campaign passed 20/20 on one commit; that does not establish a failure rate.
+* **Built-in Tor (development version after 0.1.x):** verified on emulators only, never on a phone; plain bridges only (no obfs4/snowflake); other apps on the phone can use its local SOCKS port; if port 19050 is taken Cipher stays offline rather than falling back. See `EMBEDDED_TOR.md`.
 * **Releases:** no production signing key, no store listing, no update channel (`UPDATE_STRATEGY.md`). Build outputs from CI are unsigned developer artifacts.
