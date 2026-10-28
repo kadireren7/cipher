@@ -51,6 +51,8 @@ jobs:
           cargo run -q -p cipher-ffi --features cli --locked --bin uniffi-bindgen -- generate \
             --library target/debug/libcipher_ffi.so --language kotlin --out-dir "$RUNNER_TEMP/uniffi" --no-format
           test -s "$RUNNER_TEMP/uniffi/uniffi/cipher_ffi/cipher_ffi.kt"
+      - name: Self-signed relay certificates carry the right SAN type (IP literal vs host name)
+        run: bash scripts/test-cipherctl-san.sh
       - name: Shipped dependency graph has no experimental/test-only crates
         run: |
           ! cargo tree -p cipher-ffi -e normal --locked | grep -E "ct-merkle|insecure"

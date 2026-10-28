@@ -38,8 +38,10 @@ cmd_init() {
   if [ $selfsigned -eq 1 ] && [ ! -e $SEC/tls-cert.pem ]; then
     local host=${audience%%:*}
     openssl ecparam -name prime256v1 -genkey -noout -out $SEC/tls-key.pem 2>/dev/null
-    openssl req -x509 -new -key $SEC/tls-key.pem -sha256 -days 825 -subj "/CN=$host" -addext "subjectAltName=DNS:$host" -out $SEC/tls-cert.pem 2>/dev/null
-    echo "create tls-cert.pem / tls-key.pem (SELF-SIGNED: clients must pin it; see docs/SELF_HOSTING.md)"
+    # An IP literal needs an iPAddress SAN: clients check the host name against the certificate, and a DNS SAN never matches an IP.
+    local san="DNS:$host"; [[ $host =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] && san="IP:$host"
+    openssl req -x509 -new -key $SEC/tls-key.pem -sha256 -days 825 -subj "/CN=$host" -addext "subjectAltName=$san" -out $SEC/tls-cert.pem 2>/dev/null
+    echo "create tls-cert.pem / tls-key.pem (SELF-SIGNED, SAN $san: clients must pin it; see docs/SELF_HOSTING.md)"
   fi
   [ -e $SEC/tls-cert.pem ] || : > $SEC/tls-cert.pem; [ -e $SEC/tls-key.pem ] || : > $SEC/tls-key.pem
   chmod 600 $SEC/*
