@@ -67,7 +67,10 @@ fn permission_gated_platform_apis_have_their_manifest_permission() {
     ] {
         let users: Vec<String> = kotlin_main().into_iter().filter(|(_, src)| src.contains(needle)).map(|(f, _)| f).collect();
         if !users.is_empty() {
-            assert!(m.contains(&format!(r#"<uses-permission android:name="{permission}" />"#)), "{users:?} use {needle} but the manifest lacks {permission}");
+            assert!(
+                m.contains(&format!(r#"<uses-permission android:name="{permission}" />"#)),
+                "{users:?} use {needle} but the manifest lacks {permission}"
+            );
         }
     }
 }

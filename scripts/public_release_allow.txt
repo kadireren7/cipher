@@ -1,3 +1,4 @@
 # Reviewed history findings (the commits are already pushed and are not rewritten):
 history:7a19f96b|ipv4   # health.rs unit test: a private-range literal used as an example of a NON-loopback address (RFC 1918, not a real host); removed from the tree afterwards (commit ids updated after the trailer-removal rewrite of 2026-10-11)
 history:a649200e|ipv4   # same literal still present in the previous revision of that test
+history:e2ef53df|ipv4   # test-cipherctl-san.sh in its first revision used a private-range (RFC 1918) address as the IP-literal example; replaced by a documentation address (192.0.2.7) in the next commit

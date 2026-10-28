@@ -12,5 +12,5 @@ check() {
   [ "$san" = "$want" ] || { echo "FAIL $audience: SAN is '$san', expected '$want'" >&2; exit 1; }
   echo "PASS $audience -> $san"
 }
-check 192.168.1.156:8443 "IPAddress:192.168.1.156" ip
+check 192.0.2.7:8443 "IPAddress:192.0.2.7" ip
 check relay.example.org:8443 "DNS:relay.example.org" dns

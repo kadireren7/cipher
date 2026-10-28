@@ -43,7 +43,7 @@ PATTERNS = {
 }
 FORBIDDEN_SUFFIX = (".jks", ".keystore", ".p12", ".pfx", ".pem", ".key", ".db", ".sqlite", ".sqlite3", ".log", ".pcap", ".pcapng", ".trace", ".apk", ".aab",
                     ".tar", ".tgz", ".zip", ".snapshot", ".hprof", ".der", ".csr", ".srl")
-SAFE_IPS = re.compile(r"^(127\.|10\.0\.2\.|0\.0\.0\.0|255\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|1\.2\.3\.4$)")
+SAFE_IPS = re.compile(r"^(127\.|10\.0\.2\.|0\.|255\.|192\.0\.2\.|198\.51\.100\.|203\.0\.113\.|1\.2\.3\.4$)")
 BIN = re.compile(rb"[\x00]")
 MAX_BYTES = 2_000_000
 
