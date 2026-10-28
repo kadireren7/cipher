@@ -28,6 +28,24 @@ Tor evidence: 20 of 20 consecutive indexed `android-tor` samples green on one co
 
 Passing tests are evidence about the behaviours they test. They are not proof of security or anonymity.
 
+## v0.1.0-alpha candidate (2026-10-28)
+
+**Label: Experimental Alpha — Not Independently Audited. No official signed release exists yet** (the permanent key has not been created). Release notes: `RELEASE_NOTES_v0.1.0-alpha.md`; signing: `RELEASE_SIGNING.md`.
+
+| Item | Status | Evidence |
+| --- | --- | --- |
+| Signing pipeline (`generate-release-key.sh`, `build-signed-release.sh`) | **Verified with a throwaway key only** | Local run: APK v3-signed, one signer, AAB signed by the same certificate, manifest gate passed, `sha256sum -c` OK, a wrong `CIPHER_RELEASE_PINNED_SHA256` is refused, a missing key prints the commands and builds nothing (exit 2). CI job `release pipeline (throwaway test key)` green in `ci` 40718141378. |
+| Signature by the permanent key | **NOT DONE** | The key does not exist; the owner must run `scripts/generate-release-key.sh` and `scripts/build-signed-release.sh`. |
+| APK contents (test-signed build) | Checked | `app.cipher.messenger`, versionName 0.1.0-alpha, versionCode 100, `arm64-v8a` + `x86_64`, `libcipher_ffi.so` in both, not debuggable, manifest gate: only the launcher activity exported, no test CA, no debug-route strings. |
+| CI on `c226aaf` | **8/8 green** | `ci` 40718141378: audit, secret scan, Rust+PostgreSQL, release pipeline, invariants, Android unit/ktlint/lint/build, instrumented tests (emulator), two-relay E2E. Per-job test counts were not re-extracted for this run. |
+| Tor | Unchanged | `android-tor` did not run on `c226aaf` (workflow path filter); last green run 40711101969 on `fdf3e63`. Emulator + host Tor only; no real phone, no Orbot. Stall mitigations (bounded deadlines/time budget) were already in place and were not changed. |
+| Push / background notifications | **NOT IMPLEMENTED** | Needs RFC 8291 Web Push encryption through a reviewed library, an SSRF-safe relay notifier, an endpoint-possession challenge, a UnifiedPush distributor and a physical device to test (ST-017/042). Not faked. |
+| Installation of the signed APK | **NOT TESTED** | Release builds refuse a software keystore, so an emulator cannot run them; no physical device. |
+| Update compatibility, data migration | NOT TESTED | No signed predecessor exists; versionCode drops from 300 (internal unsigned 0.3.0) to 100 by design. |
+| Physical devices, independent review | **OPEN** | ST-028, ST-005. |
+
+Next owner actions: create the key (`bash scripts/generate-release-key.sh`), back it up, run `bash scripts/build-signed-release.sh`, fill the fingerprint/checksums into the release notes, then approve creating the GitHub pre-release. Nothing has been merged to `main` or published.
+
 ## 1. Build instructions (Rust, relay)
 `rustup` honours `rust-toolchain.toml` (1.99.0). `cargo build --locked --release -p cipher-relay`. Container: `docker build -f deploy/Dockerfile.relay -t cipher-relay:local .` (base images are tags, **not** digests — pin digests before publishing an image).
 Reproducibility of the relay/container was **not measured**. The Android APK was reproducible once on one host (see `FINAL_SECURITY_REVIEW.md`); not re-checked for this branch; no APK was built in this pass.
