@@ -32,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,7 +65,7 @@ fun ChatListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Cipher", fontWeight = FontWeight.Bold) },
+                title = { Text("Cipher", style = MaterialTheme.typography.headlineSmall) },
                 actions = {
                     IconAction(Icons.Default.Lock, "Lock Cipher", onLock)
                     IconAction(Icons.Default.QrCode2, "My identity", onIdentity)
@@ -134,9 +135,10 @@ fun ChatListScreen(
 }
 
 @Composable
-private fun ConversationRow(c: ConversationFfi, onClick: () -> Unit) {
+internal fun ConversationRow(c: ConversationFfi, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp)
+            .semantics(mergeDescendants = true) {},
         verticalAlignment = Alignment.CenterVertically
     ) {
         Avatar(c.title.ifBlank { "?" }, group = c.kind == ConvKindFfi.GROUP)
@@ -154,7 +156,7 @@ private fun ConversationRow(c: ConversationFfi, onClick: () -> Unit) {
                     Text(
                         formatTime(c.lastActivityMs),
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (c.unread > 0u) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

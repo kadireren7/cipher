@@ -44,6 +44,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -79,6 +80,8 @@ import app.cipher.messenger.ui.components.IconAction
 import app.cipher.messenger.ui.components.PrivateTextField
 import app.cipher.messenger.ui.components.SecureDialog
 import app.cipher.messenger.ui.components.TrustBadge
+import app.cipher.messenger.ui.theme.CipherShape
+import app.cipher.messenger.ui.theme.CipherTheme
 import app.cipher.messenger.util.SensitiveClipboard
 import app.cipher.messenger.util.formatDuration
 import app.cipher.messenger.util.formatSize
@@ -234,30 +237,36 @@ fun ConversationScreen(
 }
 
 @Composable
-private fun MessageBubble(m: MessageFfi, showSender: Boolean, vm: ChatViewModel, onOpen: (MessageFfi) -> Unit, onLong: () -> Unit) {
+internal fun MessageBubble(m: MessageFfi, showSender: Boolean, vm: ChatViewModel?, onOpen: (MessageFfi) -> Unit, onLong: () -> Unit) {
     val mine = m.outgoing
-    val bg = if (mine) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
+    val bg = if (mine) CipherTheme.colors.bubbleOut else CipherTheme.colors.bubbleIn
+    val fg = if (mine) CipherTheme.colors.onBubbleOut else CipherTheme.colors.onBubbleIn
+    val big = CipherShape.bubble
+    val tail = CipherShape.bubbleTail
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
         Surface(
             color = bg,
+            contentColor = fg,
             shape = RoundedCornerShape(
-                topStart = 18.dp,
-                topEnd = 18.dp,
-                bottomStart = if (mine) 18.dp else 4.dp,
-                bottomEnd = if (mine) 4.dp else 18.dp
+                topStart = big,
+                topEnd = big,
+                bottomStart = if (mine) big else tail,
+                bottomEnd = if (mine) tail else big
             ),
-            modifier = Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(18.dp)).combinedClickable(
+            tonalElevation = 0.dp,
+            border = if (mine) null else androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.widthIn(max = 320.dp).combinedClickable(
                 onClick = {
                     if (m.attachment != null) {
                         onOpen(m)
                     } else if (m.state == DeliveryStateFfi.FAILED) {
-                        vm.retry(m)
+                        vm?.retry(m)
                     }
                 },
                 onLongClick = onLong,
             ),
         ) {
-            Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 9.dp)) {
                 if (m.unavailable) {
                     Text(
                         "Message unavailable \u2014 group access revoked",
@@ -267,9 +276,9 @@ private fun MessageBubble(m: MessageFfi, showSender: Boolean, vm: ChatViewModel,
                     )
                     return@Column
                 }
-                if (showSender) Text(m.senderName, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                if (showSender) Text(m.senderName, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
                 m.replyTo?.let { rid ->
-                    val quoted = vm.messages.firstOrNull { it.id == rid }
+                    val quoted = vm?.messages?.firstOrNull { it.id == rid }
                     Surface(
                         color = MaterialTheme.colorScheme.background.copy(alpha = 0.35f),
                         shape = RoundedCornerShape(8.dp),
@@ -297,7 +306,7 @@ private fun MessageBubble(m: MessageFfi, showSender: Boolean, vm: ChatViewModel,
                         val (icon, tint) = when (m.state) {
                             DeliveryStateFfi.PENDING -> Icons.Default.Schedule to MaterialTheme.colorScheme.onSurfaceVariant
                             DeliveryStateFfi.SENT -> Icons.Default.Check to MaterialTheme.colorScheme.onSurfaceVariant
-                            DeliveryStateFfi.DELIVERED -> Icons.Default.DoneAll to MaterialTheme.colorScheme.tertiary
+                            DeliveryStateFfi.DELIVERED -> Icons.Default.DoneAll to CipherTheme.colors.verified
                             DeliveryStateFfi.FAILED -> Icons.Default.ErrorOutline to MaterialTheme.colorScheme.error
                             DeliveryStateFfi.RECEIVED -> Icons.Default.Check to MaterialTheme.colorScheme.onSurfaceVariant
                         }
@@ -310,12 +319,12 @@ private fun MessageBubble(m: MessageFfi, showSender: Boolean, vm: ChatViewModel,
 }
 
 @Composable
-private fun AttachmentTile(m: MessageFfi, a: uniffi.cipher_ffi.AttachmentViewFfi, vm: ChatViewModel) {
+private fun AttachmentTile(m: MessageFfi, a: uniffi.cipher_ffi.AttachmentViewFfi, vm: ChatViewModel?) {
     when (a.kind) {
         AttachmentKindFfi.IMAGE, AttachmentKindFfi.VIDEO, AttachmentKindFfi.PDF -> {
             val thumb by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, m.id) {
                 if (a.hasThumbnail) {
-                    vm.openAttachment(m, true)?.let { b ->
+                    vm?.openAttachment(m, true)?.let { b ->
                         app.cipher.messenger.media.SafeDecode.bitmap(b, 640)?.let { value = it.asImageBitmap() }
                     }
                 }
@@ -387,7 +396,7 @@ private fun AttachmentTile(m: MessageFfi, a: uniffi.cipher_ffi.AttachmentViewFfi
 }
 
 @Composable
-private fun InputBar(vm: ChatViewModel) {
+internal fun InputBar(vm: ChatViewModel?) {
     val ctx = LocalContext.current
     var text by remember { mutableStateOf("") }
     var panel by remember { mutableStateOf(false) }
@@ -395,15 +404,18 @@ private fun InputBar(vm: ChatViewModel) {
     var elapsed by remember { mutableStateOf(0) }
     val recorder = remember { VoiceRecorder(ctx) }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri -> uri?.let { sendPicked(ctx, vm, it) } }
+    val picker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            uri?.let { vm?.let { v -> sendPicked(ctx, v, it) } }
+        }
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
             runCatching {
                 recorder.start()
                 recording = true
-            }.onFailure { vm.error = "Couldn't start recording." }
+            }.onFailure { vm?.error = "Couldn't start recording." }
         } else {
-            vm.error = "Microphone permission is needed for voice notes."
+            vm?.error = "Microphone permission is needed for voice notes."
         }
     }
     LaunchedEffect(recording) {
@@ -412,14 +424,15 @@ private fun InputBar(vm: ChatViewModel) {
             delay(1000)
             elapsed++
             if (elapsed >= 300) {
-                recorder.stop()?.let { (a, d) -> vm.sendVoice(a, d) }
+                recorder.stop()?.let { (a, d) -> vm?.sendVoice(a, d) }
                 recording = false
             }
         }
     }
 
-    Column(Modifier.navigationBarsPadding().background(MaterialTheme.colorScheme.surfaceContainer)) {
-        vm.replyTo?.let { r ->
+    Column(Modifier.navigationBarsPadding().background(MaterialTheme.colorScheme.surface)) {
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+        vm?.replyTo?.let { r ->
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     "Replying to: ${r.text.ifBlank {
@@ -430,7 +443,7 @@ private fun InputBar(vm: ChatViewModel) {
                     modifier = Modifier.weight(1f),
                     style = MaterialTheme.typography.bodyMedium
                 )
-                IconButton(onClick = { vm.replyTo = null }) { Icon(Icons.Default.Close, "Cancel reply") }
+                IconButton(onClick = { vm?.replyTo = null }) { Icon(Icons.Default.Close, "Cancel reply") }
             }
         }
         if (panel && !recording) {
@@ -465,7 +478,7 @@ private fun InputBar(vm: ChatViewModel) {
                     color = MaterialTheme.colorScheme.error
                 )
                 IconButton(onClick = {
-                    recorder.stop()?.let { (a, d) -> vm.sendVoice(a, d) }
+                    recorder.stop()?.let { (a, d) -> vm?.sendVoice(a, d) }
                     recording = false
                 }) {
                     Icon(Icons.AutoMirrored.Filled.Send, "Send voice note", tint = MaterialTheme.colorScheme.primary)
@@ -477,7 +490,7 @@ private fun InputBar(vm: ChatViewModel) {
                     onValueChange = { text = it.take(8000) },
                     placeholder = { Text("Message") },
                     maxLines = 5,
-                    shape = RoundedCornerShape(24.dp),
+                    shape = CipherShape.field,
                     modifier = Modifier.weight(1f),
                 )
                 if (text.isBlank()) {
@@ -486,14 +499,14 @@ private fun InputBar(vm: ChatViewModel) {
                             runCatching {
                                 recorder.start()
                                 recording = true
-                            }.onFailure { vm.error = "Couldn't start recording." }
+                            }.onFailure { vm?.error = "Couldn't start recording." }
                         } else {
                             micPermission.launch(Manifest.permission.RECORD_AUDIO)
                         }
                     }) { Icon(Icons.Default.Mic, "Record voice note") }
                 } else {
                     IconButton(onClick = {
-                        vm.send(text.trim())
+                        vm?.send(text.trim())
                         text = ""
                     }) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = MaterialTheme.colorScheme.primary) }
                 }

@@ -178,6 +178,13 @@ jobs:
             android/app/build/outputs/androidTest-results/
             /tmp/emulator-logcat.txt
           if-no-files-found: ignore
+      - name: Upload design gallery (rendered components, representative test data, for visual review)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: design-gallery
+          path: /tmp/design-gallery/
+          if-no-files-found: ignore
 
   android-e2e-multirelay:
     name: android two-relay end-to-end (emulator, 2 relays, offline + attachments)

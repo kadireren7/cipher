@@ -174,7 +174,7 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                     Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Lock, null, modifier = Modifier.size(42.dp)) }
                 }
                 Spacer(Modifier.height(24.dp))
-                Text("Cipher", fontSize = 34.sp, fontWeight = FontWeight.Bold)
+                Text("Cipher", style = MaterialTheme.typography.headlineMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(
                     "Private messaging. No phone number. No email.",
@@ -184,8 +184,10 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                 Spacer(Modifier.height(32.dp))
                 Bullet("Messages are encrypted on your phone before they leave it.")
                 Bullet("Servers can't read them, and your contacts are never uploaded.")
-                Bullet("Your keys live in your phone's secure hardware.")
-                Spacer(Modifier.height(32.dp))
+                Bullet("Your keys are kept in the Android Keystore, hardware-backed where your phone supports it.")
+                Spacer(Modifier.height(16.dp))
+                Banner("Experimental software. It has not been independently audited. Don't rely on it where your safety depends on it.")
+                Spacer(Modifier.height(16.dp))
                 PrimaryButton("Get started") { step = Step.SERVER }
             }
             Step.SERVER -> {
@@ -335,6 +337,7 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                     "If Android resets your secure keys (for example after changing biometrics), Cipher data on this phone becomes unreadable."
                 )
                 Bullet("Your contacts will see a warning if your identity ever changes.")
+                Bullet("Cipher hides message content, not the fact that you use it. Servers still see when you connect and roughly how much you send.")
                 Spacer(Modifier.height(12.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { understood = !understood }) {
                     Checkbox(understood, { understood = it })

@@ -44,6 +44,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -61,13 +62,20 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import uniffi.cipher_ffi.TrustStateFfi
 
-private val avatarColors = listOf(0xFF3B6FD8, 0xFF2E9E8F, 0xFF8E5CD9, 0xFFD9822B, 0xFFC94F7C, 0xFF4F8F3B, 0xFF5C6BC0).map { Color(it) }
+/** Muted tonal hues: an avatar is an identifier, not decoration, so it stays quiet next to the content. */
+private val avatarHues = listOf(160f, 200f, 25f, 280f, 340f, 95f, 230f)
 
 @Composable
 fun Avatar(name: String, size: Dp = 44.dp, group: Boolean = false) {
-    val color = avatarColors[(name.hashCode() and 0x7fffffff) % avatarColors.size]
-    Box(Modifier.size(size).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
-        Text(initials(name), color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.36f).sp)
+    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+    val hue = avatarHues[(name.hashCode() and 0x7fffffff) % avatarHues.size]
+    val bg = Color.hsl(hue, 0.28f, if (dark) 0.24f else 0.86f)
+    val fg = Color.hsl(hue, 0.45f, if (dark) 0.82f else 0.24f)
+    Box(
+        Modifier.size(size).clip(if (group) RoundedCornerShape(size * 0.32f) else CircleShape).background(bg),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(initials(name), color = fg, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.36f).sp)
     }
 }
 
