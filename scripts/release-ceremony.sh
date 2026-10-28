@@ -64,6 +64,10 @@ backup_one() {
   BACKUPS+=("$d/cipher-release.p12")
 }
 BACKUPS=()
+if [ "${CIPHER_WAIVE_BACKUP:-}" = "I-ACCEPT-THAT-LOSING-THE-KEY-ENDS-UPDATES" ]; then
+  echo "BACKUP WAIVED by the owner: if the keystore or its password is lost, no update can ever be signed with this identity (users must uninstall and lose their data)."
+  { echo "keystore sha256: $SUM"; echo "verified at: $(date -u +%FT%TZ)"; echo "backup: WAIVED by owner (CIPHER_WAIVE_BACKUP)"; } > "$MARK"
+else
 until [ "${#BACKUPS[@]}" -ge 1 ]; do
   read -rp "Backup directory on a DIFFERENT device (e.g. a mounted encrypted USB drive): " D1
   backup_one "$D1" "backup 1" || true
@@ -71,6 +75,7 @@ done
 read -rp "Optional second backup directory (Enter to skip, strongly recommended): " D2
 [ -z "$D2" ] || backup_one "$D2" "backup 2" || true
 { echo "keystore sha256: $SUM"; echo "verified at: $(date -u +%FT%TZ)"; printf 'backup: %s\n' "${BACKUPS[@]}"; } > "$MARK"
+fi
 echo "Also store the password in a password manager NOW; it is not recorded anywhere."
 
 echo "== 3/4 build, sign and verify =="
