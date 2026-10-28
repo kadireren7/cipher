@@ -147,8 +147,18 @@ jobs:
         env:
           ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
         run: |
-          ./gradlew --no-daemon :app:assembleRelease
+          ./gradlew --no-daemon :app:assembleRelease :app:bundleRelease
           bash ../scripts/check-release-apk.sh
+          mkdir -p "$RUNNER_TEMP/unsigned"
+          cp app/build/outputs/apk/release/*.apk "$RUNNER_TEMP/unsigned/cipher-UNSIGNED-developer-build.apk"
+          cp app/build/outputs/bundle/release/*.aab "$RUNNER_TEMP/unsigned/cipher-UNSIGNED-developer-build.aab"
+          bash ../scripts/release-hashes.sh "$RUNNER_TEMP/unsigned"
+      - name: Upload UNSIGNED developer build (not installable as an official release; see docs/RELEASE_SIGNING.md)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unsigned-developer-build
+          path: ${{ runner.temp }}/unsigned/
+          retention-days: 14
 
   android-instrumented:
     name: android instrumented tests (emulator, software Keystore)

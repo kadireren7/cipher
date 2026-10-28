@@ -8,6 +8,13 @@ plugins {
 val repoRoot = rootProject.projectDir.parentFile
 val generatedKotlin = layout.buildDirectory.dir("generated/uniffi/kotlin")
 
+// One source of truth for the product version: /VERSION ("MAJOR.MINOR.PATCH[-suffix]"). versionCode = MAJOR*10000 + MINOR*100 + PATCH, so it only grows
+// with the version and a pre-release suffix never changes it (bump PATCH for every build that is handed to anyone).
+val productVersion = repoRoot.resolve("VERSION").readText().trim()
+val productVersionCode = Regex("""^(\d+)\.(\d+)\.(\d+)""").find(productVersion)?.destructured
+    ?.let { (a, b, c) -> a.toInt() * 10000 + b.toInt() * 100 + c.toInt() }
+    ?: error("VERSION must start with MAJOR.MINOR.PATCH, got '$productVersion'")
+
 android {
     namespace = "app.cipher.messenger"
     compileSdk = 36
@@ -16,8 +23,8 @@ android {
         applicationId = "app.cipher.messenger"
         minSdk = 30 // Android 11: per-use biometric+credential keys, TLS 1.3 in the platform stack
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = productVersionCode
+        versionName = productVersion
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         ndk { abiFilters += listOf("arm64-v8a", "x86_64") }
     }
