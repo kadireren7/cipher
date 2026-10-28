@@ -37,6 +37,13 @@ class ChatViewModel(app: Application, val convId: String) : AndroidViewModel(app
     var creatingSuccessor by mutableStateOf(false)
         private set
 
+    /** Set by [cancelUpload]; the native progress callback reads it from another thread and stops the transfer (nothing is sent, no message is left). */
+    @Volatile private var cancelRequested = false
+
+    fun cancelUpload() {
+        cancelRequested = true
+    }
+
     private fun fail(e: Throwable) {
         error = humanize(e)
     }
@@ -167,19 +174,21 @@ class ChatViewModel(app: Application, val convId: String) : AndroidViewModel(app
         replyTo = null
         viewModelScope.launch {
             uploading = 0f
+            cancelRequested = false
             try {
                 val progress = object : uniffi.cipher_ffi.ProgressCallback {
                     override fun onProgress(done: ULong, total: ULong): Boolean {
                         uploading = if (total == 0uL) 0f else (done.toDouble() / total.toDouble()).toFloat().coerceIn(0f, 1f)
-                        return true
+                        return !cancelRequested
                     }
                 }
                 host.call { it.sendAttachment(convId, fdPath, mime, name, kind, "", thumb, null, reply, progress) }
                 refresh()
             } catch (e: Exception) {
-                fail(e)
+                if (!cancelRequested) fail(e)
             } finally {
                 uploading = null
+                cancelRequested = false
                 onFinished()
             }
         }

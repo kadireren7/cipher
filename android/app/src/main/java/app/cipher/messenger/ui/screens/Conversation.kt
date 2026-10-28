@@ -191,7 +191,12 @@ fun ConversationScreen(
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
             vm.error?.let { Banner(it, error = true, actionLabel = "Dismiss") { vm.error = null } }
-            vm.uploading?.let { LinearProgressIndicator(progress = { it }, modifier = Modifier.fillMaxWidth()) }
+            vm.uploading?.let { p ->
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    LinearProgressIndicator(progress = { p }, modifier = Modifier.weight(1f))
+                    IconAction(Icons.Default.Close, "Cancel upload") { vm.cancelUpload() }
+                }
+            }
             if (shown.isEmpty()) {
                 Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                     Text(
