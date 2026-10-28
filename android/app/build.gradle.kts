@@ -35,6 +35,11 @@ android {
         create("release") {
             val ks = System.getenv("CIPHER_RELEASE_KEYSTORE")
             if (ks != null) {
+                // minSdk 30 needs no v1 (JAR) signature. v3 is what signs the APK (a separate v2 block is omitted when minSdk >= 28) and carries the
+                // proof-of-rotation lineage a future key rotation needs.
+                enableV1Signing = false
+                enableV2Signing = true
+                enableV3Signing = true
                 storeFile = file(ks)
                 storePassword = System.getenv("CIPHER_RELEASE_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("CIPHER_RELEASE_KEY_ALIAS")

@@ -160,6 +160,51 @@ jobs:
           path: ${{ runner.temp }}/unsigned/
           retention-days: 14
 
+  release-pipeline:
+    # Proves scripts/build-signed-release.sh (APK v3, AAB, same certificate, pin check, refusals) with a key that is generated inside
+    # this job and discarded with it. It is NOT a release: the output is never uploaded, and no real signing material exists in CI.
+    name: release pipeline (throwaway test key, not a release)
+    runs-on: ubuntu-24.04
+    needs: rust
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - run: rustup show
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - name: Android Rust targets + cargo-ndk (pinned)
+        run: |
+          rustup target add aarch64-linux-android x86_64-linux-android
+          cargo install --locked cargo-ndk@3.5.4
+      - name: SDK components (API 36, NDK 27.2)
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" >/dev/null
+      - name: Refuses to build without a key (and says how to create one)
+        run: |
+          set +e
+          out=$(env -u CIPHER_RELEASE_KEYSTORE bash scripts/build-signed-release.sh 2>&1); rc=$?
+          echo "$out" | head -5
+          [ "$rc" = 2 ] && echo "$out" | grep -q "scripts/generate-release-key.sh"
+      - name: Sign with an ephemeral throwaway key and verify
+        env:
+          ANDROID_NDK_HOME: /usr/local/lib/android/sdk/ndk/27.2.12479018
+          CIPHER_ALLOW_TEST_KEY: "1"
+          CIPHER_RELEASE_KEY_ALIAS: cipher-ci-test
+        run: |
+          pw="$(openssl rand -hex 16)"; echo "::add-mask::$pw"
+          ks="$RUNNER_TEMP/throwaway.p12"
+          keytool -genkeypair -storetype PKCS12 -keystore "$ks" -alias cipher-ci-test -keyalg RSA -keysize 2048 -validity 2 \
+            -storepass "$pw" -dname "CN=Cipher CI PIPELINE TEST ONLY" >/dev/null
+          export CIPHER_RELEASE_KEYSTORE="$ks" CIPHER_RELEASE_KEYSTORE_PASSWORD="$pw"
+          bash scripts/build-signed-release.sh
+          ls release-artifacts
+          (cd release-artifacts && sha256sum -c SHA256SUMS)
+          echo "--- a wrong pinned identity must fail the build ---"
+          set +e
+          CIPHER_RELEASE_PINNED_SHA256=0000000000000000000000000000000000000000000000000000000000000000 bash scripts/build-signed-release.sh
+          [ "$?" != 0 ]
+
   android-instrumented:
     name: android instrumented tests (emulator, software Keystore)
     runs-on: ubuntu-24.04
