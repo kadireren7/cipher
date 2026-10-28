@@ -2,8 +2,6 @@
 
 **Do not use Cipher for sensitive or high-risk communication.** Its cryptography and protocols have not been independently audited (ST-005), and it has never run on a physical phone (ST-028): every test so far ran on emulators and in CI. Cipher protects message *content* with end-to-end encryption. It does **not** make you anonymous, and it is not safe against a well-resourced adversary. Read [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) before installing.
 
-> **Release status of this document: DRAFT for a release that has not been published.** The signed APK/AAB below exist only after the owner creates the signing key and runs `scripts/build-signed-release.sh` ([RELEASE_SIGNING.md](RELEASE_SIGNING.md)). Fill in the fingerprint and checksums from `release-artifacts/` at that point; do not publish this file with the placeholders.
-
 ## What it is
 
 An Android messenger with user-selected, self-hosted relays.
@@ -15,6 +13,24 @@ An Android messenger with user-selected, self-hosted relays.
 * Tor/onion relay routes with strict TLS pinning and fail-closed behaviour: if the privacy route is unavailable, messages stay queued and are never sent another way.
 * Local encrypted storage with an Android Keystore-protected vault; no cloud backup.
 * In-conversation search (in memory only), light/dark themes, large-font support.
+
+## Verification of this release
+
+| | |
+| --- | --- |
+| Tag / commit | `v0.1.0-alpha` → `8ec3679c9fe4ec58eed311c2730c19bee4db3223` (clean tree, built from this exact commit) |
+| APK | `cipher-0.1.0-alpha-release.apk` — SHA-256 `c0d8f8948cf30d9a206a73c5c5a457d5f43ee6b1380d00470a33896a7f2549ba` |
+| AAB | Built and signed by the pipeline with the same certificate (SHA-256 `b6d48c58105f7b6f639ed2e8533e6619b972a15086b89abff12a08eaf4c6aca2`); not attached to this release. |
+| Signing certificate SHA-256 | `3e9685ecd673eee2b86fdab25b842d8fb4d2706074f5135c3556bb639b4726fc` (APK Signature Scheme v3, one signer; the pipeline's AAB carries the same certificate) |
+| Package / version | `app.cipher.messenger`, `0.1.0-alpha`, versionCode 100, `arm64-v8a` + `x86_64` |
+| CI on this commit | `ci` run 40736337601: 8/8 jobs green (dependency audit, secret scanning, Rust + PostgreSQL, security invariants, Android unit/ktlint/lint/release build, release-pipeline job, instrumented tests on an emulator, two-relay end-to-end). `android-tor` run 40736671961: 3/3 repetitions green over real Tor to onion relays, emulator + host Tor. `self-hosting acceptance` run 40736677138: Docker Compose install/restart/PostgreSQL restart/backup-restore/no-downgrade **passed**; the "upgrade from the previous release" step **failed because it is not meaningful here**: it uses `main` as the previous release and `main` already contains this code, so there is no older relay to upgrade from. The upgrade path is therefore **not verified for this release**. |
+
+## What has NOT been done
+
+* **No physical-device testing.** Everything ran on emulators and in CI. A release build refuses a software-only Keystore, so it will not run on an emulator at all; it needs a phone with a hardware-backed Keystore, and nobody has installed this APK on one yet.
+* **No independent security audit.**
+* **No push notifications / no background delivery.**
+* The signing key has **no backup**: the owner explicitly waived it. If the key or its password is lost, no later release can be installed over this one (users would have to uninstall and lose their data).
 
 ## Requirements
 
@@ -31,18 +47,19 @@ An Android messenger with user-selected, self-hosted relays.
 | File | Purpose |
 | --- | --- |
 | `cipher-0.1.0-alpha-release.apk` | Install this. Signed with APK Signature Scheme v3. |
-| `cipher-0.1.0-alpha-release.aab` | Android App Bundle for a future Play submission; not for sideloading. |
-| `SHA256SUMS` | `sha256sum -c SHA256SUMS` |
-| `SIGNING-CERT.txt` | The public signing-certificate SHA-256: **`<fill in from SIGNING-CERT.txt>`** |
+| `SHA256SUMS` | `sha256sum -c --ignore-missing SHA256SUMS` (the file also lists the AAB, which is not attached to this release) |
+| `SIGNING-CERT.txt` | The public signing-certificate SHA-256 (also below): **`3e9685ecd673eee2b86fdab25b842d8fb4d2706074f5135c3556bb639b4726fc`** |
 
 Verify before installing:
 
 ```bash
-sha256sum -c SHA256SUMS
+sha256sum -c --ignore-missing SHA256SUMS
 apksigner verify --print-certs cipher-0.1.0-alpha-release.apk   # the signer SHA-256 must equal the fingerprint above
 ```
 
 A checksum downloaded from the same place as the APK only detects corruption. The fingerprint is only meaningful if you obtained it from a second, independent channel.
+
+**About the AAB:** the release pipeline also builds a signed Android App Bundle (`.aab`) for a possible future Google Play submission. It is intentionally **not attached** to GitHub Releases; `SHA256SUMS` still lists its checksum, so `sha256sum -c` without `--ignore-missing` reports that one file as missing. That is expected.
 
 ## Install
 

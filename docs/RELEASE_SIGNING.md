@@ -27,6 +27,8 @@ bash scripts/build-signed-release.sh
 `build-signed-release.sh` fails closed. It refuses when:
 the key variables are missing (it prints the exact commands instead and builds nothing); the keystore is inside the repository; the working tree is dirty; Gradle left the APK unsigned; the release manifest/secret gate (`scripts/check-release-apk.sh`) fails; `apksigner verify` does not report APK Signature Scheme v3 with exactly one signer (the separate v2 block is omitted by design because minSdk is 30; v1 is off); the signer is the Android debug certificate; the certificate differs from `CIPHER_RELEASE_PINNED_SHA256`; the AAB is not signed by the same certificate as the APK.
 
+**Distribution policy:** the signed AAB is built on every release for a possible future Google Play submission, but it is **not** attached to GitHub Releases and nothing uploads it automatically (no workflow or script publishes releases; publishing is a deliberate manual step). GitHub Releases carry the APK, `SHA256SUMS` and `SIGNING-CERT.txt` only; `SHA256SUMS` still lists the AAB, so verify with `sha256sum -c --ignore-missing SHA256SUMS`.
+
 Output in `release-artifacts/` (git-ignored): `cipher-<version>-release.apk`, `cipher-<version>-release.aab`, `SHA256SUMS` (check with `sha256sum -c SHA256SUMS`), `SIGNING-CERT.txt` (public fingerprint), `BUILD-INPUTS.sha256` and `PROVENANCE.txt` (commit, clean/dirty tree, hashes of `Cargo.lock`, the Gradle catalogue and verification metadata, the toolchain file and the native libraries).
 
 Independent re-check by anyone: `apksigner verify --print-certs cipher-<version>-release.apk` and compare the SHA-256 digest with the fingerprint you published.
