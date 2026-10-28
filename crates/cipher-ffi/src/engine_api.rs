@@ -286,6 +286,11 @@ impl CipherEngine {
         self.with(|e| e.create_invite(&c, policy).map(|i| InviteCreatedFfi::from(&i)))
     }
 
+    /// True while there is something to poll for (a live invitation, or a decision the relay has not yet been told about).
+    pub fn has_live_invites(&self) -> R<bool> {
+        self.with(|e| e.has_live_invites())
+    }
+
     pub fn list_invites(&self, conversation_id: String) -> R<Vec<InviteInfoFfi>> {
         let c = v::id(&conversation_id, "conversation id")?;
         self.with(|e| e.list_invites(&c).map(|l| l.iter().map(InviteInfoFfi::from).collect()))

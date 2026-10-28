@@ -34,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import app.cipher.messenger.data.ChatViewModel
@@ -63,6 +64,7 @@ fun GroupInfoScreen(
     onLeft: () -> Unit,
     homeUnavailable: Boolean = false,
     onReplaced: (String) -> Unit = {},
+    onInvites: () -> Unit = {},
 ) {
     LaunchedEffect(Unit) {
         vm.refresh()
@@ -93,6 +95,11 @@ fun GroupInfoScreen(
             ReplacementGroupAction(homeUnavailable, vm.creatingSuccessor) { vm.createSuccessor(onReplaced) }
             if (canAdmin) OutlinedButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) { Text("Rename group") }
             OutlinedButton(onClick = onMembers, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Members and roles") }
+            if (canAdmin) {
+                OutlinedButton(onClick = onInvites, modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("group_invites")) {
+                    Text("Invite with a link")
+                }
+            }
             OutlinedButton(onClick = {
                 vm.refreshKeys()
             }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Refresh my encryption keys") }

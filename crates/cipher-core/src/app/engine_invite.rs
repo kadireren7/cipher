@@ -251,6 +251,15 @@ impl Engine {
         Ok(InviteCreated { id, link, expires_ms })
     }
 
+    /// Cheap, local: is there anything to poll the relay for (a live invitation, or a decision the relay has not been told about yet)? Lets the
+    /// app skip the authenticated poll entirely for people who never invited anyone.
+    pub fn has_live_invites(&mut self) -> Result<bool> {
+        self.guard()?;
+        let now = self.now_ms();
+        let live = self.invite_records()?.iter().any(|r| !r.revoked && now < r.expires_ms);
+        Ok(live || self.pending_joins()?.iter().any(|p| p.state != JoinState::Pending))
+    }
+
     pub fn list_invites(&mut self, conv: &Id16) -> Result<Vec<InviteInfo>> {
         self.guard()?;
         Ok(self

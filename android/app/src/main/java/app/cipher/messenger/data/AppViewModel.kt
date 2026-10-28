@@ -43,10 +43,15 @@ data class UiState(
     val route: RouteStatus = RouteStatus.CONNECTING,
     /** Built-in Tor bootstrap percentage while the daemon is starting; null when it is not in use or not reporting. */
     val torProgress: Int? = null,
+    /** Join requests waiting for this admin's decision (0 for everyone who never invited anybody). */
+    val joinRequests: Int = 0,
 ) {
     val unlocked: Boolean get() = vault?.state == LockStateFfi.UNLOCKED
     val needsOnboarding: Boolean get() = !relayConfigured || !onboardingDone
 }
+
+/** One request for new join requests per this many sync ticks (about a minute at the standard profile). */
+private const val INVITE_POLL_EVERY = 12
 
 /** Application-wide state: vault lifecycle, identity, contacts, conversation list, periodic sync. */
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -233,6 +238,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     // ---------------------------------------------------------------------------------------------------- sync
 
     /** One foreground tick for the configured network profile; returns how long to wait before the next one. */
+    /** A link scanned or pasted elsewhere, waiting for the join screen. In memory only: a link is a bearer secret and is never put in navigation arguments or saved state. */
+    @Volatile var pendingInviteLink: String = ""
+
+    private var inviteTick = 0
+
+    /** Only people with a live invitation poll the relay for requests; everyone else makes no extra request at all. */
+    private suspend fun refreshJoinRequests() {
+        try {
+            val count = if (host.call { it.hasLiveInvites() }) host.call { it.pollJoinRequests() }.size else 0
+            _state.update { it.copy(joinRequests = count) }
+        } catch (e: Exception) {
+            SafeLog.event(SafeLog.Code.SYNC_ERROR)
+        }
+    }
+
     suspend fun sync(): Long {
         var next = 4_000L
         try {
@@ -259,6 +279,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             SafeLog.event(SafeLog.Code.SYNC_ERROR)
         }
         _state.update { it.copy(route = host.routeStatus(), torProgress = host.torProgress()) }
+        if (inviteTick++ % INVITE_POLL_EVERY == 0) refreshJoinRequests()
         return next
     }
 
@@ -299,6 +320,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Is this scanned/pasted text a contact CARD (as opposed to the identity QR)? Cards start with the base64url of the magic `CCD1`. */
     fun looksLikeCard(text: String) = text.trim().startsWith("Q0NEMQ")
+
+    fun looksLikeInvite(text: String) = text.trim().startsWith("cipher-invite:")
 
     /** Creates a fresh signed contact card (valid [days] days) at our relay. Works while unlocked only. */
     fun createContactCard(days: Int, onDone: (String?) -> Unit) = launchOp(busy = true) {

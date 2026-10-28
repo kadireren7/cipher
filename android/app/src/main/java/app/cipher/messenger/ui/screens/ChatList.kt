@@ -61,6 +61,7 @@ fun ChatListScreen(
     onAccept: (String) -> Unit,
     onDecline: (String) -> Unit,
     onVerify: (String) -> Unit,
+    onJoinRequests: () -> Unit = {},
 ) {
     Scaffold(
         topBar = {
@@ -87,6 +88,19 @@ fun ChatListScreen(
             }
             if (state.securityEvents.any { it.kind == SecurityEventKind.UNAUTHORIZED_GROUP_CHANGE }) {
                 Banner("A group change that breaks the group's rules was blocked.")
+            }
+            if (state.joinRequests > 0) {
+                Banner(
+                    if (state.joinRequests ==
+                        1
+                    ) {
+                        "Someone asked to join a group you manage."
+                    } else {
+                        "${state.joinRequests} people asked to join groups you manage."
+                    },
+                    actionLabel = "Review",
+                    onAction = onJoinRequests,
+                )
             }
             val requests = state.conversations.filter { it.state == ConvStateFfi.REQUESTED }
             val active = state.conversations.filter { it.state != ConvStateFfi.REQUESTED }

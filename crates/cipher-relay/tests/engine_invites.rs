@@ -358,3 +358,18 @@ fn the_link_text_is_never_stored_on_either_device_and_the_relay_never_logs_it() 
     let id = Id16(*InviteSecret::from_bytes(*parsed.secret()).keys().id());
     assert_ne!(id.0, *parsed.secret());
 }
+
+#[test]
+fn the_app_polls_only_while_there_is_something_to_poll_for() {
+    let mut r = rig();
+    assert!(!r.alice.has_live_invites().unwrap(), "someone who never invited anyone never polls");
+    let created = r.alice.create_invite(&r.group, policy(1, JoinMode::Approval)).unwrap();
+    assert!(r.alice.has_live_invites().unwrap());
+    r.alice.revoke_invite(&created.id).unwrap();
+    assert!(!r.alice.has_live_invites().unwrap(), "a revoked invitation needs no more polling");
+    let short =
+        r.alice.create_invite(&r.group, InvitePolicy { lifetime_ms: 2 * 3_600_000, max_uses: 1, mode: JoinMode::Approval }).unwrap();
+    assert!(r.alice.has_live_invites().unwrap());
+    r.wa.clock.0.advance(3 * 3600);
+    assert!(!r.alice.has_live_invites().unwrap(), "nor does an expired one ({:?})", short.id);
+}

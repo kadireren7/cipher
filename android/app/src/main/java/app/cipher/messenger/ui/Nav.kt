@@ -27,12 +27,16 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import app.cipher.messenger.data.AppViewModel
 import app.cipher.messenger.data.ChatViewModel
+import app.cipher.messenger.data.InviteViewModel
 import app.cipher.messenger.ui.screens.ChatListScreen
 import app.cipher.messenger.ui.screens.ContactCardScreen
 import app.cipher.messenger.ui.screens.ConversationScreen
 import app.cipher.messenger.ui.screens.DevicesScreen
 import app.cipher.messenger.ui.screens.GroupInfoScreen
 import app.cipher.messenger.ui.screens.IdentityScreen
+import app.cipher.messenger.ui.screens.InvitationsScreen
+import app.cipher.messenger.ui.screens.JoinRequestsScreen
+import app.cipher.messenger.ui.screens.JoinWithLinkScreen
 import app.cipher.messenger.ui.screens.LockScreen
 import app.cipher.messenger.ui.screens.MembersScreen
 import app.cipher.messenger.ui.screens.NewConversationScreen
@@ -106,6 +110,7 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
                 onAccept = { vm.acceptConversation(it) },
                 onDecline = { vm.declineConversation(it) },
                 onVerify = { nav.navigate("verify/$it") },
+                onJoinRequests = { nav.navigate("joinrequests") },
             )
         }
         composable("new") { entry ->
@@ -113,6 +118,12 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
             LaunchedEffect(scanned) {
                 scanned?.let {
                     // a scanned CONTACT CARD (possibly for a person on another server) is read from their screen: it counts as verified
+                    if (vm.looksLikeInvite(it)) {
+                        vm.pendingInviteLink = it.trim()
+                        entry.savedStateHandle["qr"] = null
+                        nav.navigate("join")
+                        return@let
+                    }
                     if (vm.looksLikeCard(it)) vm.addContactByCard(it, "", true) { } else vm.addContactByQr(it, "") { }
                     entry.savedStateHandle["qr"] = null
                 }
@@ -126,7 +137,29 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
                 onNewGroup = { nav.navigate("newgroup") },
                 onVerify = { nav.navigate("verify/$it") },
                 onMyCard = { nav.navigate("mycard") },
+                onJoinLink = { nav.navigate("join") },
             )
+        }
+        composable("join") { entry ->
+            val scanned by entry.savedStateHandle.getStateFlow<String?>("qr", null).collectAsState()
+            val ivm: InviteViewModel = viewModel(key = "join", factory = viewModelFactory { initializer { InviteViewModel(app, null) } })
+            val link = scanned?.takeIf { vm.looksLikeInvite(it) } ?: vm.pendingInviteLink
+            LaunchedEffect(link) {
+                // consume the in-memory hand-over: the link lives only in this screen's state from here on
+                if (link.isNotBlank()) vm.pendingInviteLink = ""
+            }
+            JoinWithLinkScreen(ivm, link, onBack = { nav.popBackStack() }, onScan = { nav.navigate("scan") })
+        }
+        composable("joinrequests") {
+            val ivm: InviteViewModel =
+                viewModel(key = "joinrequests", factory = viewModelFactory { initializer { InviteViewModel(app, null) } })
+            JoinRequestsScreen(ivm, onBack = { nav.popBackStack() })
+        }
+        composable("invites/{id}") { entry ->
+            val id = entry.arguments?.getString("id") ?: return@composable
+            val ivm: InviteViewModel =
+                viewModel(key = "invites-$id", factory = viewModelFactory { initializer { InviteViewModel(app, id) } })
+            InvitationsScreen(ivm, onBack = { nav.popBackStack() })
         }
         composable("mycard") { ContactCardScreen(state, vm, onBack = { nav.popBackStack() }) }
         composable("relay") { RelaySettingsScreen(vm, onBack = { nav.popBackStack() }) }
@@ -165,6 +198,7 @@ private fun MainNav(vm: AppViewModel, nav: NavHostController) {
                     nav.popBackStack("list", false)
                 },
                 homeUnavailable = state.securityEvents.any { it.kind == SecurityEventKind.HOME_RELAY_UNAVAILABLE && it.subject == id },
+                onInvites = { nav.navigate("invites/$id") },
                 onReplaced = { newId ->
                     vm.reloadConversations()
                     nav.navigate("chat/$newId") { popUpTo("list") }

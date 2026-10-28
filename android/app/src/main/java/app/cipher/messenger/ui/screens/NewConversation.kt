@@ -54,6 +54,7 @@ fun NewConversationScreen(
     onNewGroup: () -> Unit,
     onVerify: (String) -> Unit,
     onMyCard: () -> Unit,
+    onJoinLink: () -> Unit = {},
 ) {
     var cardText by remember { mutableStateOf("") }
     var cipherId by remember { mutableStateOf("") }
@@ -111,6 +112,9 @@ fun NewConversationScreen(
                         Icon(Icons.Default.Group, null)
                         Spacer(Modifier.size(8.dp))
                         Text("New group")
+                    }
+                    OutlinedButton(onClick = onJoinLink, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                        Text("Join a group with a link")
                     }
                     Spacer(Modifier.size(16.dp))
                     Text("Contacts", style = MaterialTheme.typography.titleMedium)
