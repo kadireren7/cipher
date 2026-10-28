@@ -161,6 +161,7 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
     var understood by rememberSaveable { mutableStateOf(false) }
     var createError by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableIntStateOf(0) }
+    var torWait by remember { mutableStateOf<Int?>(null) }
 
     Column(
         Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
@@ -287,6 +288,21 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
             Step.CREATING -> {
                 LaunchedEffect(attempt) {
                     createError = null
+                    if (vm.host.routeConfig.embedded()) {
+                        // Registration goes through Tor: wait (bounded, with progress) until the built-in daemon is ready instead of failing at once.
+                        vm.host.tor.start()
+                        var waitedSecs = 0
+                        while (waitedSecs < 180 && (vm.host.torProgress() ?: 0) < 100) {
+                            torWait = vm.host.torProgress() ?: 0
+                            kotlinx.coroutines.delay(1000)
+                            waitedSecs++
+                        }
+                        torWait = null
+                        if ((vm.host.torProgress() ?: 0) < 100) {
+                            createError = "Couldn't connect to Tor. Check your internet connection and try again."
+                            return@LaunchedEffect
+                        }
+                    }
                     val provisioned = vm.state.value.vault?.provisioned == true
                     val provisionStep: (suspend () -> Boolean) = {
                         if (provisioned) {
@@ -315,7 +331,10 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                 if (createError == null) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
-                    Text("Creating your keys…", style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        torWait?.let { "Connecting to Tor… $it%" } ?: "Creating your keys…",
+                        style = MaterialTheme.typography.titleMedium
+                    )
                     Text(
                         "They are generated on this phone and never leave it.",
                         color = MaterialTheme.colorScheme.onSurfaceVariant,

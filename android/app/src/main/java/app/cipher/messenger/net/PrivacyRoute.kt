@@ -138,7 +138,21 @@ class RouteTracker(
 class RouteConfig(private val dir: File) {
     private val socksFile = File(dir, "route.socks")
 
-    fun socks(): SocksEndpoint = socksFile.takeIf { it.exists() }?.readText()?.let { SocksEndpoint.parse(it) } ?: SocksEndpoint.DEFAULT
+    /**
+     * True (the default for a new install) when Cipher uses its own embedded Tor daemon; false when the user chose an external SOCKS5 proxy (for
+     * example Orbot), or had one saved by an earlier version. Either way the route is ONE fixed loopback SOCKS endpoint and nothing else.
+     */
+    fun embedded(): Boolean = !socksFile.exists()
+
+    fun useEmbedded() {
+        socksFile.delete()
+    }
+
+    fun socks(): SocksEndpoint = if (embedded()) {
+        SocksEndpoint(app.cipher.messenger.net.tor.TorConfig.SOCKS_HOST, app.cipher.messenger.net.tor.TorConfig.SOCKS_PORT)
+    } else {
+        socksFile.readText().let { SocksEndpoint.parse(it) } ?: SocksEndpoint.DEFAULT
+    }
 
     fun setSocks(e: SocksEndpoint) {
         socksFile.writeText(e.toString())

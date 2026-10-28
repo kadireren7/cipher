@@ -43,6 +43,16 @@
             </intent-filter>
         </activity>
 
+        <!-- The embedded Tor daemon: its own process (the C Tor code never shares an address space with the vault or the keys), not exported, no
+             intent filter. The library's own TorService entry is removed so this is the only service in the merged manifest. -->
+        <service
+            android:name=".net.tor.CipherTorService"
+            android:process=":tor"
+            android:exported="false" />
+        <service
+            android:name="org.torproject.jni.TorService"
+            tools:node="remove" />
+
         <!-- A library (androidx.profileinstaller) adds an EXPORTED receiver (shell-only via the DUMP permission). We do not use it:
              remove it so the only exported component of the merged manifest is the launcher activity. -->
         <receiver

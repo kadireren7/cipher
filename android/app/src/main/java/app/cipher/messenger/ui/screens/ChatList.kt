@@ -78,7 +78,7 @@ fun ChatListScreen(
         },
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
-            RouteBanner(state.route, state.offline)
+            RouteBanner(state.route, state.offline, state.torProgress)
             // Identity warnings are prominent and never auto-dismissed.
             state.contacts.filter { it.trust == TrustStateFfi.IDENTITY_CHANGED }.forEach { c ->
                 Banner("${c.name}'s security identity changed. Verify before sending new messages.", error = true, actionLabel = "Review") {
@@ -184,9 +184,10 @@ internal fun ConversationRow(c: ConversationFfi, onClick: () -> Unit) {
 
 /** The route banner shows the ACTUAL privacy-route state (PRIV-013): "Protected" only after a request really completed through the route. */
 @Composable
-internal fun RouteBanner(route: RouteStatus, offline: Boolean) {
+internal fun RouteBanner(route: RouteStatus, offline: Boolean, torProgress: Int? = null) {
     when {
         route == RouteStatus.PROTECTED -> Unit // nothing to say; Settings shows the detail
+        torProgress != null && torProgress < 100 && !offline -> Banner("Connecting to Tor\u2026 $torProgress%")
         route == RouteStatus.UNAVAILABLE ->
             Banner("Privacy route unavailable. Messages stay queued, encrypted, and will not be sent another way.", error = true)
         route == RouteStatus.OFFLINE || offline -> Banner("You're offline. Messages will send when you're back.")

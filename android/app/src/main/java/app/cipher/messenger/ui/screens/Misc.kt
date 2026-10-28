@@ -336,27 +336,66 @@ private fun NetworkSection(state: UiState, vm: AppViewModel) {
     }
     Text(label, fontWeight = FontWeight.SemiBold)
     Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    val embedded = vm.host.routeConfig.embedded()
+    state.torProgress?.takeIf { embedded && it < 100 }?.let {
+        Text("Tor is starting: $it%", style = MaterialTheme.typography.bodyMedium)
+    }
     Text(
-        "Cipher sends everything through a local SOCKS5 proxy such as Tor (for example the Orbot app). " +
-            "That hides your phone's address from the relay. Your internet provider can still see that you use a privacy " +
-            "network. Message content is protected end to end either way.",
+        "Cipher sends everything through Tor. That hides your phone's address from the relay. " +
+            "Your internet provider can still see that you use Tor. Message content is protected end to end either way. " +
+            "If Tor cannot connect, nothing is sent another way.",
         style = MaterialTheme.typography.labelSmall,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(top = 4.dp),
     )
-    PrivateTextField(
-        socks,
-        { socks = it },
-        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        label = { Text("Local proxy (IP:port)") },
-        singleLine = true,
-    )
-    if (!socksOk) {
-        Text("Enter the proxy as IPv4 address and port, as shown by your privacy app (Orbot).", color = MaterialTheme.colorScheme.error)
+    listOf(
+        true to ("Built-in Tor" to "Recommended. Nothing else to install."),
+        false to ("External proxy" to "A SOCKS5 proxy you run yourself, such as the Orbot app.")
+    ).forEach { (isEmbedded, text) ->
+        Row(
+            Modifier.fillMaxWidth().clickable { if (isEmbedded && !embedded) vm.useEmbeddedTor() }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            RadioButton(embedded == isEmbedded, { if (isEmbedded && !embedded) vm.useEmbeddedTor() })
+            Column {
+                Text(text.first)
+                Text(text.second, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
     }
-    OutlinedButton(onClick = {
-        socksOk = vm.saveSocks(socks)
-    }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Save route") }
+    if (embedded) {
+        var bridges by remember { mutableStateOf(vm.host.tor.bridges().joinToString("\n")) }
+        var bridgesOk by remember { mutableStateOf(true) }
+        PrivateTextField(
+            bridges,
+            { bridges = it },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            label = { Text("Bridges (optional, one per line)") },
+        )
+        if (!bridgesOk) {
+            Text(
+                "Only plain bridges are supported: IP:port, optionally followed by the 40-character fingerprint.",
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        OutlinedButton(onClick = {
+            bridgesOk = vm.saveBridges(bridges)
+        }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Save bridges") }
+    } else {
+        PrivateTextField(
+            socks,
+            { socks = it },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            label = { Text("Local proxy (IP:port)") },
+            singleLine = true,
+        )
+        if (!socksOk) {
+            Text("Enter the proxy as IPv4 address and port, as shown by your privacy app (Orbot).", color = MaterialTheme.colorScheme.error)
+        }
+        OutlinedButton(onClick = {
+            socksOk = vm.saveSocks(socks)
+        }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Save route") }
+    }
     if (s != null) {
         Spacer(Modifier.height(8.dp))
         listOf(

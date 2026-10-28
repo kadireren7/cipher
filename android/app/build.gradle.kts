@@ -17,7 +17,10 @@ val productVersionCode = Regex("""^(\d+)\.(\d+)\.(\d+)""").find(productVersion)?
 
 android {
     namespace = "app.cipher.messenger"
-    compileSdk = 36
+    // Compile-only: tor-android 0.4.9.x requires compileSdk 37.1. Run-time behaviour is still decided by targetSdk (35) and minSdk (30).
+    compileSdk {
+        version = release(37) { minorApiLevel = 1 }
+    }
 
     defaultConfig {
         applicationId = "app.cipher.messenger"
@@ -178,6 +181,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // UniFFI's Kotlin bindings load the Rust library through JNA (the AAR bundles the Android native stubs).
     implementation("${libs.jna.get()}@aar")
+    // Embedded Tor (Guardian Project packaging of the C Tor daemon, from Maven Central): runs in its own :tor process, see net/tor/.
+    implementation(libs.tor.android)
+    implementation(libs.jtorctl)
 
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)

@@ -10,6 +10,7 @@ import app.cipher.messenger.net.RouteConfig
 import app.cipher.messenger.net.RouteStatus
 import app.cipher.messenger.net.RouteTracker
 import app.cipher.messenger.net.SocksEndpoint
+import app.cipher.messenger.net.tor.EmbeddedTor
 import app.cipher.messenger.security.AndroidKeystoreCallbacks
 import app.cipher.messenger.security.BiometricGate
 import java.io.File
@@ -39,6 +40,9 @@ class EngineHost(private val app: Application, private val activityProvider: () 
 
     @Volatile private var engine: CipherEngine? = null
     val routeConfig = RouteConfig(configDir)
+
+    /** The embedded Tor daemon (own process). Only used while [RouteConfig.embedded]; an external proxy replaces it, never complements it. */
+    val tor = EmbeddedTor(app, File(configDir, "tor.bridges"))
     private val routeTracker = RouteTracker(
         nowMs = { System.currentTimeMillis() },
         deviceOnline = {
@@ -57,10 +61,26 @@ class EngineHost(private val app: Application, private val activityProvider: () 
     /** Changes the local SOCKS endpoint; the engine is rebuilt so the new route applies to every later request. */
     fun configureSocks(e: SocksEndpoint) {
         http.cancelAll()
+        tor.stop()
         routeConfig.setSocks(e)
         http = OkHttpCallbacks(routeConfig, routeTracker)
         engine = null
     }
+
+    /** Switches back to the built-in Tor daemon and starts it; the engine is rebuilt so the new route applies to every later request. */
+    fun useEmbeddedTor() {
+        http.cancelAll()
+        routeConfig.useEmbedded()
+        http = OkHttpCallbacks(routeConfig, routeTracker)
+        engine = null
+        tor.start()
+    }
+
+    /** Built-in Tor bootstrap percentage, or null when the built-in daemon is not in use or not reporting. */
+    fun torProgress(): Int? = if (usesEmbeddedTor()) tor.progress() else null
+
+    /** The built-in daemon is needed only for the real route: not with an external proxy, and not in a debug build's opt-in direct dev route. */
+    private fun usesEmbeddedTor(): Boolean = routeConfig.embedded() && !routeConfig.directDevRoute()
 
     /** Pin (unpadded URL-safe base64 of the SHA-256 of the relay certificate's public key) the relay is authenticated by instead of a CA chain; null = CA validation. */
     fun relayPin(): String? = relayPinFile.takeIf { it.exists() }?.readText()?.trim()?.takeIf { it.isNotEmpty() }
@@ -170,10 +190,14 @@ class EngineHost(private val app: Application, private val activityProvider: () 
 
     fun onBackground() {
         signalLockNow()
+        if (usesEmbeddedTor()) tor.onBackground()
         post { it.onBackground() }
     }
 
-    fun onForeground() = post { it.onForeground() }
+    fun onForeground() {
+        if (usesEmbeddedTor()) tor.start()
+        post { it.onForeground() }
+    }
 
     fun onScreenOff() {
         signalLockNow()

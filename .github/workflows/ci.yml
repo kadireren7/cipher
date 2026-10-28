@@ -133,7 +133,7 @@ jobs:
       - name: SDK components (API 36, NDK 27.2)
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "platforms;android-37.1" "build-tools;36.0.0" "ndk;27.2.12479018" >/dev/null
       - name: JVM unit tests, ktlint, Android lint
         working-directory: android
         env:
@@ -181,7 +181,7 @@ jobs:
       - name: SDK components (API 36, NDK 27.2)
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "platforms;android-37.1" "build-tools;36.0.0" "ndk;27.2.12479018" >/dev/null
       - name: Refuses to build without a key (and says how to create one)
         run: |
           set +e

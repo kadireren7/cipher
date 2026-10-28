@@ -41,6 +41,8 @@ data class UiState(
     val rolledBack: Boolean = false,
     /** Actual state of the privacy route (never inferred from E2EE being active). */
     val route: RouteStatus = RouteStatus.CONNECTING,
+    /** Built-in Tor bootstrap percentage while the daemon is starting; null when it is not in use or not reporting. */
+    val torProgress: Int? = null,
 ) {
     val unlocked: Boolean get() = vault?.state == LockStateFfi.UNLOCKED
     val needsOnboarding: Boolean get() = !relayConfigured || !onboardingDone
@@ -256,14 +258,21 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         } catch (e: Exception) {
             SafeLog.event(SafeLog.Code.SYNC_ERROR)
         }
-        _state.update { it.copy(route = host.routeStatus()) }
+        _state.update { it.copy(route = host.routeStatus(), torProgress = host.torProgress()) }
         return next
     }
+
+    fun useEmbeddedTor() {
+        host.useEmbeddedTor()
+        _state.update { it.copy(route = host.routeStatus(), torProgress = host.torProgress()) }
+    }
+
+    fun saveBridges(block: String): Boolean = host.tor.setBridges(block)
 
     fun saveSocks(text: String): Boolean {
         val e = SocksEndpoint.parse(text) ?: return false
         host.configureSocks(e)
-        _state.update { it.copy(route = host.routeStatus()) }
+        _state.update { it.copy(route = host.routeStatus(), torProgress = host.torProgress()) }
         return true
     }
 

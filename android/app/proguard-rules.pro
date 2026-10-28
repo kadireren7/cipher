@@ -2,6 +2,9 @@
 -keep class com.sun.jna.** { *; }
 -keep class uniffi.** { *; }
 -keepclassmembers class * extends com.sun.jna.* { public *; }
+# Embedded Tor (Guardian Project JNI + control library): native methods are looked up by name from libtor.so.
+-keep class org.torproject.jni.** { *; }
+-keep class net.freehaven.tor.control.** { *; }
 -dontwarn java.awt.*
 -dontwarn com.sun.jna.**
 # Keep line numbers out of release crash traces: no crash reporter is shipped, and stack traces must not leak into logs.

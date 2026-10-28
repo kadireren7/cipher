@@ -83,7 +83,15 @@ fn manifest_is_locked_down() {
     assert!(!m.contains("android:debuggable"), "debuggable is decided by the build type only");
     assert!(!m.contains("requestLegacyExternalStorage"));
     assert!(!m.contains("<provider"), "no ContentProvider/FileProvider: nothing is shared with other apps");
-    assert!(!m.contains("<service"), "no services declared");
+    // The ONLY service is the embedded Tor daemon: its own process, not exported, no intent filter. The library's own TorService entry may only
+    // appear as a removal marker. Any other service, or this one becoming exported or sharing the app process, fails here.
+    let services: Vec<&str> = m.split("<service").skip(1).map(|c| c.split("/>").next().unwrap_or("")).collect();
+    let ours: Vec<&&str> = services.iter().filter(|e| !e.contains(r#"tools:node="remove""#)).collect();
+    assert_eq!(ours.len(), 1, "exactly one service (the embedded Tor daemon), found {ours:?}");
+    assert!(ours[0].contains(r#"android:name=".net.tor.CipherTorService""#));
+    assert!(ours[0].contains(r#"android:process=":tor""#), "Tor must run in its own process");
+    assert!(ours[0].contains(r#"android:exported="false""#), "the Tor service must not be exported");
+    assert!(services.iter().all(|e| !e.contains("<intent-filter")), "no service has an intent filter");
     // The only `<receiver` allowed is a REMOVAL marker for a library-contributed exported receiver (tools:node="remove").
     for chunk in m.split("<receiver").skip(1) {
         let element = chunk.split("/>").next().unwrap_or("");

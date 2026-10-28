@@ -23,6 +23,9 @@ class CipherApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The embedded Tor daemon runs in its own `:tor` process, which also creates an Application. That process must never open the vault, build
+        // the engine or register receivers: it exists to run Tor and nothing else.
+        if (Application.getProcessName() != packageName) return
         NotificationHelper.ensureChannel(this)
         host = EngineHost(this) { resumed?.get() }
 

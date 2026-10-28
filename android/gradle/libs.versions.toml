@@ -8,6 +8,8 @@ lifecycle = "2.9.4"
 biometric = "1.1.0"
 okhttp = "5.1.0"
 jna = "5.19.1"
+tor-android = "0.4.9.14"
+jtorctl = "0.4.5.7"
 zxing = "3.5.4"
 camerax = "1.5.3"
 coroutines = "1.10.2"
@@ -40,6 +42,8 @@ compose-material3 = { module = "androidx.compose.material3:material3" }
 compose-material-icons = { module = "androidx.compose.material:material-icons-extended" }
 okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
 jna = { module = "net.java.dev.jna:jna", version.ref = "jna" }
+tor-android = { module = "info.guardianproject:tor-android", version.ref = "tor-android" }
+jtorctl = { module = "info.guardianproject:jtorctl", version.ref = "jtorctl" }
 zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }

@@ -12,7 +12,7 @@ IMG="system-images;android-34;google_apis;x86_64"
 # Downloads from dl.google.com are occasionally truncated ("Error on ZipFile unknown archive"): retry, and require the image to really be on disk.
 for attempt in 1 2 3 4; do
   rm -rf "$SDK/system-images/android-34" # never reuse a half-extracted image
-  if "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018" "$IMG" 2>&1 | tail -n 5 \
+  if "$SDK/cmdline-tools/latest/bin/sdkmanager" "platform-tools" "emulator" "platforms;android-36" "platforms;android-37.1" "build-tools;36.0.0" "ndk;27.2.12479018" "$IMG" 2>&1 | tail -n 5 \
      && [ -s "$SDK/system-images/android-34/google_apis/x86_64/system.img" ]; then break; fi
   echo "sdkmanager attempt $attempt did not produce a complete image" >&2
   [ "$attempt" = 4 ] && { echo "system image could not be installed" >&2; exit 1; }
