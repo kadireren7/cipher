@@ -11,6 +11,9 @@ import re, sys
 t = open("/tmp/cipher-release-manifest.txt").read()
 fail = []
 if "debuggable" in t: fail.append("release APK mentions debuggable")
+# Regression: v0.1.0-alpha shipped without this and crashed on first sync (ConnectivityManager.getActiveNetwork throws SecurityException).
+for p in ("android.permission.INTERNET", "android.permission.ACCESS_NETWORK_STATE"):
+    if p not in t: fail.append(f"release APK lacks required permission {p}")
 if not re.search(r"allowBackup\(0x[0-9a-f]+\)=false", t): fail.append("allowBackup is not false")
 if not re.search(r"usesCleartextTraffic\(0x[0-9a-f]+\)=false", t): fail.append("cleartext is not forbidden")
 # split into component blocks

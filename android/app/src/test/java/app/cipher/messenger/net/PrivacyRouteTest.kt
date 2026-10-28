@@ -168,6 +168,14 @@ class PrivacyRouteTest {
         assertEquals(RouteStatus.OFFLINE, t.status())
     }
 
+    @Test fun aRefusedConnectivityProbeNeverCrashesTheStatus() {
+        // Regression (first real-device run): without ACCESS_NETWORK_STATE the probe throws SecurityException, which used to kill the app right after onboarding.
+        val t = RouteTracker({ 0L }, { throw SecurityException("no ACCESS_NETWORK_STATE") })
+        assertEquals(RouteStatus.CONNECTING, t.status())
+        t.recordFailure()
+        assertEquals(RouteStatus.UNAVAILABLE, t.status())
+    }
+
     @Test fun releaseHasNoDirectRouteSourceAndNoOtherNetworkStackExists() {
         val main = File("src/main/java")
         assertTrue(main.exists())

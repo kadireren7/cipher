@@ -2,6 +2,9 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Lets the app ask whether the device has a network at all (to tell "offline" from "relay unreachable"). Normal permission, no prompt; it reveals
+         nothing about the network itself. Without it ConnectivityManager.getActiveNetwork() throws SecurityException. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Lets the window hide SYSTEM_ALERT_WINDOW overlays while Cipher is visible (tapjacking defence, API 31+). Normal permission. -->

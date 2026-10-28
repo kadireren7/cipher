@@ -54,6 +54,24 @@ fn guard_detector_has_a_negative_control() {
     assert!(!kotlin_main().is_empty(), "guards must read the real Kotlin sources");
 }
 
+/// Regression (first real-device run of v0.1.0-alpha): `ConnectivityManager` was used without `ACCESS_NETWORK_STATE`, which crashed the app with a
+/// `SecurityException` right after onboarding. Any Kotlin use of a permission-gated platform API must come with its manifest entry.
+#[test]
+fn permission_gated_platform_apis_have_their_manifest_permission() {
+    let m = read("app/src/main/AndroidManifest.xml");
+    let m: String = m.lines().filter(|l| !l.trim_start().starts_with("<!--")).collect::<Vec<_>>().join("\n");
+    for (needle, permission) in [
+        ("ConnectivityManager", "android.permission.ACCESS_NETWORK_STATE"),
+        ("NetworkCapabilities", "android.permission.ACCESS_NETWORK_STATE"),
+        ("registerNetworkCallback", "android.permission.ACCESS_NETWORK_STATE"),
+    ] {
+        let users: Vec<String> = kotlin_main().into_iter().filter(|(_, src)| src.contains(needle)).map(|(f, _)| f).collect();
+        if !users.is_empty() {
+            assert!(m.contains(&format!(r#"<uses-permission android:name="{permission}" />"#)), "{users:?} use {needle} but the manifest lacks {permission}");
+        }
+    }
+}
+
 #[test]
 fn manifest_is_locked_down() {
     let m = read("app/src/main/AndroidManifest.xml");

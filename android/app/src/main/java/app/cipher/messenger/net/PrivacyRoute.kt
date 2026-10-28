@@ -118,10 +118,17 @@ class RouteTracker(
         lastFail = nowMs()
     }
 
+    /** A status label must never crash the UI: if the platform refuses the connectivity probe, assume "online" and let the real request decide. */
+    private fun deviceIsOnline(): Boolean = try {
+        deviceOnline()
+    } catch (_: SecurityException) {
+        true
+    }
+
     fun status(): RouteStatus {
         val now = nowMs()
         if (lastOk != Long.MIN_VALUE && now - lastOk <= freshMs && lastFail <= lastOk) return RouteStatus.PROTECTED
-        if (!deviceOnline()) return RouteStatus.OFFLINE
+        if (!deviceIsOnline()) return RouteStatus.OFFLINE
         if (lastFail != Long.MIN_VALUE && lastFail > lastOk) return RouteStatus.UNAVAILABLE
         return RouteStatus.CONNECTING
     }
