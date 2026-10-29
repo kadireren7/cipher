@@ -9,9 +9,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -29,6 +31,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -63,15 +66,18 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import uniffi.cipher_ffi.TrustStateFfi
 
-/** Muted tonal hues: an avatar is an identifier, not decoration, so it stays quiet next to the content. */
-private val avatarHues = listOf(160f, 200f, 25f, 280f, 340f, 95f, 230f)
+/**
+ * Quiet, cool tones: an avatar is an identifier, not decoration. Blue, violet and slate hues plus one warm grey, at low saturation so they read as tinted
+ * graphite. No greens (the brand has none; see docs/BRAND.md), which AvatarPaletteTest enforces.
+ */
+internal val avatarHues = listOf(210f, 225f, 240f, 258f, 275f, 200f, 28f)
 
 @Composable
 fun Avatar(name: String, size: Dp = 44.dp, group: Boolean = false) {
     val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
     val hue = avatarHues[(name.hashCode() and 0x7fffffff) % avatarHues.size]
-    val bg = Color.hsl(hue, 0.28f, if (dark) 0.24f else 0.86f)
-    val fg = Color.hsl(hue, 0.45f, if (dark) 0.82f else 0.24f)
+    val bg = Color.hsl(hue, 0.16f, if (dark) 0.22f else 0.87f)
+    val fg = Color.hsl(hue, 0.30f, if (dark) 0.84f else 0.22f)
     Box(
         Modifier.size(size).clip(if (group) RoundedCornerShape(size * 0.2f) else CircleShape).background(bg),
         contentAlignment = Alignment.Center
@@ -267,8 +273,21 @@ fun PrimaryButton(text: String, enabled: Boolean = true, modifier: Modifier = Mo
         enabled = enabled,
         shape = CipherShape.control,
         colors = ButtonDefaults.buttonColors(),
-        modifier = modifier.fillMaxWidth().height(52.dp),
+        // heightIn, not height: at large font sizes a label that wraps to two lines must grow the button instead of being clipped.
+        modifier = modifier.fillMaxWidth().heightIn(min = 52.dp),
     ) { Text(text, fontWeight = FontWeight.SemiBold) }
+}
+
+/** Secondary action: same small corners as [PrimaryButton] (Material's outlined button is a pill by default), minimum 48 dp touch target. */
+@Composable
+fun SecondaryButton(onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, content: @Composable RowScope.() -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        enabled = enabled,
+        shape = CipherShape.control,
+        modifier = modifier.heightIn(min = 48.dp),
+        content = content,
+    )
 }
 
 @Composable

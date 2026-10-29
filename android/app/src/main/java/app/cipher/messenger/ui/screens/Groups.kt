@@ -20,7 +20,6 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +42,7 @@ import app.cipher.messenger.ui.components.Avatar
 import app.cipher.messenger.ui.components.Banner
 import app.cipher.messenger.ui.components.IconAction
 import app.cipher.messenger.ui.components.PrivateTextField
+import app.cipher.messenger.ui.components.SecondaryButton
 import app.cipher.messenger.ui.components.SecureDialog
 import app.cipher.messenger.ui.components.TrustBadge
 import uniffi.cipher_ffi.MemberFfi
@@ -93,14 +93,14 @@ fun GroupInfoScreen(
             vm.error?.let { Banner(it, error = true, actionLabel = "Dismiss") { vm.error = null } }
             Spacer(Modifier.size(16.dp))
             ReplacementGroupAction(homeUnavailable, vm.creatingSuccessor) { vm.createSuccessor(onReplaced) }
-            if (canAdmin) OutlinedButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) { Text("Rename group") }
-            OutlinedButton(onClick = onMembers, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Members and roles") }
+            if (canAdmin) SecondaryButton(onClick = { renaming = true }, modifier = Modifier.fillMaxWidth()) { Text("Rename group") }
+            SecondaryButton(onClick = onMembers, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Members and roles") }
             if (canAdmin) {
-                OutlinedButton(onClick = onInvites, modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("group_invites")) {
+                SecondaryButton(onClick = onInvites, modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("group_invites")) {
                     Text("Invite with a link")
                 }
             }
-            OutlinedButton(onClick = {
+            SecondaryButton(onClick = {
                 vm.refreshKeys()
             }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Refresh my encryption keys") }
             Spacer(Modifier.size(16.dp))
@@ -109,7 +109,7 @@ fun GroupInfoScreen(
                     "Someone removed from the group can't read anything sent after they were removed, but keeps what they already received.",
             )
             Spacer(Modifier.size(8.dp))
-            OutlinedButton(onClick = { confirmLeave = true }, enabled = vm.myRole != RoleFfi.OWNER, modifier = Modifier.fillMaxWidth()) {
+            SecondaryButton(onClick = { confirmLeave = true }, enabled = vm.myRole != RoleFfi.OWNER, modifier = Modifier.fillMaxWidth()) {
                 Text(
                     "Leave group",
                     color = if (vm.myRole ==
@@ -163,7 +163,7 @@ fun ReplacementGroupAction(homeUnavailable: Boolean, creating: Boolean, onCreate
             "You can create a replacement group with the same members; each of them must accept it again.",
         error = true,
     )
-    OutlinedButton(
+    SecondaryButton(
         onClick = { confirmReplace = true },
         enabled = !creating,
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),

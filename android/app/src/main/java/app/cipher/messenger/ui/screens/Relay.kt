@@ -13,7 +13,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -37,6 +36,7 @@ import app.cipher.messenger.ui.components.IconAction
 import app.cipher.messenger.ui.components.PrimaryButton
 import app.cipher.messenger.ui.components.PrivateTextField
 import app.cipher.messenger.ui.components.QrCode
+import app.cipher.messenger.ui.components.SecondaryButton
 import app.cipher.messenger.util.SensitiveClipboard
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -90,10 +90,10 @@ fun ContactCardScreen(state: UiState, vm: AppViewModel, onBack: () -> Unit) {
                     modifier = Modifier.testTag("card_text")
                 )
                 Spacer(Modifier.height(12.dp))
-                OutlinedButton(onClick = { SensitiveClipboard.copy(ctx, "Cipher contact card", c) }, modifier = Modifier.fillMaxWidth()) {
+                SecondaryButton(onClick = { SensitiveClipboard.copy(ctx, "Cipher contact card", c) }, modifier = Modifier.fillMaxWidth()) {
                     Text("Copy (cleared after 60 s)")
                 }
-                OutlinedButton(onClick = { card = null }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Hide") }
+                SecondaryButton(onClick = { card = null }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Hide") }
             }
         }
     }

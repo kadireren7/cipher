@@ -20,7 +20,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
@@ -47,6 +46,7 @@ import app.cipher.messenger.ui.components.Banner
 import app.cipher.messenger.ui.components.IconAction
 import app.cipher.messenger.ui.components.PrivateTextField
 import app.cipher.messenger.ui.components.QrCode
+import app.cipher.messenger.ui.components.SecondaryButton
 import app.cipher.messenger.ui.components.SecureDialog
 import uniffi.cipher_ffi.NetworkProfileFfi
 import uniffi.cipher_ffi.PrivacyModeFfi
@@ -163,7 +163,9 @@ fun SettingsScreen(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                 ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
             ) {
-                OutlinedButton(onClick = { notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }) { Text("Allow notifications") }
+                SecondaryButton(onClick = {
+                    notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }) { Text("Allow notifications") }
             }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -203,13 +205,13 @@ fun SettingsScreen(
             }
         }
         HorizontalDivider(Modifier.padding(vertical = 12.dp))
-        OutlinedButton(onClick = onSecurity, modifier = Modifier.fillMaxWidth()) { Text("Security information") }
-        OutlinedButton(onClick = onRelay, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Server and certificate") }
-        OutlinedButton(onClick = onDevices, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Devices") }
-        OutlinedButton(onClick = { vm.lockNow() }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Lock now") }
+        SecondaryButton(onClick = onSecurity, modifier = Modifier.fillMaxWidth()) { Text("Security information") }
+        SecondaryButton(onClick = onRelay, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Server and certificate") }
+        SecondaryButton(onClick = onDevices, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Devices") }
+        SecondaryButton(onClick = { vm.lockNow() }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text("Lock now") }
         Spacer(Modifier.height(24.dp))
         Text("Danger zone", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
-        OutlinedButton(onClick = { confirmReset = true }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+        SecondaryButton(onClick = { confirmReset = true }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
             Text("Remove Cipher data from this phone", color = MaterialTheme.colorScheme.error)
         }
         Spacer(Modifier.height(16.dp))
@@ -378,7 +380,7 @@ private fun NetworkSection(state: UiState, vm: AppViewModel) {
                 color = MaterialTheme.colorScheme.error
             )
         }
-        OutlinedButton(onClick = {
+        SecondaryButton(onClick = {
             bridgesOk = vm.saveBridges(bridges)
         }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Save bridges") }
     } else {
@@ -392,7 +394,7 @@ private fun NetworkSection(state: UiState, vm: AppViewModel) {
         if (!socksOk) {
             Text("Enter the proxy as IPv4 address and port, as shown by your privacy app (Orbot).", color = MaterialTheme.colorScheme.error)
         }
-        OutlinedButton(onClick = {
+        SecondaryButton(onClick = {
             socksOk = vm.saveSocks(socks)
         }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Save route") }
     }

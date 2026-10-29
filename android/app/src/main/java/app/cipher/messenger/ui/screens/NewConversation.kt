@@ -19,7 +19,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -40,6 +39,7 @@ import app.cipher.messenger.ui.components.Avatar
 import app.cipher.messenger.ui.components.IconAction
 import app.cipher.messenger.ui.components.PrimaryButton
 import app.cipher.messenger.ui.components.PrivateTextField
+import app.cipher.messenger.ui.components.SecondaryButton
 import app.cipher.messenger.ui.components.TrustBadge
 import uniffi.cipher_ffi.TrustStateFfi
 
@@ -86,13 +86,13 @@ fun NewConversationScreen(
                         }
                     }
                     Spacer(Modifier.size(8.dp))
-                    OutlinedButton(onClick = onScanQr, modifier = Modifier.fillMaxWidth()) {
+                    SecondaryButton(onClick = onScanQr, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.QrCodeScanner, null)
                         Spacer(Modifier.size(8.dp))
                         Text("Scan their code")
                     }
                     Spacer(Modifier.size(8.dp))
-                    OutlinedButton(onClick = onMyCard, modifier = Modifier.fillMaxWidth()) { Text("Show my contact card") }
+                    SecondaryButton(onClick = onMyCard, modifier = Modifier.fillMaxWidth()) { Text("Show my contact card") }
                     Spacer(Modifier.size(12.dp))
                     Text("Add from a contact card", style = MaterialTheme.typography.titleMedium)
                     Text(
@@ -108,12 +108,12 @@ fun NewConversationScreen(
                         vm.addContactByCard(cardText, name, false) { c -> if (c != null) cardText = "" }
                     }
                     Spacer(Modifier.size(8.dp))
-                    OutlinedButton(onClick = onNewGroup, modifier = Modifier.fillMaxWidth()) {
+                    SecondaryButton(onClick = onNewGroup, modifier = Modifier.fillMaxWidth()) {
                         Icon(Icons.Default.Group, null)
                         Spacer(Modifier.size(8.dp))
                         Text("New group")
                     }
-                    OutlinedButton(onClick = onJoinLink, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
+                    SecondaryButton(onClick = onJoinLink, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) {
                         Text("Join a group with a link")
                     }
                     Spacer(Modifier.size(16.dp))
@@ -136,7 +136,7 @@ fun NewConversationScreen(
                         Text(c.name, fontWeight = FontWeight.SemiBold)
                         TrustBadge(c.trust)
                     }
-                    OutlinedButton(onClick = { onVerify(c.accountId) }) { Text("Verify") }
+                    SecondaryButton(onClick = { onVerify(c.accountId) }) { Text("Verify") }
                 }
                 HorizontalDivider()
             }

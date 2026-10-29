@@ -16,7 +16,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -42,6 +41,7 @@ import app.cipher.messenger.ui.components.IconAction
 import app.cipher.messenger.ui.components.PrimaryButton
 import app.cipher.messenger.ui.components.PrivateTextField
 import app.cipher.messenger.ui.components.QrCode
+import app.cipher.messenger.ui.components.SecondaryButton
 import app.cipher.messenger.util.InviteFormat
 import app.cipher.messenger.util.SensitiveClipboard
 import uniffi.cipher_ffi.InviteCreatedFfi
@@ -100,10 +100,10 @@ fun InvitationsContent(
                     PrimaryButton("Approve", enabled = !state.busy, modifier = Modifier.weight(1f).testTag("approve_${r.requestId}")) {
                         onResolve(r.requestId, true)
                     }
-                    OutlinedButton(
+                    SecondaryButton(
                         onClick = { onResolve(r.requestId, false) },
                         enabled = !state.busy,
-                        modifier = Modifier.weight(1f).height(52.dp).testTag("reject_${r.requestId}"),
+                        modifier = Modifier.weight(1f).testTag("reject_${r.requestId}"),
                     ) {
                         Text("Reject")
                     }
@@ -140,7 +140,7 @@ fun InvitationsContent(
                     )
                 }
                 if (live) {
-                    OutlinedButton(onClick = {
+                    SecondaryButton(onClick = {
                         onRevoke(i.inviteId)
                     }, enabled = !state.busy, modifier = Modifier.testTag("revoke_${i.inviteId}")) {
                         Text("Revoke")
@@ -183,7 +183,7 @@ private fun CreateInvite(
                 modifier = Modifier.testTag("invite_link_text"),
             )
             Spacer(Modifier.height(8.dp))
-            OutlinedButton(onClick = { onCopy(created.link) }, modifier = Modifier.fillMaxWidth().testTag("invite_copy")) {
+            SecondaryButton(onClick = { onCopy(created.link) }, modifier = Modifier.fillMaxWidth().testTag("invite_copy")) {
                 Text("Copy (cleared after 60 s)")
             }
             PrimaryButton("Done", modifier = Modifier.fillMaxWidth().padding(top = 8.dp).testTag("invite_done"), onClick = onDismissCreated)
@@ -335,7 +335,7 @@ fun JoinWithLinkContent(
         PrimaryButton("Look up", enabled = !state.busy && link.isNotBlank(), modifier = Modifier.weight(1f).testTag("join_lookup")) {
             onLookUp(link)
         }
-        OutlinedButton(onClick = onScan, modifier = Modifier.weight(1f).height(52.dp).testTag("join_scan")) { Text("Scan QR") }
+        SecondaryButton(onClick = onScan, modifier = Modifier.weight(1f).testTag("join_scan")) { Text("Scan QR") }
     }
 
     val p = state.preview ?: return

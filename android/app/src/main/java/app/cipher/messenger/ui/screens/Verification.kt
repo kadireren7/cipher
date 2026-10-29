@@ -23,7 +23,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -53,6 +52,7 @@ import app.cipher.messenger.ui.components.Banner
 import app.cipher.messenger.ui.components.IconAction
 import app.cipher.messenger.ui.components.PrimaryButton
 import app.cipher.messenger.ui.components.QrCode
+import app.cipher.messenger.ui.components.SecondaryButton
 import app.cipher.messenger.ui.components.SecureDialog
 import app.cipher.messenger.ui.components.TrustBadge
 import app.cipher.messenger.ui.theme.CipherShape
@@ -132,8 +132,8 @@ fun VerifyContactScreen(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            OutlinedButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("Scan their code to verify") }
-            OutlinedButton(onClick = {
+            SecondaryButton(onClick = onScan, modifier = Modifier.fillMaxWidth()) { Text("Scan their code to verify") }
+            SecondaryButton(onClick = {
                 showMine = !showMine
             }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp)) { Text(if (showMine) "Hide my code" else "Show my code") }
             if (showMine && myQr != null) {
