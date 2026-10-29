@@ -95,6 +95,34 @@ async fn existing_blob(tx: &Transaction<'_>, owner: &[u8; 32], body_hash: &[u8; 
     .transpose()
 }
 
+/// Aggregate figures for the operator. No identifiers.
+#[derive(Debug, Default)]
+pub struct AdminCounts {
+    pub accounts: i64,
+    pub devices: i64,
+    pub groups: i64,
+    pub live_invites: i64,
+    pub pending_join_requests: i64,
+    pub queued_messages: i64,
+    pub queued_bytes: i64,
+    pub blobs: i64,
+    pub blob_bytes: i64,
+    pub schema_version: i64,
+}
+
+fn audit_hash(prev: &[u8], at: i64, action: &str, detail: &str) -> [u8; 32] {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(b"cipher/admin-audit/v1\0");
+    h.update(prev);
+    h.update(at.to_be_bytes());
+    h.update((action.len() as u32).to_be_bytes());
+    h.update(action.as_bytes());
+    h.update((detail.len() as u32).to_be_bytes());
+    h.update(detail.as_bytes());
+    h.finalize().into()
+}
+
 pub fn cap_hash(cap: &Id16) -> [u8; 32] {
     use sha2::Digest as _;
     let mut h = sha2::Sha256::new();
@@ -1085,6 +1113,93 @@ impl PgStore {
         }
         tx.execute("DELETE FROM invite_requests WHERE id_hash=$1 AND state=0", &[&id_hash.as_slice()]).await.map_err(internal)?;
         tx.commit().await.map_err(internal)
+    }
+
+    // ---- administration (docs/RELAY_ADMIN.md): aggregates, one switch, an append-only audit chain. Nothing here names a user, a device or a message. ----
+
+    pub async fn admin_counts(&self, now: u64) -> Result<AdminCounts, ApiError> {
+        let c = self.conn().await?;
+        let one = |sql: &'static str| {
+            let c = &c;
+            async move { c.query_one(sql, &[]).await.map(|r| r.get::<_, i64>(0)).map_err(internal) }
+        };
+        let live_invites: i64 = c
+            .query_one("SELECT count(*) FROM invites WHERE NOT revoked AND expires_at > $1", &[&(now as i64)])
+            .await
+            .map_err(internal)?
+            .get(0);
+        Ok(AdminCounts {
+            accounts: one("SELECT count(*) FROM accounts").await?,
+            devices: one("SELECT count(*) FROM devices").await?,
+            groups: one("SELECT (SELECT count(*) FROM groups) + (SELECT count(*) FROM home_groups)").await?,
+            live_invites,
+            pending_join_requests: one("SELECT count(*) FROM invite_requests WHERE state = 0").await?,
+            queued_messages: one("SELECT COALESCE(sum(queued_count), 0)::bigint FROM devices").await?,
+            queued_bytes: one("SELECT COALESCE(sum(queued_bytes), 0)::bigint FROM devices").await?,
+            blobs: one("SELECT count(*) FROM blobs").await?,
+            blob_bytes: one("SELECT COALESCE(sum(size_bytes), 0)::bigint FROM blobs").await?,
+            schema_version: one("SELECT COALESCE(max(version), 0)::bigint FROM schema_migrations").await?,
+        })
+    }
+
+    pub async fn setting(&self, key: &str) -> Result<Option<String>, ApiError> {
+        let c = self.conn().await?;
+        Ok(c.query_opt("SELECT value FROM relay_settings WHERE key = $1", &[&key]).await.map_err(internal)?.map(|r| r.get(0)))
+    }
+
+    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), ApiError> {
+        let c = self.conn().await?;
+        c.execute(
+            "INSERT INTO relay_settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            &[&key, &value],
+        )
+        .await
+        .map_err(internal)?;
+        Ok(())
+    }
+
+    /// Appends one entry to the audit chain: `hash = SHA-256(prev_hash || at || action || detail)`, with an all-zero `prev_hash` for the first entry.
+    pub async fn audit_append(&self, at: u64, action: &str, detail: &str) -> Result<(), ApiError> {
+        let mut c = self.conn().await?;
+        let tx = c.transaction().await.map_err(internal)?;
+        tx.execute("SELECT pg_advisory_xact_lock(7263003)", &[]).await.map_err(internal)?;
+        let prev: Vec<u8> = tx
+            .query_opt("SELECT hash FROM admin_audit ORDER BY seq DESC LIMIT 1", &[])
+            .await
+            .map_err(internal)?
+            .map_or_else(|| vec![0u8; 32], |r| r.get(0));
+        let hash = audit_hash(&prev, at as i64, action, detail);
+        tx.execute(
+            "INSERT INTO admin_audit (at, action, detail, prev_hash, hash) VALUES ($1,$2,$3,$4,$5)",
+            &[&(at as i64), &action, &detail, &prev.as_slice(), &hash.as_slice()],
+        )
+        .await
+        .map_err(internal)?;
+        tx.commit().await.map_err(internal)
+    }
+
+    pub async fn audit_list(&self, after: i64, limit: i64) -> Result<Vec<(i64, i64, String, String)>, ApiError> {
+        let c = self.conn().await?;
+        let rows = c
+            .query("SELECT seq, at, action, detail FROM admin_audit WHERE seq > $1 ORDER BY seq LIMIT $2", &[&after, &limit])
+            .await
+            .map_err(internal)?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1), r.get(2), r.get(3))).collect())
+    }
+
+    /// Recomputes the whole chain: every entry must link to its predecessor and carry the hash of its own content.
+    pub async fn audit_chain_ok(&self) -> Result<bool, ApiError> {
+        let c = self.conn().await?;
+        let rows = c.query("SELECT at, action, detail, prev_hash, hash FROM admin_audit ORDER BY seq", &[]).await.map_err(internal)?;
+        let mut prev = vec![0u8; 32];
+        for r in rows {
+            let (at, action, detail, p, h): (i64, String, String, Vec<u8>, Vec<u8>) = (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4));
+            if p != prev || audit_hash(&p, at, &action, &detail).as_slice() != h.as_slice() {
+                return Ok(false);
+            }
+            prev = h;
+        }
+        Ok(true)
     }
 
     // ---- maintenance ----

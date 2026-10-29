@@ -7,6 +7,7 @@
 //! TLS protects the transport but is NOT the end-to-end boundary.
 #![doc = "See docs/METADATA_MODEL.md for exactly what this process can observe."]
 
+pub mod admin;
 pub mod api;
 pub mod auth;
 pub mod config;

@@ -3,6 +3,7 @@
 # never overwrites existing ones, and keeps everything under deploy/data/ (git-ignored, mode 700).
 #
 #   cipherctl.sh init   --audience HOST[:PORT] [--tls-self-signed]     create secrets (Profile B: you then supply tls-cert.pem/tls-key.pem)
+#   cipherctl.sh admin-init | admin stats|audit|registration open|closed   OPT-IN administration (docs/RELAY_ADMIN.md)
 #   cipherctl.sh onion-cert                                             Profile A: after tor created its key, issue the relay's pinned cert
 #   cipherctl.sh up [onion]   |  down  |  status  |  token             run / stop / health / print the registration token
 #   cipherctl.sh backup FILE  |  restore FILE                          PostgreSQL logical backup (ciphertext + public keys only)
@@ -11,7 +12,12 @@ cd "$(dirname "$0")"
 DATA=data; SEC=$DATA/secrets
 need() { command -v "$1" >/dev/null || { echo "missing dependency: $1" >&2; exit 1; }; }
 rand() { head -c 48 /dev/urandom | base64 | tr -d '/+=\n' | head -c "$1"; }
-compose() { if [ "${PROFILE:-}" = onion ] || [ -f $DATA/profile-onion ]; then docker compose -f compose.yaml -f compose.onion.yaml "$@"; else docker compose -f compose.yaml "$@"; fi; }
+compose() {
+  local f=(-f compose.yaml)
+  if [ "${PROFILE:-}" = onion ] || [ -f $DATA/profile-onion ]; then f+=(-f compose.onion.yaml); fi
+  if [ -f $DATA/profile-admin ]; then f+=(-f compose.admin.yaml); fi
+  docker compose "${f[@]}" "$@"
+}
 
 cmd_init() {
   need openssl
@@ -53,6 +59,22 @@ cmd_init() {
   echo; echo "Done. Profile B: place your certificate chain at deploy/$SEC/tls-cert.pem and key at tls-key.pem (non-empty), then: ./cipherctl.sh up"
 }
 
+# Administration is OFF until the operator turns it on here: a separate secret (never the registration token), a loopback-only listener inside the
+# container and no host port. See docs/RELAY_ADMIN.md.
+cmd_admin_init() {
+  need openssl
+  umask 077; mkdir -p $SEC
+  if [ -e $SEC/admin_token ]; then echo "keep   admin_token (exists)"; else printf '%s' "$(rand 48)" > $SEC/admin_token; chmod 600 $SEC/admin_token; echo "create admin_token"; fi
+  touch $DATA/profile-admin
+  echo "Administration enabled. Restart the relay to load it: ./cipherctl.sh up   (then: ./cipherctl.sh admin stats)"
+  echo "The secret is in deploy/$SEC/admin_token. It is NOT the registration token and is never printed."
+}
+
+cmd_admin() {
+  [ -f $DATA/profile-admin ] || { echo "administration is not enabled (run: ./cipherctl.sh admin-init)" >&2; exit 1; }
+  compose exec -T relay /usr/local/bin/cipher-relay admin "$@"
+}
+
 cmd_onion_cert() {
   need openssl
   local host; host=$(docker compose -f compose.yaml -f compose.onion.yaml exec -T tor cat /var/lib/tor/cipher-relay/hostname | tr -d '\r\n')
@@ -72,6 +94,8 @@ cmd_onion_cert() {
 case "${1:-}" in
   init) shift; cmd_init "$@";;
   onion-cert) cmd_onion_cert;;
+  admin-init) cmd_admin_init;;
+  admin) shift; cmd_admin "$@";;
   up) if [ "${2:-}" = onion ]; then touch $DATA/profile-onion; fi
       [ -s $SEC/tls-cert.pem ] || [ -f $DATA/profile-onion ] || { echo "tls-cert.pem is empty: supply your certificate first" >&2; exit 1; }
       compose up -d --build;;

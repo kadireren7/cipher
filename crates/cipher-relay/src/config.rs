@@ -55,7 +55,7 @@ pub enum ConfigError {
 
 /// `KEY` from the environment, or the contents of the file named by `KEY_FILE` (container secrets: keeps secrets out of `docker inspect`
 /// and process environments). Setting both is an error-by-ambiguity: the file wins only when the plain variable is absent.
-fn env_or_file(k: &str) -> Option<String> {
+pub(crate) fn env_or_file(k: &str) -> Option<String> {
     if let Some(v) = std::env::var(k).ok().filter(|v| !v.is_empty()) {
         return Some(v);
     }

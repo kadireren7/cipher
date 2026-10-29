@@ -2929,6 +2929,123 @@
         }
       ],
       "gap": "Cross-relay groups are experimental and self-reviewed only (ST-005, ST-051..054); tested in-process, not over Tor or on devices."
+    },
+    {
+      "id": "ADM-001",
+      "statement": "Only the administrator secret opens any administration route; every other credential (none, wrong, the registration token) gets the identical refusal.",
+      "status": "partial",
+      "threats": [
+        "A3"
+      ],
+      "scope": "Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "nothing_but_the_administrator_secret_opens_any_route"
+        }
+      ],
+      "gap": "Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor."
+    },
+    {
+      "id": "ADM-002",
+      "statement": "Registering an account, including the first, grants no administrative power.",
+      "status": "partial",
+      "threats": [
+        "A3"
+      ],
+      "scope": "Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "registering_the_first_account_grants_no_administrative_power"
+        }
+      ],
+      "gap": "Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor."
+    },
+    {
+      "id": "ADM-003",
+      "statement": "The administration statistics have a fixed field set, coarse user-related counts, and contain no identifier of any user, device, group or message.",
+      "status": "partial",
+      "threats": [
+        "A3",
+        "A5"
+      ],
+      "scope": "Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "the_stats_are_coarse_and_name_no_user_device_group_or_message"
+        },
+        {
+          "kind": "rust",
+          "name": "counts_are_coarse"
+        }
+      ],
+      "gap": "Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor."
+    },
+    {
+      "id": "ADM-004",
+      "statement": "Closing registration stops new accounts only, is reversible, is audited, and unknown request fields are refused without effect.",
+      "status": "partial",
+      "threats": [
+        "A3"
+      ],
+      "scope": "Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "closing_registration_stops_new_accounts_not_existing_ones_and_is_audited"
+        },
+        {
+          "kind": "rust",
+          "name": "a_request_body_with_unknown_fields_is_refused_and_changes_nothing"
+        }
+      ],
+      "gap": "Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor."
+    },
+    {
+      "id": "ADM-005",
+      "statement": "The audit log is append-only at the database and hash-chained; a forged entry is detected.",
+      "status": "partial",
+      "threats": [
+        "A3"
+      ],
+      "scope": "Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "the_audit_log_cannot_be_rewritten_and_the_chain_notices_a_forged_entry"
+        }
+      ],
+      "gap": "Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor."
+    },
+    {
+      "id": "ADM-006",
+      "statement": "The administrator secret is strict, failed attempts are counted but never itemised, and the secret never appears in logs or Debug output.",
+      "status": "partial",
+      "threats": [
+        "A3"
+      ],
+      "scope": "Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "the_administrator_secret_is_strict"
+        },
+        {
+          "kind": "rust",
+          "name": "the_debug_output_never_shows_the_secret"
+        },
+        {
+          "kind": "rust",
+          "name": "failed_attempts_are_counted_but_never_itemised_and_the_secret_is_never_logged"
+        },
+        {
+          "kind": "rust",
+          "name": "only_get_and_post_on_the_listed_routes_exist"
+        }
+      ],
+      "gap": "Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor."
     }
   ]
 }

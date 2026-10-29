@@ -112,6 +112,12 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | INV-011 | A revoked, expired or used-up invitation admits nobody, including a request that was already waiting. | partial | 2 |
 | INV-012 | Only an owner or admin can create an invitation or decide a request; one-to-one conversations have no invitation links; automatic admission cannot exceed 10 uses and 24 hours. | partial | 1 |
 | INV-013 | A group without a home relay never admits a joiner whose account is on another relay, and refuses before any contact is stored or any commit is attempted; a group with a home relay does admit one, through the existing cross-relay Add and Welcome. | partial | 2 |
+| ADM-001 | Only the administrator secret opens any administration route; every other credential (none, wrong, the registration token) gets the identical refusal. | partial | 1 |
+| ADM-002 | Registering an account, including the first, grants no administrative power. | partial | 1 |
+| ADM-003 | The administration statistics have a fixed field set, coarse user-related counts, and contain no identifier of any user, device, group or message. | partial | 2 |
+| ADM-004 | Closing registration stops new accounts only, is reversible, is audited, and unknown request fields are refused without effect. | partial | 2 |
+| ADM-005 | The audit log is append-only at the database and hash-chained; a forged entry is detected. | partial | 1 |
+| ADM-006 | The administrator secret is strict, failed attempts are counted but never itemised, and the secret never appears in logs or Debug output. | partial | 4 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -1331,3 +1337,62 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 * **Tests:**
   * `a_link_holder_on_another_relay_cannot_join_a_group_that_has_no_home_relay` (Rust)
   * `a_link_holder_on_another_relay_joins_a_group_that_has_a_home_relay` (Rust)
+
+## ADM-001 — Only the administrator secret opens any administration route; every other credential (none, wrong, the registration token) gets the identical refusal.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A3
+* **Scope tested:** Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).
+* **Known gap:** Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor.
+* **Tests:**
+  * `nothing_but_the_administrator_secret_opens_any_route` (Rust)
+
+## ADM-002 — Registering an account, including the first, grants no administrative power.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A3
+* **Scope tested:** Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).
+* **Known gap:** Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor.
+* **Tests:**
+  * `registering_the_first_account_grants_no_administrative_power` (Rust)
+
+## ADM-003 — The administration statistics have a fixed field set, coarse user-related counts, and contain no identifier of any user, device, group or message.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A3, A5
+* **Scope tested:** Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).
+* **Known gap:** Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor.
+* **Tests:**
+  * `the_stats_are_coarse_and_name_no_user_device_group_or_message` (Rust)
+  * `counts_are_coarse` (Rust)
+
+## ADM-004 — Closing registration stops new accounts only, is reversible, is audited, and unknown request fields are refused without effect.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A3
+* **Scope tested:** Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).
+* **Known gap:** Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor.
+* **Tests:**
+  * `closing_registration_stops_new_accounts_not_existing_ones_and_is_audited` (Rust)
+  * `a_request_body_with_unknown_fields_is_refused_and_changes_nothing` (Rust)
+
+## ADM-005 — The audit log is append-only at the database and hash-chained; a forged entry is detected.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A3
+* **Scope tested:** Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).
+* **Known gap:** Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor.
+* **Tests:**
+  * `the_audit_log_cannot_be_rewritten_and_the_chain_notices_a_forged_entry` (Rust)
+
+## ADM-006 — The administrator secret is strict, failed attempts are counted but never itemised, and the secret never appears in logs or Debug output.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A3
+* **Scope tested:** Relay admin listener tests (crates/cipher-relay/tests/admin.rs and src/admin.rs unit tests).
+* **Known gap:** Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor.
+* **Tests:**
+  * `the_administrator_secret_is_strict` (Rust)
+  * `the_debug_output_never_shows_the_secret` (Rust)
+  * `failed_attempts_are_counted_but_never_itemised_and_the_secret_is_never_logged` (Rust)
+  * `only_get_and_post_on_the_listed_routes_exist` (Rust)

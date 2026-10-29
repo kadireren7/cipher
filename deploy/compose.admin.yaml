@@ -1,0 +1,12 @@
+# Administration overlay (docs/RELAY_ADMIN.md). Added by `./cipherctl.sh admin-init`; nothing here is on by default.
+# The administration listener is loopback-only INSIDE the relay container and is published on NO host port: the operator reaches it with
+# `./cipherctl.sh admin <command>` (docker compose exec), over SSH, or not at all. The secret is a mounted file, never an environment value.
+name: cipher
+services:
+  relay:
+    environment:
+      CIPHER_RELAY_ADMIN_TOKEN_FILE: /run/secrets/admin_token
+      CIPHER_RELAY_ADMIN_LISTEN: "127.0.0.1:9444"
+    secrets: [admin_token]
+secrets:
+  admin_token: { file: ./data/secrets/admin_token }

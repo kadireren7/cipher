@@ -314,6 +314,10 @@ async fn register(State(st): S, req: Request<Body>) -> Result<Response, ApiError
     if !token_ok(&st, &r.registration_token) {
         return Err(ApiError::Forbidden);
     }
+    // The operator can close NEW registration (docs/RELAY_ADMIN.md); the answer is the same `Forbidden` as a wrong token.
+    if st.store.setting("registration_open").await?.as_deref() == Some("0") {
+        return Err(ApiError::Forbidden);
+    }
     validate_new_device(&r.account_id, &r.device)?;
     if r.device.endorsement.is_some() {
         return Err(ApiError::BadRequest);

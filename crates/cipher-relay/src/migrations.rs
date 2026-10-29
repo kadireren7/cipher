@@ -21,6 +21,7 @@ pub const MIGRATIONS: &[(i32, &str, &str)] = &[
     (9, "home_log", include_str!("../migrations/0009_home_log.sql")),
     (10, "blob_dedupe", include_str!("../migrations/0010_blob_dedupe.sql")),
     (11, "invites", include_str!("../migrations/0011_invites.sql")),
+    (12, "admin", include_str!("../migrations/0012_admin.sql")),
 ];
 
 const LOCK_KEY: i64 = 0x6369_7068; // "ciph"

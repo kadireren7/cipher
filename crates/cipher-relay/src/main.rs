@@ -21,6 +21,11 @@ async fn main() {
         };
         std::process::exit(if ok { 0 } else { 1 });
     }
+    // `cipher-relay admin ...`: the operator's command line for the administration listener (loopback only).
+    if std::env::args().nth(1).as_deref() == Some("admin") {
+        let rest: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(cipher_relay::admin::cli(&rest).await);
+    }
     cipher_relay::logging::init();
     let cfg = match Config::from_env() {
         Ok(c) => Arc::new(c),
@@ -43,6 +48,19 @@ async fn main() {
             let _ = purge_store.purge(cipher_relay::api::Clock::now(&SystemClock)).await;
         }
     });
+    match cipher_relay::admin::AdminConfig::from_env(&cfg.registration_token_hash) {
+        Ok(Some(admin)) => {
+            let router = cipher_relay::admin::router(state.clone(), &admin);
+            let addr = admin.listen;
+            tokio::spawn(async move {
+                if let Ok(l) = tokio::net::TcpListener::bind(addr).await {
+                    let _ = axum::serve(l, router).await;
+                }
+            });
+        }
+        Ok(None) => {}
+        Err(e) => die(&format!("refusing to start: {e}")),
+    }
     if let Ok(v) = std::env::var("CIPHER_RELAY_HEALTH_LISTEN") {
         let Some(addr) = cipher_relay::health::parse_listen(&v) else { die("CIPHER_RELAY_HEALTH_LISTEN must be a loopback address") };
         let health = cipher_relay::health::router(state.clone());
