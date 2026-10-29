@@ -56,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.SecureFlagPolicy
+import app.cipher.messenger.ui.theme.CipherShape
 import app.cipher.messenger.util.initials
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
@@ -72,7 +73,7 @@ fun Avatar(name: String, size: Dp = 44.dp, group: Boolean = false) {
     val bg = Color.hsl(hue, 0.28f, if (dark) 0.24f else 0.86f)
     val fg = Color.hsl(hue, 0.45f, if (dark) 0.82f else 0.24f)
     Box(
-        Modifier.size(size).clip(if (group) RoundedCornerShape(size * 0.32f) else CircleShape).background(bg),
+        Modifier.size(size).clip(if (group) RoundedCornerShape(size * 0.2f) else CircleShape).background(bg),
         contentAlignment = Alignment.Center
     ) {
         Text(initials(name), color = fg, fontWeight = FontWeight.SemiBold, fontSize = (size.value * 0.36f).sp)
@@ -128,7 +129,7 @@ fun TrustBadge(trust: TrustStateFfi, modifier: Modifier = Modifier) {
 fun Banner(text: String, error: Boolean = false, actionLabel: String? = null, onAction: (() -> Unit)? = null) {
     Surface(
         color = if (error) MaterialTheme.colorScheme.error.copy(alpha = 0.16f) else MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(12.dp),
+        shape = CipherShape.surface,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
     ) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -165,7 +166,7 @@ fun QrCode(text: String, size: Dp = 240.dp, modifier: Modifier = Modifier) {
     Image(
         bitmap = bmp.asImageBitmap(),
         contentDescription = "QR code of your identity",
-        modifier = modifier.size(size).clip(RoundedCornerShape(12.dp)).background(Color.White).padding(10.dp),
+        modifier = modifier.size(size).clip(CipherShape.control).background(Color.White).padding(10.dp),
     )
 }
 
@@ -264,7 +265,7 @@ fun PrimaryButton(text: String, enabled: Boolean = true, modifier: Modifier = Mo
     Button(
         onClick = onClick,
         enabled = enabled,
-        shape = RoundedCornerShape(14.dp),
+        shape = CipherShape.control,
         colors = ButtonDefaults.buttonColors(),
         modifier = modifier.fillMaxWidth().height(52.dp),
     ) { Text(text, fontWeight = FontWeight.SemiBold) }

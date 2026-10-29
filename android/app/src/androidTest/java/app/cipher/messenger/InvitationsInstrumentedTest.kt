@@ -42,7 +42,7 @@ class InvitationsInstrumentedTest {
     private fun info(id: String, expiresMs: Long, uses: Int, admitted: Int, revoked: Boolean = false, auto: Boolean = false) =
         InviteInfoFfi(id, "conv", expiresMs.toULong(), uses.toUInt(), admitted.toUInt(), auto, revoked)
 
-    private fun request(id: String, name: String) = JoinRequestFfi(id, "inv", "conv", "acct-$id", name, "12345 67890", now.toULong())
+    private fun request(id: String, name: String) = JoinRequestFfi(id, "inv", "conv", "acct-$id", name, "SN-$id 12345 67890", now.toULong())
 
     private fun admin(
         state: InvitationsUiState,
@@ -122,7 +122,7 @@ class InvitationsInstrumentedTest {
             onResolve = { id, ok -> resolved += id to ok },
         )
         compose.onNodeWithText("Erin").performScrollTo().assertIsDisplayed()
-        compose.onNodeWithText("12345 67890", useUnmergedTree = true).assertExists()
+        compose.onNodeWithText("SN-r1 12345 67890", useUnmergedTree = true).assertExists()
         compose.onNodeWithTag("approve_r1").performScrollTo().performClick()
         compose.onNodeWithTag("reject_r2").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(listOf("r1" to true, "r2" to false), resolved) }

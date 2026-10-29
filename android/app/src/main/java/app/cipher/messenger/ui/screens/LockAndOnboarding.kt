@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Fingerprint
@@ -49,6 +48,7 @@ import app.cipher.messenger.ui.components.PrimaryButton
 import app.cipher.messenger.ui.components.PrivateTextField
 import app.cipher.messenger.ui.components.QrCode
 import app.cipher.messenger.ui.components.SecureDialog
+import app.cipher.messenger.ui.theme.CipherShape
 import uniffi.cipher_ffi.LockStateFfi
 import uniffi.cipher_ffi.ProtectionFfi
 
@@ -413,9 +413,9 @@ private fun ModeCard(
     onClick: () -> Unit
 ) {
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = CipherShape.surface,
         color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
-        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).clickable(onClick = onClick),
+        modifier = Modifier.fillMaxWidth().clip(CipherShape.surface).clickable(onClick = onClick),
     ) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.Top) {
             Icon(icon, null, modifier = Modifier.padding(top = 2.dp))

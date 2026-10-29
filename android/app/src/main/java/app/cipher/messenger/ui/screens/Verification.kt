@@ -55,6 +55,7 @@ import app.cipher.messenger.ui.components.PrimaryButton
 import app.cipher.messenger.ui.components.QrCode
 import app.cipher.messenger.ui.components.SecureDialog
 import app.cipher.messenger.ui.components.TrustBadge
+import app.cipher.messenger.ui.theme.CipherShape
 import com.google.zxing.BinaryBitmap
 import com.google.zxing.DecodeHintType
 import com.google.zxing.MultiFormatReader
@@ -114,7 +115,7 @@ fun VerifyContactScreen(
             )
             Spacer(Modifier.height(12.dp))
             Surface(
-                shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
+                shape = CipherShape.surface,
                 color = MaterialTheme.colorScheme.surfaceContainer,
                 modifier = Modifier.fillMaxWidth()
             ) {

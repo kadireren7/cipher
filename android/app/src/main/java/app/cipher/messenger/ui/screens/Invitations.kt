@@ -97,12 +97,14 @@ fun InvitationsContent(
                 Text(r.name, fontWeight = FontWeight.SemiBold)
                 Text(r.safetyNumber, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelMedium)
                 Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PrimaryButton("Approve", enabled = !state.busy, modifier = Modifier.testTag("approve_${r.requestId}")) {
+                    PrimaryButton("Approve", enabled = !state.busy, modifier = Modifier.weight(1f).testTag("approve_${r.requestId}")) {
                         onResolve(r.requestId, true)
                     }
-                    OutlinedButton(onClick = {
-                        onResolve(r.requestId, false)
-                    }, enabled = !state.busy, modifier = Modifier.testTag("reject_${r.requestId}")) {
+                    OutlinedButton(
+                        onClick = { onResolve(r.requestId, false) },
+                        enabled = !state.busy,
+                        modifier = Modifier.weight(1f).height(52.dp).testTag("reject_${r.requestId}"),
+                    ) {
                         Text("Reject")
                     }
                 }
@@ -330,8 +332,10 @@ fun JoinWithLinkContent(
         modifier = Modifier.fillMaxWidth().testTag("join_link_field"),
     )
     Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        PrimaryButton("Look up", enabled = !state.busy && link.isNotBlank(), modifier = Modifier.testTag("join_lookup")) { onLookUp(link) }
-        OutlinedButton(onClick = onScan, modifier = Modifier.testTag("join_scan")) { Text("Scan QR") }
+        PrimaryButton("Look up", enabled = !state.busy && link.isNotBlank(), modifier = Modifier.weight(1f).testTag("join_lookup")) {
+            onLookUp(link)
+        }
+        OutlinedButton(onClick = onScan, modifier = Modifier.weight(1f).height(52.dp).testTag("join_scan")) { Text("Scan QR") }
     }
 
     val p = state.preview ?: return
