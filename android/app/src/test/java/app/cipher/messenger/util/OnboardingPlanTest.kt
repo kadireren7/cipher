@@ -1,5 +1,6 @@
 package app.cipher.messenger.util
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,5 +21,14 @@ class OnboardingPlanTest {
             "a debug build's emulator address without an invite is not 'easy'",
             OnboardingPlan.hasDefaultRelay("https://10.0.2.2:8443", "")
         )
+    }
+
+    @Test fun anExistingIdentityResumesAtTheAcknowledgementNeverAtCreation() {
+        // ST-063: killing the app on the "Your Cipher ID" screen must not land on a failing re-registration without the (unstored) invite code.
+        assertEquals(OnboardingPlan.Resume.ACKNOWLEDGE, OnboardingPlan.resumeAt(true, true, true))
+        assertEquals(OnboardingPlan.Resume.ACKNOWLEDGE, OnboardingPlan.resumeAt(false, false, true))
+        assertEquals(OnboardingPlan.Resume.CREATE, OnboardingPlan.resumeAt(true, true, false))
+        assertEquals(OnboardingPlan.Resume.START, OnboardingPlan.resumeAt(true, false, false))
+        assertEquals(OnboardingPlan.Resume.START, OnboardingPlan.resumeAt(false, false, false))
     }
 }

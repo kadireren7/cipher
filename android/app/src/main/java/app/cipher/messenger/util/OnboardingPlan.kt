@@ -12,5 +12,14 @@ object OnboardingPlan {
     fun hasDefaultRelay(url: String, invite: String): Boolean =
         url.startsWith("https://") && url.length > "https://".length && invite.trim().length >= MIN_INVITE
 
+    /** Where a (re)started onboarding resumes. The invitation code is deliberately never stored, so once an identity exists the creating step must not run again (ST-063). */
+    enum class Resume { START, CREATE, ACKNOWLEDGE }
+
+    fun resumeAt(relayConfigured: Boolean, vaultProvisioned: Boolean, identityExists: Boolean): Resume = when {
+        identityExists -> Resume.ACKNOWLEDGE
+        relayConfigured && vaultProvisioned -> Resume.CREATE
+        else -> Resume.START
+    }
+
     private const val MIN_INVITE = 8
 }

@@ -144,12 +144,16 @@ private enum class Step { WELCOME, SERVER, MODE, PIN, CREATING, RECOVERY, IDENTI
 fun OnboardingFlow(state: UiState, vm: AppViewModel) {
     var step by rememberSaveable {
         mutableStateOf(
-            if (state.relayConfigured &&
-                state.vault?.provisioned == true
+            when (
+                app.cipher.messenger.util.OnboardingPlan.resumeAt(
+                    state.relayConfigured,
+                    state.vault?.provisioned == true,
+                    state.identity != null,
+                )
             ) {
-                Step.CREATING
-            } else {
-                Step.WELCOME
+                app.cipher.messenger.util.OnboardingPlan.Resume.ACKNOWLEDGE -> Step.RECOVERY
+                app.cipher.messenger.util.OnboardingPlan.Resume.CREATE -> Step.CREATING
+                app.cipher.messenger.util.OnboardingPlan.Resume.START -> Step.WELCOME
             }
         )
     }
