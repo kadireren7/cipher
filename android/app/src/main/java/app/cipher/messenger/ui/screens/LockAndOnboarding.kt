@@ -36,6 +36,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -153,7 +155,8 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
     }
     var url by rememberSaveable { mutableStateOf(BuildConfig.DEFAULT_RELAY_URL) }
     var invite by remember { mutableStateOf(BuildConfig.DEFAULT_INVITE) }
-    var relayPin by rememberSaveable { mutableStateOf("") }
+    var relayPin by rememberSaveable { mutableStateOf(BuildConfig.DEFAULT_RELAY_PIN) }
+    val easy = app.cipher.messenger.util.OnboardingPlan.hasDefaultRelay(BuildConfig.DEFAULT_RELAY_URL, BuildConfig.DEFAULT_INVITE)
     var pinOnly by rememberSaveable { mutableStateOf(false) }
     var pinFirst by remember { mutableStateOf<String?>(null) }
     var chosenPin by remember { mutableStateOf<String?>(null) }
@@ -170,10 +173,13 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
         Spacer(Modifier.height(24.dp))
         when (step) {
             Step.WELCOME -> {
-                Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer, modifier = Modifier.size(88.dp)) {
-                    Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.Lock, null, modifier = Modifier.size(42.dp)) }
-                }
-                Spacer(Modifier.height(24.dp))
+                Icon(
+                    painterResource(app.cipher.messenger.R.drawable.ic_launcher_fg),
+                    contentDescription = "Cipher",
+                    tint = MaterialTheme.colorScheme.onBackground,
+                    modifier = Modifier.size(120.dp)
+                )
+                Spacer(Modifier.height(16.dp))
                 Text("Cipher", style = MaterialTheme.typography.headlineMedium)
                 Spacer(Modifier.height(8.dp))
                 Text(
@@ -182,13 +188,24 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Spacer(Modifier.height(32.dp))
-                Bullet("Messages are encrypted on your phone before they leave it.")
-                Bullet("Servers can't read them, and your contacts are never uploaded.")
-                Bullet("Your keys are kept in the Android Keystore, hardware-backed where your phone supports it.")
+                Bullet("Your messages are locked on your phone before they leave it.")
+                Bullet("The server passes them along but cannot read them.")
+                Bullet("Your contacts are never uploaded and your keys never leave this phone.")
                 Spacer(Modifier.height(16.dp))
                 Banner("Experimental software. It has not been independently audited. Don't rely on it where your safety depends on it.")
                 Spacer(Modifier.height(16.dp))
-                PrimaryButton("Get started") { step = Step.SERVER }
+                if (easy) {
+                    PrimaryButton("Create my identity", modifier = Modifier.testTag("welcome_create")) {
+                        vm.configureRelay(url, relayPin.ifBlank { null })
+                        invite = BuildConfig.DEFAULT_INVITE
+                        step = Step.MODE
+                    }
+                    TextButton(onClick = {
+                        step = Step.SERVER
+                    }, modifier = Modifier.testTag("welcome_other_server")) { Text("Use a different server") }
+                } else {
+                    PrimaryButton("Get started") { step = Step.SERVER }
+                }
             }
             Step.SERVER -> {
                 Text("Choose a server", style = MaterialTheme.typography.titleLarge)

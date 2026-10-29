@@ -57,6 +57,7 @@ android {
             buildConfigField("boolean", "ALLOW_SOFTWARE_KEYSTORE", "true")
             buildConfigField("String", "DEFAULT_RELAY_URL", "\"https://10.0.2.2:8443\"")
             buildConfigField("String", "DEFAULT_INVITE", "\"\"")
+            buildConfigField("String", "DEFAULT_RELAY_PIN", "\"\"")
             applicationIdSuffix = ".debug"
             isDebuggable = true
         }
@@ -65,6 +66,7 @@ android {
             buildConfigField("boolean", "ALLOW_SOFTWARE_KEYSTORE", "false")
             buildConfigField("String", "DEFAULT_RELAY_URL", "\"\"")
             buildConfigField("String", "DEFAULT_INVITE", "\"\"")
+            buildConfigField("String", "DEFAULT_RELAY_PIN", "\"\"")
             isMinifyEnabled = true
             isShrinkResources = true
             isDebuggable = false
