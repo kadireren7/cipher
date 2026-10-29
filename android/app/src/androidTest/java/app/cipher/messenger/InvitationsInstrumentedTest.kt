@@ -90,11 +90,18 @@ class InvitationsInstrumentedTest {
     @Test fun aCreatedLinkIsShownOnceWithAWarningAndCanBeCopied() {
         val copied = mutableListOf<String>()
         var done = 0
-        val state = mutableStateOf(InvitationsUiState(created = InviteCreatedFfi("inv1", "cipher-invite:v1:SECRETLINK", (now + 1000).toULong()), nowMs = now))
+        val state =
+            mutableStateOf(
+                InvitationsUiState(created = InviteCreatedFfi("inv1", "cipher-invite:v1:SECRETLINK", (now + 1000).toULong()), nowMs = now)
+            )
         compose.setContent {
             MaterialTheme {
                 Column(scrollModifier()) {
-                    InvitationsContent(state.value, { _, _, _ -> }, {}, { _, _ -> }, { done++; state.value = state.value.copy(created = null) }, { copied += it }, {})
+                    InvitationsContent(state.value, { _, _, _ -> }, {}, { _, _ -> }, {
+                        done++
+                        state.value =
+                            state.value.copy(created = null)
+                    }, { copied += it }, {})
                 }
             }
         }
@@ -162,7 +169,14 @@ class InvitationsInstrumentedTest {
 
     // ------------------------------------------------------------------------------------------------------------------------- joiner
 
-    private fun preview(other: Boolean = true, auto: Boolean = false) = InvitePreviewFfi("Team", "Alice", "acct", auto, (now + 1000).toULong(), other)
+    private fun preview(other: Boolean = true, auto: Boolean = false) = InvitePreviewFfi(
+        "Team",
+        "Alice",
+        "acct",
+        auto,
+        (now + 1000).toULong(),
+        other
+    )
 
     private fun join(
         state: JoinUiState,
@@ -189,7 +203,10 @@ class InvitationsInstrumentedTest {
 
     @Test fun thePreviewNamesTheGroupAndInviterWithoutOverclaimingAndAsksForAName() {
         var asked: Pair<String, String>? = null
-        join(JoinUiState(preview = preview(other = false, auto = true)), initialLink = "cipher-invite:v1:ABC", onRequest = { l, n -> asked = l to n })
+        join(JoinUiState(preview = preview(other = false, auto = true)), initialLink = "cipher-invite:v1:ABC", onRequest = { l, n ->
+            asked =
+                l to n
+        })
         compose.onNodeWithTag("join_group").assertIsDisplayed()
         compose.onNodeWithText("Team").assertIsDisplayed()
         compose.onNodeWithTag("join_inviter").assertIsDisplayed()
