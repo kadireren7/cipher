@@ -118,6 +118,7 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
 | ADM-004 | Closing registration stops new accounts only, is reversible, is audited, and unknown request fields are refused without effect. | partial | 2 |
 | ADM-005 | The audit log is append-only at the database and hash-chained; a forged entry is detected. | partial | 1 |
 | ADM-006 | The administrator secret is strict, failed attempts are counted but never itemised, and the secret never appears in logs or Debug output. | partial | 4 |
+| INV-014 | A relay that withholds a Welcome leaves the approved joiner without a group, keys or history, and does not break the group for its existing members. | partial | 1 |
 
 ## SEC-001 — Application servers never receive message plaintext.
 
@@ -1396,3 +1397,12 @@ Each invariant is a testable statement tied to the threat model (`THREAT_MODEL.m
   * `the_debug_output_never_shows_the_secret` (Rust)
   * `failed_attempts_are_counted_but_never_itemised_and_the_secret_is_never_logged` (Rust)
   * `only_get_and_post_on_the_listed_routes_exist` (Rust)
+
+## INV-014 — A relay that withholds a Welcome leaves the approved joiner without a group, keys or history, and does not break the group for its existing members.
+
+* **Status:** partial
+* **Threats (docs/THREAT_MODEL.md):** A2
+* **Scope tested:** Engine test with a relay that drops the joiner's queued messages.
+* **Known gap:** The admin's view still lists the joiner and nothing tells the admin the Welcome never arrived (no delivery receipt for admission); tested in-process only.
+* **Tests:**
+  * `a_relay_that_withholds_the_welcome_leaves_the_joiner_outside_and_the_group_working` (Rust)

@@ -3046,6 +3046,22 @@
         }
       ],
       "gap": "Self-reviewed only (ST-005); tested against a real PostgreSQL in-process, not under a hostile operator or over Tor."
+    },
+    {
+      "id": "INV-014",
+      "statement": "A relay that withholds a Welcome leaves the approved joiner without a group, keys or history, and does not break the group for its existing members.",
+      "status": "partial",
+      "threats": [
+        "A2"
+      ],
+      "scope": "Engine test with a relay that drops the joiner's queued messages.",
+      "tests": [
+        {
+          "kind": "rust",
+          "name": "a_relay_that_withholds_the_welcome_leaves_the_joiner_outside_and_the_group_working"
+        }
+      ],
+      "gap": "The admin's view still lists the joiner and nothing tells the admin the Welcome never arrived (no delivery receipt for admission); tested in-process only."
     }
   ]
 }

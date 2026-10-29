@@ -373,3 +373,25 @@ fn the_app_polls_only_while_there_is_something_to_poll_for() {
     r.wa.clock.0.advance(3 * 3600);
     assert!(!r.alice.has_live_invites().unwrap(), "nor does an expired one ({:?})", short.id);
 }
+
+#[test]
+fn a_relay_that_withholds_the_welcome_leaves_the_joiner_outside_and_the_group_working() {
+    let mut r = rig();
+    let created = r.alice.create_invite(&r.group, policy(2, JoinMode::Approval)).unwrap();
+    r.erin.request_to_join(&created.link, "Erin").unwrap();
+    let pending = r.alice.poll_join_requests().unwrap();
+    r.alice.resolve_join_request(&pending[0].request_id, true).unwrap();
+    assert_eq!(r.alice.members(&r.group).unwrap().len(), 3, "the admin's group now lists Erin");
+
+    // The (untrusted) relay silently drops everything queued for Erin's devices, the Welcome included.
+    let erin = r.erin.public_identity().unwrap().account_id;
+    r.wa.exec("DELETE FROM queue WHERE recipient IN (SELECT device_id FROM devices WHERE account_id = $1)", &[&erin.0.as_slice()]);
+
+    settle(&mut r);
+    assert!(group_of(&mut r.erin).is_none(), "without the Welcome Erin has no group, no keys and no history");
+    // Everyone else is unharmed and keeps talking; Erin simply cannot read it.
+    r.alice.send_text(&r.group, "still-working-after-withheld-welcome", None).unwrap();
+    settle(&mut r);
+    assert_eq!(texts(&mut r.dave, &r.group).last().map(String::as_str), Some("still-working-after-withheld-welcome"));
+    assert!(group_of(&mut r.erin).is_none());
+}
