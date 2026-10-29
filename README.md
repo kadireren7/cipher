@@ -6,9 +6,9 @@
 
 **A private Android messenger built around end-to-end encryption, local encrypted history, revocable group access, and metadata-resistant transport.**
 
-![Rust](https://img.shields.io/badge/core-Rust-b7410e?style=flat-square)
-![Android](https://img.shields.io/badge/client-Android%20(Kotlin%2FCompose)-3ddc84?style=flat-square)
-![OpenMLS](https://img.shields.io/badge/E2EE-OpenMLS%20(RFC%209420)-5b7bd5?style=flat-square)
+![Rust](https://img.shields.io/badge/core-Rust-1c1c1f?style=flat-square)
+![Android](https://img.shields.io/badge/client-Android%20(Kotlin%2FCompose)-1c1c1f?style=flat-square)
+![OpenMLS](https://img.shields.io/badge/E2EE-OpenMLS%20(RFC%209420)-2a3140?style=flat-square)
 ![License](https://img.shields.io/badge/license-not%20yet%20selected-lightgrey?style=flat-square)
 [![CI](https://github.com/kadireren7/cipher/actions/workflows/ci.yml/badge.svg)](https://github.com/kadireren7/cipher/actions/workflows/ci.yml)
 ![Status](https://img.shields.io/badge/status-experimental%20%C2%B7%20unaudited-d29922?style=flat-square)

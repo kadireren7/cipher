@@ -31,6 +31,10 @@ import app.cipher.messenger.ui.components.EmptyState
 import app.cipher.messenger.ui.components.TrustBadge
 import app.cipher.messenger.ui.screens.ConversationRow
 import app.cipher.messenger.ui.screens.InputBar
+import app.cipher.messenger.ui.screens.InvitationsContent
+import app.cipher.messenger.ui.screens.InvitationsUiState
+import app.cipher.messenger.ui.screens.JoinUiState
+import app.cipher.messenger.ui.screens.JoinWithLinkContent
 import app.cipher.messenger.ui.screens.MessageBubble
 import app.cipher.messenger.ui.theme.CipherTheme
 import org.junit.Assert.assertTrue
@@ -42,6 +46,10 @@ import uniffi.cipher_ffi.ConvKindFfi
 import uniffi.cipher_ffi.ConvStateFfi
 import uniffi.cipher_ffi.ConversationFfi
 import uniffi.cipher_ffi.DeliveryStateFfi
+import uniffi.cipher_ffi.InviteCreatedFfi
+import uniffi.cipher_ffi.InviteInfoFfi
+import uniffi.cipher_ffi.InvitePreviewFfi
+import uniffi.cipher_ffi.JoinRequestFfi
 import uniffi.cipher_ffi.MessageFfi
 import uniffi.cipher_ffi.TrustStateFfi
 
@@ -195,6 +203,85 @@ class DesignGalleryInstrumentedTest {
         }
     }
 
+    private val nowMs = 1_760_000_000_000L
+    private val hourMs = 3_600_000L
+
+    @Composable
+    private fun InvitesAdminScene() {
+        Column(Modifier.background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+            InvitationsContent(
+                state = InvitationsUiState(
+                    invites = listOf(
+                        InviteInfoFfi("a", "c", (nowMs + 5 * hourMs).toULong(), 5u, 1u, false, false),
+                        InviteInfoFfi("b", "c", (nowMs + 20 * hourMs).toULong(), 10u, 3u, true, false),
+                        InviteInfoFfi("c", "c", (nowMs - hourMs).toULong(), 5u, 2u, false, false),
+                        InviteInfoFfi("d", "c", (nowMs + 40 * hourMs).toULong(), 5u, 0u, false, true),
+                    ),
+                    requests = listOf(
+                        JoinRequestFfi("r1", "a", "c", "acct1", "Erin Kaya", "48291 03357 71204 66810 93752 20483", TS),
+                        JoinRequestFfi(
+                            "r2",
+                            "a",
+                            "c",
+                            "acct2",
+                            "A very long display name that has to wrap and never push the buttons off screen",
+                            "12345 67890 11223 34455 66778 89900",
+                            TS
+                        ),
+                    ),
+                    nowMs = nowMs,
+                ),
+                onCreate = { _, _, _ -> },
+                onRevoke = {},
+                onResolve = { _, _ -> },
+                onDismissCreated = {},
+                onCopy = {},
+                onDismissError = {},
+            )
+        }
+    }
+
+    @Composable
+    private fun InviteCreatedScene() {
+        Column(Modifier.background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+            InvitationsContent(
+                state = InvitationsUiState(
+                    created = InviteCreatedFfi(
+                        "a",
+                        "cipher-invite:v1:EXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLEEXAMPLE",
+                        (
+                            nowMs +
+                                24 * hourMs
+                            ).toULong()
+                    ),
+                    nowMs = nowMs,
+                ),
+                onCreate = { _, _, _ -> },
+                onRevoke = {},
+                onResolve = { _, _ -> },
+                onDismissCreated = {},
+                onCopy = {},
+                onDismissError = {},
+            )
+        }
+    }
+
+    @Composable
+    private fun JoinScene(other: Boolean, auto: Boolean) {
+        Column(Modifier.background(MaterialTheme.colorScheme.background).padding(16.dp)) {
+            JoinWithLinkContent(
+                state = JoinUiState(
+                    preview = InvitePreviewFfi("Reading group", "Mira Okafor", "acct", auto, (nowMs + 24 * hourMs).toULong(), other)
+                ),
+                initialLink = "cipher-invite:v1:AWRlbW8tZ2FsbGVyeS1saW5r",
+                onLookUp = {},
+                onRequest = { _, _ -> },
+                onScan = {},
+                onDismissError = {},
+            )
+        }
+    }
+
     private fun shoot(name: String, dark: Boolean, fontScale: Float, widthDp: Int, content: @Composable () -> Unit) {
         rule.setContent {
             val d = LocalDensity.current
@@ -229,4 +316,16 @@ class DesignGalleryInstrumentedTest {
     @Test fun groupLight() = shoot("chat-group", false, 1.0f, 360) { ChatScene(true) }
 
     @Test fun partsLight() = shoot("parts", false, 1.0f, 360) { PartsScene() }
+
+    @Test fun invitesAdminDark() = shoot("invites-admin", true, 1.0f, 360) { InvitesAdminScene() }
+
+    @Test fun invitesAdminLightLargeFont() = shoot("invites-admin", false, 1.6f, 360) { InvitesAdminScene() }
+
+    @Test fun inviteCreatedDark() = shoot("invite-created", true, 1.0f, 360) { InviteCreatedScene() }
+
+    @Test fun inviteCreatedLightNarrow() = shoot("invite-created", false, 1.0f, 320) { InviteCreatedScene() }
+
+    @Test fun joinPreviewDark() = shoot("join-preview", true, 1.0f, 360) { JoinScene(other = false, auto = true) }
+
+    @Test fun joinPreviewLightLargeFont() = shoot("join-preview", false, 1.6f, 360) { JoinScene(other = true, auto = false) }
 }

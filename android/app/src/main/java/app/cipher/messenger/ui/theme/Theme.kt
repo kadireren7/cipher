@@ -20,9 +20,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /*
- * Cipher design language: "quiet confidence". One restrained verdigris accent over warm neutrals (paper in light, ink in dark).
- * Colour carries meaning, never decoration: the accent marks what is yours and what is verified; amber marks what needs attention;
- * red marks what failed or is unsafe. Every pair below was chosen for at least 4.5:1 contrast for body text (checked by DesignTokensTest).
+ * Cipher design language: "ink and paper". Near-black and graphite in the dark theme, off-white and black in the light one, and ONE restrained steel-blue
+ * accent. The primary action is monochrome (light on dark, black on light); the accent marks only what is selected, unread or verified.
+ * Amber marks what needs attention, red what failed or is unsafe: colour carries meaning, never decoration. Corners are small and there are no shadows,
+ * gradients or glows. Every pair below keeps at least 4.5:1 contrast for body text (checked by DesignTokensTest).
  */
 
 /** Spacing scale (4 dp grid). Use these instead of ad-hoc dp literals in new code. */
@@ -41,11 +42,11 @@ object CipherSpace {
 
 /** Shape tokens. Bubbles keep one corner tight on the sender's side; everything else uses [control] or [surface]. */
 object CipherShape {
-    val bubble: Dp = 18.dp
-    val bubbleTail: Dp = 5.dp
-    val control = RoundedCornerShape(12.dp)
-    val surface = RoundedCornerShape(16.dp)
-    val field = RoundedCornerShape(22.dp)
+    val bubble: Dp = 14.dp
+    val bubbleTail: Dp = 4.dp
+    val control = RoundedCornerShape(8.dp)
+    val surface = RoundedCornerShape(10.dp)
+    val field = RoundedCornerShape(12.dp)
 }
 
 /** Colours that Material 3's scheme has no slot for. */
@@ -65,47 +66,49 @@ data class CipherColors(
 )
 
 internal val DarkCipher = CipherColors(
-    bubbleIn = Color(0xFF1E2422),
-    onBubbleIn = Color(0xFFE8ECEA),
-    bubbleOut = Color(0xFF1D4A3C),
-    onBubbleOut = Color(0xFFE3F5EE),
+    bubbleIn = Color(0xFF1C1C1F),
+    onBubbleIn = Color(0xFFEDEDEF),
+    bubbleOut = Color(0xFF2A3140),
+    onBubbleOut = Color(0xFFEEF0F4),
     warning = Color(0xFFE2B45E),
     onWarningContainer = Color(0xFFF3DFB4),
     warningContainer = Color(0xFF33290F),
-    verified = Color(0xFF7FCBB0),
+    verified = Color(0xFF8FA8C8),
 )
 
 internal val LightCipher = CipherColors(
     bubbleIn = Color(0xFFFFFFFF),
-    onBubbleIn = Color(0xFF1A1F1D),
-    bubbleOut = Color(0xFFD3EADF),
-    onBubbleOut = Color(0xFF0B2E24),
+    onBubbleIn = Color(0xFF0E0E10),
+    bubbleOut = Color(0xFFDDE3EC),
+    onBubbleOut = Color(0xFF0E1622),
     warning = Color(0xFF8A5A00),
     onWarningContainer = Color(0xFF4A3000),
     warningContainer = Color(0xFFFBEBC8),
-    verified = Color(0xFF1F6F5A),
+    verified = Color(0xFF2F5686),
 )
 
 internal val DarkScheme = darkColorScheme(
-    primary = Color(0xFF7FCBB0),
-    onPrimary = Color(0xFF07251C),
-    primaryContainer = Color(0xFF1D4A3C),
-    onPrimaryContainer = Color(0xFFD6F1E7),
-    secondary = Color(0xFF9DB8AE),
-    onSecondary = Color(0xFF0E1A16),
-    background = Color(0xFF0F1211),
-    onBackground = Color(0xFFE8ECEA),
-    surface = Color(0xFF0F1211),
-    onSurface = Color(0xFFE8ECEA),
-    surfaceVariant = Color(0xFF212826),
-    onSurfaceVariant = Color(0xFF9FAAA5),
-    surfaceContainerLowest = Color(0xFF0B0D0C),
-    surfaceContainerLow = Color(0xFF131716),
-    surfaceContainer = Color(0xFF171C1A),
-    surfaceContainerHigh = Color(0xFF1E2422),
-    surfaceContainerHighest = Color(0xFF262D2A),
-    outline = Color(0xFF55615C),
-    outlineVariant = Color(0xFF29322F),
+    primary = Color(0xFFEDEDEF),
+    onPrimary = Color(0xFF0A0A0B),
+    primaryContainer = Color(0xFF26262B),
+    onPrimaryContainer = Color(0xFFEDEDEF),
+    secondary = Color(0xFF8FA8C8),
+    onSecondary = Color(0xFF0A0A0B),
+    secondaryContainer = Color(0xFF232C3B),
+    onSecondaryContainer = Color(0xFFDCE5F2),
+    background = Color(0xFF0A0A0B),
+    onBackground = Color(0xFFF4F4F5),
+    surface = Color(0xFF0A0A0B),
+    onSurface = Color(0xFFF4F4F5),
+    surfaceVariant = Color(0xFF1C1C1F),
+    onSurfaceVariant = Color(0xFFA1A1A8),
+    surfaceContainerLowest = Color(0xFF070708),
+    surfaceContainerLow = Color(0xFF101012),
+    surfaceContainer = Color(0xFF151517),
+    surfaceContainerHigh = Color(0xFF1C1C1F),
+    surfaceContainerHighest = Color(0xFF242428),
+    outline = Color(0xFF55555C),
+    outlineVariant = Color(0xFF26262A),
     error = Color(0xFFF2877E),
     onError = Color(0xFF3A0904),
     errorContainer = Color(0xFF4A1914),
@@ -115,25 +118,27 @@ internal val DarkScheme = darkColorScheme(
 )
 
 internal val LightScheme = lightColorScheme(
-    primary = Color(0xFF1F6F5A),
-    onPrimary = Color.White,
-    primaryContainer = Color(0xFFD3EADF),
-    onPrimaryContainer = Color(0xFF0B2E24),
-    secondary = Color(0xFF4A6A5F),
+    primary = Color(0xFF0E0E10),
+    onPrimary = Color(0xFFF6F5F2),
+    primaryContainer = Color(0xFFE7E6E1),
+    onPrimaryContainer = Color(0xFF0E0E10),
+    secondary = Color(0xFF3B5B82),
     onSecondary = Color.White,
-    background = Color(0xFFF5F4F0),
-    onBackground = Color(0xFF1A1F1D),
-    surface = Color(0xFFF5F4F0),
-    onSurface = Color(0xFF1A1F1D),
-    surfaceVariant = Color(0xFFE9E7E0),
-    onSurfaceVariant = Color(0xFF515B57),
+    secondaryContainer = Color(0xFFDDE3EC),
+    onSecondaryContainer = Color(0xFF0E1622),
+    background = Color(0xFFF6F5F2),
+    onBackground = Color(0xFF0E0E10),
+    surface = Color(0xFFF6F5F2),
+    onSurface = Color(0xFF0E0E10),
+    surfaceVariant = Color(0xFFEAE9E4),
+    onSurfaceVariant = Color(0xFF55555C),
     surfaceContainerLowest = Color.White,
-    surfaceContainerLow = Color(0xFFF9F8F5),
+    surfaceContainerLow = Color(0xFFFAF9F7),
     surfaceContainer = Color.White,
-    surfaceContainerHigh = Color(0xFFEFEDE7),
-    surfaceContainerHighest = Color(0xFFE6E3DB),
-    outline = Color(0xFF7E8782),
-    outlineVariant = Color(0xFFDAD7CE),
+    surfaceContainerHigh = Color(0xFFEFEEEA),
+    surfaceContainerHighest = Color(0xFFE7E6E1),
+    outline = Color(0xFF8A8A91),
+    outlineVariant = Color(0xFFDDDCD7),
     error = Color(0xFFB3261E),
     onError = Color.White,
     errorContainer = Color(0xFFF9DEDA),
@@ -184,11 +189,11 @@ private val AppTypography = Typography(
 )
 
 private val AppShapes = Shapes(
-    extraSmall = RoundedCornerShape(6.dp),
-    small = RoundedCornerShape(10.dp),
-    medium = RoundedCornerShape(12.dp),
-    large = RoundedCornerShape(16.dp),
-    extraLarge = RoundedCornerShape(24.dp),
+    extraSmall = RoundedCornerShape(4.dp),
+    small = RoundedCornerShape(6.dp),
+    medium = RoundedCornerShape(8.dp),
+    large = RoundedCornerShape(12.dp),
+    extraLarge = RoundedCornerShape(16.dp),
 )
 
 private val LocalCipherColors = staticCompositionLocalOf { DarkCipher }

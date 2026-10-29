@@ -31,6 +31,10 @@ class DesignTokensTest {
         check("dark error", s.error, s.background)
         check("dark warning banner", c.onWarningContainer, c.warningContainer)
         check("dark verified", c.verified, c.bubbleOut, 3.0) // icon only, paired with a label: 3:1 non-text contrast
+        check("dark accent on background", s.secondary, s.background)
+        check("dark accent text on its container", s.onSecondaryContainer, s.secondaryContainer)
+        check("dark text on primary container", s.onPrimaryContainer, s.primaryContainer)
+        check("dark outline is visible", s.outline, s.background, 2.5)
     }
 
     @Test fun lightSchemeMeetsAA() {
@@ -46,5 +50,24 @@ class DesignTokensTest {
         check("light error", s.error, s.background)
         check("light warning banner", c.onWarningContainer, c.warningContainer)
         check("light verified", c.verified, c.bubbleOut, 3.0)
+        check("light accent on background", s.secondary, s.background)
+        check("light accent text on its container", s.onSecondaryContainer, s.secondaryContainer)
+        check("light text on primary container", s.onPrimaryContainer, s.primaryContainer)
+        check("light outline is visible", s.outline, s.background, 2.5)
+    }
+
+    @Test fun theBrandIsBlackFirstWithOneNonGreenAccent() {
+        // The dark theme is near-black, the primary action is monochrome, and no token is the old green: this guards the visual identity.
+        assertTrue(DarkScheme.background.luminance() < 0.01f)
+        assertTrue(DarkScheme.primary.luminance() > 0.7f)
+        assertTrue(LightScheme.primary.luminance() < 0.02f)
+        for (c in listOf(DarkScheme.secondary, LightScheme.secondary, DarkCipher.verified, LightCipher.verified)) {
+            assertTrue("accent must be blue-leaning, not green", c.blue > c.green && c.blue > c.red)
+        }
+    }
+
+    @Test fun amberMeansWarningAndIsNeverTheAccent() {
+        assertTrue(DarkCipher.warning != DarkScheme.secondary && DarkCipher.warning != DarkCipher.verified)
+        assertTrue(LightCipher.warning != LightScheme.secondary && LightCipher.warning != LightCipher.verified)
     }
 }

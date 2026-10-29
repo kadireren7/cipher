@@ -1,4 +1,5 @@
 <resources>
-    <color name="cipher_bg">#0E1116</color>
-    <color name="ic_launcher_bg">#16315F</color>
+    <!-- Near-black ink: the window background before the first frame, the launcher icon background and the splash screen. -->
+    <color name="cipher_bg">#0A0A0B</color>
+    <color name="ic_launcher_bg">#0A0A0B</color>
 </resources>
