@@ -7,6 +7,13 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TorConfigTest {
+    @Test fun theDebugLogLineExistsOnlyWhenAFileIsGivenAndNeverCarriesAnotherDirective() {
+        assertFalse("release passes no log file", TorConfig.torrc(emptyList()).contains("Log "))
+        assertTrue(TorConfig.torrc(emptyList(), "/data/x/tor.log").lines().contains("Log notice file /data/x/tor.log"))
+        val smuggled = TorConfig.torrc(emptyList(), "/x\nControlPort 9051")
+        assertFalse("a newline cannot smuggle a second directive", smuggled.contains("ControlPort"))
+    }
+
     @Test fun theDaemonIsAClientWithOneLoopbackSocksListenerAndNothingElse() {
         val rc = TorConfig.torrc(emptyList())
         assertTrue(rc.contains("SocksPort ${TorConfig.SOCKS_HOST}:${TorConfig.SOCKS_PORT} IsolateSOCKSAuth"))

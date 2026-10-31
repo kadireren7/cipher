@@ -18,7 +18,7 @@ object TorConfig {
     const val SOCKS_HOST = "127.0.0.1"
 
     /** The control channel is a private socket inside the app's own data directory; no TCP ControlPort is ever opened. */
-    fun torrc(bridges: List<String>): String = buildString {
+    fun torrc(bridges: List<String>, debugLogFile: String? = null): String = buildString {
         appendLine("SocksPort $SOCKS_HOST:$SOCKS_PORT IsolateSOCKSAuth")
         appendLine("ClientOnly 1")
         // The library's own defaults also open an HTTP tunnel on 127.0.0.1:8118. Cipher does not use it and no other app on the phone may borrow
@@ -26,6 +26,8 @@ object TorConfig {
         appendLine("HTTPTunnelPort 0")
         appendLine("SafeLogging 1")
         appendLine("AvoidDiskWrites 1")
+        // Debug builds only (the caller passes null in release): Tor's own notices to a private file, for diagnosing a device. SafeLogging stays on.
+        if (debugLogFile != null && debugLogFile.none { it == '\n' || it == '\r' }) appendLine("Log notice file $debugLogFile")
         if (bridges.isNotEmpty()) {
             appendLine("UseBridges 1")
             bridges.forEach { appendLine("Bridge $it") }

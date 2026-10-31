@@ -44,7 +44,8 @@ class EmbeddedTor(private val context: Context, private val bridgesFile: File) {
         if (running) return
         val torrc = TorService.getTorrc(context)
         torrc.parentFile?.mkdirs()
-        torrc.writeText(TorConfig.torrc(bridges()))
+        val debugLog = if (app.cipher.messenger.BuildConfig.DEBUG) File(File(context.noBackupFilesDir, "tor"), "tor.log").path else null
+        torrc.writeText(TorConfig.torrc(bridges(), debugLog))
         running = true
         context.startService(Intent(context, CipherTorService::class.java).setAction(TorService.ACTION_START))
     }
