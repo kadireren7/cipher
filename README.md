@@ -210,4 +210,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT
 
 ## License
 
-**No license has been selected yet.** Until the maintainer chooses one, all rights are reserved by default: the source is publicly visible for review, but no permission to use, copy, modify or distribute it is granted. This is tracked as a release blocker for any reuse.
+Cipher is free software under the **GNU General Public License v3.0 only** (`GPL-3.0-only`); see [LICENSE](LICENSE). You may use, study, change and share it; if you distribute it or a modified version (for example an APK), you must do so under the same licence and offer the corresponding source. It comes with no warranty. Third-party components keep their own licences (for example lyrebird GPL-3.0, snowflake BSD-3-Clause, tor-android BSD-3-Clause, OpenMLS MIT); see [LICENSE_DECISION.md](docs/LICENSE_DECISION.md).

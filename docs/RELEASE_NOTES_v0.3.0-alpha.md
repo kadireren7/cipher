@@ -29,7 +29,7 @@
 
 ## Licences
 
-The APK now contains lyrebird (GPL-3.0) inside IPtProxy (MIT) and snowflake (BSD-3-Clause). See [LICENSE_DECISION.md](LICENSE_DECISION.md).
+**Cipher is now licensed under GPL-3.0-only** ([LICENSE](../LICENSE)); earlier versions had no licence. The source of this release is the tagged commit in this repository. The APK contains lyrebird (GPL-3.0) inside IPtProxy (MIT), snowflake (BSD-3-Clause) and tor-android (BSD-3-Clause). See [LICENSE_DECISION.md](LICENSE_DECISION.md).
 
 ## Files, verification and install
 

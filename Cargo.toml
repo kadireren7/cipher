@@ -6,7 +6,7 @@ members = ["crates/cipher-wire", "crates/cipher-core", "crates/cipher-relay", "c
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
-license = "UNLICENSED"
+license = "GPL-3.0-only"
 publish = false
 
 [workspace.lints.rust]

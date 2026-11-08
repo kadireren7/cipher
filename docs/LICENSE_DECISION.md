@@ -1,6 +1,6 @@
 # Open-source licence decision checklist
 
-**No licence is selected; all rights are reserved until the owner decides** (`README.md`, `PUBLIC_RELEASE_AUDIT.md`). Nothing here selects one.
+**Decision (2026-11-08): `GPL-3.0-only`, for the whole repository (client and relay).** The owner chose it because the APK bundles GPL-3.0 code (lyrebird, below). `LICENSE` holds the licence text, `Cargo.toml` sets `license = "GPL-3.0-only"`. The checklist below is kept for the remaining open points (contributor terms, name, store policy). Every Rust dependency licence allowed by `deny.toml` (MIT, Apache-2.0, BSD, ISC, Zlib, MPL-2.0, Unicode-3.0, CC0, CDLA-Permissive-2.0) is compatible with GPL-3.0.
 
 | Question | Why it matters | Owner answer |
 | --- | --- | --- |

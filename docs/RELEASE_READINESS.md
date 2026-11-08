@@ -19,7 +19,7 @@
 | Development | **YES** | `ci` 7/7 green on 40698655145 (Rust + PostgreSQL, audit, secrets, invariants, Android unit/ktlint/lint/release+AAB, 62 instrumented tests, two-relay emulator E2E). |
 | Experimental self-hosting | **YES** for technical operators | Docker Compose relay, backup/restore, upgrade/rollback tested in CI (`self-hosting acceptance`); onion relay tested over live Tor. Operators must read `KNOWN_LIMITATIONS.md`. |
 | Internal testing (the team, on devices it controls) | **YES, with an unsigned developer build** | CI uploads an unsigned APK/AAB with hashes; sideload only. Testers must be told it is experimental. |
-| Private beta (invited outsiders) | **NO** | Open: physical-device matrix (ST-028), no push/background delivery (ST-017/042), no signed release or key plan, no licence, informed-tester process, independent review for any claim beyond "experimental". |
+| Private beta (invited outsiders) | **NO** | Open: physical-device matrix (ST-028), no push/background delivery (ST-017/042), no signed release or key plan, informed-tester process, independent review for any claim beyond "experimental". |
 | Public beta | **NO** | Plus: independent audit (ST-005), signed reproducible release, store/legal review (privacy policy and terms are drafts), group-recovery and notification gaps. |
 | Production | **NO** | Plus soak/load/incident evidence, audited protocols. |
 
