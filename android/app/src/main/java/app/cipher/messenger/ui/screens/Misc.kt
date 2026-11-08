@@ -340,7 +340,7 @@ private fun NetworkSection(state: UiState, vm: AppViewModel) {
     Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     val embedded = vm.host.routeConfig.embedded()
     state.torProgress?.takeIf { embedded && it < 100 }?.let {
-        Text("Tor is starting: $it%", style = MaterialTheme.typography.bodyMedium)
+        Text(torStatusLine(it, vm.host.tor.usingBridges()), style = MaterialTheme.typography.bodyMedium)
     }
     Text(
         "Cipher sends everything through Tor. That hides your phone's address from the relay. " +
@@ -366,23 +366,7 @@ private fun NetworkSection(state: UiState, vm: AppViewModel) {
         }
     }
     if (embedded) {
-        var bridges by remember { mutableStateOf(vm.host.tor.bridges().joinToString("\n")) }
-        var bridgesOk by remember { mutableStateOf(true) }
-        PrivateTextField(
-            bridges,
-            { bridges = it },
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            label = { Text("Bridges (optional, one per line)") },
-        )
-        if (!bridgesOk) {
-            Text(
-                "Only plain bridges are supported: IP:port, optionally followed by the 40-character fingerprint.",
-                color = MaterialTheme.colorScheme.error
-            )
-        }
-        SecondaryButton(onClick = {
-            bridgesOk = vm.saveBridges(bridges)
-        }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Save bridges") }
+        TorConnectionChooser(vm.host.tor)
     } else {
         PrivateTextField(
             socks,
@@ -417,5 +401,72 @@ private fun NetworkSection(state: UiState, vm: AppViewModel) {
                 }
             }
         }
+    }
+}
+
+/** One line for "Tor is connecting", shared by onboarding, the chat list banner and settings. */
+internal fun torStatusLine(progress: Int?, usingBridges: Boolean): String {
+    val p = progress ?: 0
+    val base = if (p <= 0) "Starting Tor\u2026" else "Connecting to Tor\u2026 $p%"
+    return if (usingBridges) "$base (through a bridge)" else base
+}
+
+/**
+ * How the built-in Tor connects: automatic (default; switches to bridges by itself when the network blocks Tor), direct, the built-in bridges, or
+ * bridges the user pasted from bridges.torproject.org. Used in settings and on the onboarding screen when Tor cannot connect.
+ */
+@Composable
+internal fun TorConnectionChooser(tor: app.cipher.messenger.net.tor.EmbeddedTor) {
+    var mode by remember { mutableStateOf(tor.mode()) }
+    var custom by remember { mutableStateOf(tor.bridges().joinToString("\n")) }
+    var customOk by remember { mutableStateOf(true) }
+    var saved by remember { mutableStateOf(false) }
+    Text("How to connect to Tor", style = MaterialTheme.typography.titleSmall, modifier = Modifier.padding(top = 8.dp))
+    listOf(
+        app.cipher.messenger.net.tor.TorMode.AUTO to
+            ("Automatic" to "Recommended. Tries a direct connection and switches to a bridge by itself if your network blocks Tor."),
+        app.cipher.messenger.net.tor.TorMode.DIRECT to ("Direct" to "Fastest, but does not work where Tor is blocked."),
+        app.cipher.messenger.net.tor.TorMode.BUILTIN_BRIDGES to
+            ("Built-in bridges" to "Snowflake and obfs4. Use this if Tor is blocked or censored where you are."),
+        app.cipher.messenger.net.tor.TorMode.CUSTOM_BRIDGES to
+            ("My own bridges" to "Paste bridges from bridges.torproject.org or a friend."),
+    ).forEach { (m, text) ->
+        val pick = {
+            if (m != mode) {
+                mode = m
+                saved = false
+                if (m != app.cipher.messenger.net.tor.TorMode.CUSTOM_BRIDGES) tor.setMode(m)
+            }
+        }
+        Row(Modifier.fillMaxWidth().clickable { pick() }.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+            RadioButton(mode == m, { pick() })
+            Column {
+                Text(text.first)
+                Text(text.second, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+    }
+    if (mode == app.cipher.messenger.net.tor.TorMode.CUSTOM_BRIDGES) {
+        PrivateTextField(
+            custom,
+            {
+                custom = it
+                saved = false
+            },
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+            label = { Text("Bridges, one per line") },
+        )
+        if (!customOk) {
+            Text(
+                "Supported: obfs4, webtunnel, snowflake and plain bridges (IP:port with optional fingerprint), up to " +
+                    "${app.cipher.messenger.net.tor.TorConfig.MAX_BRIDGES} lines.",
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        if (saved) Text("Saved. Tor is reconnecting with your bridges.", style = MaterialTheme.typography.labelSmall)
+        SecondaryButton(onClick = {
+            customOk = tor.useCustomBridges(custom)
+            saved = customOk
+        }, modifier = Modifier.fillMaxWidth().padding(top = 4.dp)) { Text("Use these bridges") }
     }
 }

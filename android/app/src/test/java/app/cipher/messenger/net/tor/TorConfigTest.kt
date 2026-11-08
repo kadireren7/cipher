@@ -58,7 +58,11 @@ class TorConfigTest {
             "192.0.2.7:443\nControlPort 9051",
             "192.0.2.7:443\rHTTPTunnelPort 8118",
             "192.0.2.7:443 \u0000",
-            "obfs4 192.0.2.7:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=abc iat-mode=0", // pluggable transport: refused, not ignored
+            "obfs4 192.0.2.7:443 0123456789ABCDEF0123456789ABCDEF01234567 cert=abc iat-mode=0\nControlPort 9051",
+            "obfs4 192.0.2.7:443 cert=a\"b",
+            "obfs4 192.0.2.7:443 cert=abc #comment",
+            "meek 192.0.2.7:443", // unknown transport
+            "conjure 192.0.2.7:443",
             "192.0.2.7:443 ; ControlPort 9051",
             "192.0.2.7:0",
             "192.0.2.7:70000",
@@ -101,5 +105,66 @@ class TorConfigTest {
         assertNull(TorProgress.decode("abc 123", now))
         assertNull(TorProgress.decode("101 $now", now))
         assertNull(TorProgress.decode(null, now))
+    }
+
+    @Test fun pluggableTransportBridgesAreAcceptedAsTorProjectHandsThemOut() {
+        val obfs4 = "obfs4 192.0.2.7:443 0123456789ABCDEF0123456789ABCDEF01234567 " +
+            "cert=ssH+9rP8dG2NLDN2XuFw63hIO/9MNNinLmxQDpVa+7kT iat-mode=0"
+        assertEquals(obfs4, TorConfig.parseBridge(obfs4))
+        assertEquals(
+            "a torrc-style 'Bridge ' prefix and tabs are tolerated",
+            obfs4,
+            TorConfig.parseBridge("Bridge  $obfs4".replace(" cert", "\tcert"))
+        )
+        val webtunnel = "webtunnel [2001:db8:1::2]:443 0123456789ABCDEF0123456789ABCDEF01234567 url=https://example.org/abc ver=0.0.1"
+        assertEquals(webtunnel, TorConfig.parseBridge(webtunnel))
+        assertEquals("webtunnel", TorConfig.transportOf(webtunnel))
+        assertNull(TorConfig.transportOf("192.0.2.7:443"))
+    }
+
+    @Test fun everyBuiltInBridgeIsValidAndNeedsAShippedTransport() {
+        assertTrue(BuiltinBridges.ALL.size in 2..TorConfig.MAX_BRIDGES * 2)
+        for (b in BuiltinBridges.ALL) {
+            assertEquals(b, TorConfig.parseBridge(b))
+            assertTrue(TorConfig.transportOf(b) in setOf("snowflake", "obfs4"))
+        }
+    }
+
+    @Test fun transportBridgesGetTheirHelperPortAndBridgesWithoutAHelperAreLeftOut() {
+        val rc = TorConfig.torrc(BuiltinBridges.ALL + "192.0.2.7:443", transportPorts = mapOf("snowflake" to 40001, "obfs4" to 40002))
+        assertTrue(rc.lines().contains("ClientTransportPlugin snowflake socks5 127.0.0.1:40001"))
+        assertTrue(rc.lines().contains("ClientTransportPlugin obfs4 socks5 127.0.0.1:40002"))
+        assertEquals(BuiltinBridges.ALL.size + 1, rc.lines().count { it.startsWith("Bridge ") })
+        assertEquals("still exactly one SocksPort", 1, rc.lines().count { it.startsWith("SocksPort") })
+
+        val noHelper = TorConfig.torrc(BuiltinBridges.ALL, transportPorts = mapOf("snowflake" to 40001))
+        assertFalse("obfs4 bridges without a helper are not written", noHelper.contains("Bridge obfs4"))
+        assertTrue(noHelper.contains("Bridge snowflake"))
+
+        val none = TorConfig.torrc(BuiltinBridges.OBFS4, transportPorts = mapOf("obfs4" to 0))
+        assertFalse("an invalid port is no port: no bridges, no UseBridges", none.contains("UseBridges"))
+    }
+
+    @Test fun modesChooseTheBridgesOfAnAttempt() {
+        assertTrue(TorPlan.bridgesFor(TorMode.DIRECT, listOf("192.0.2.7:443"), true).isEmpty())
+        assertTrue(TorPlan.bridgesFor(TorMode.AUTO, emptyList(), false).isEmpty())
+        assertEquals(BuiltinBridges.ALL, TorPlan.bridgesFor(TorMode.AUTO, emptyList(), true))
+        assertEquals(BuiltinBridges.ALL, TorPlan.bridgesFor(TorMode.BUILTIN_BRIDGES, listOf("192.0.2.7:443"), false))
+        assertEquals(listOf("192.0.2.7:443"), TorPlan.bridgesFor(TorMode.CUSTOM_BRIDGES, listOf("192.0.2.7:443"), false))
+        assertEquals("unknown or missing mode is Automatic", TorMode.AUTO, TorMode.parse(null))
+        assertEquals(TorMode.AUTO, TorMode.parse("garbage"))
+        assertEquals(TorMode.CUSTOM_BRIDGES, TorMode.parse("CUSTOM_BRIDGES\n"))
+    }
+
+    @Test fun automaticSwitchesToBridgesWhenADirectAttemptStallsAndBackWhenBridgesNeverFinish() {
+        assertNull("too early", TorPlan.autoSwitch(false, 5, TorPlan.DIRECT_PATIENCE_MS - 1))
+        assertEquals("stalled at the handshake (DPI)", true, TorPlan.autoSwitch(false, 10, TorPlan.DIRECT_PATIENCE_MS))
+        assertEquals("never reported", true, TorPlan.autoSwitch(false, null, TorPlan.DIRECT_PATIENCE_MS))
+        assertNull("real progress: keep waiting", TorPlan.autoSwitch(false, 50, TorPlan.DIRECT_PATIENCE_MS * 3))
+        assertNull("done", TorPlan.autoSwitch(true, 100, TorPlan.BRIDGE_PATIENCE_MS * 2))
+        assertNull(TorPlan.autoSwitch(true, 10, TorPlan.BRIDGE_PATIENCE_MS - 1))
+        assertEquals("bridges never got past the first hop", false, TorPlan.autoSwitch(true, 10, TorPlan.BRIDGE_PATIENCE_MS))
+        assertNull("bridges are making progress: keep them", TorPlan.autoSwitch(true, 40, TorPlan.BRIDGE_PATIENCE_MS))
+        assertEquals(false, TorPlan.autoSwitch(true, 40, TorPlan.BRIDGE_MAX_MS))
     }
 }

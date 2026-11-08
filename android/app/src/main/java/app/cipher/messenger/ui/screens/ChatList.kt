@@ -201,7 +201,7 @@ internal fun ConversationRow(c: ConversationFfi, onClick: () -> Unit) {
 internal fun RouteBanner(route: RouteStatus, offline: Boolean, torProgress: Int? = null) {
     when {
         route == RouteStatus.PROTECTED -> Unit // nothing to say; Settings shows the detail
-        torProgress != null && torProgress < 100 && !offline -> Banner("Connecting to Tor\u2026 $torProgress%")
+        torProgress != null && torProgress < 100 && !offline -> Banner(torStatusLine(torProgress, false))
         route == RouteStatus.UNAVAILABLE ->
             Banner("Privacy route unavailable. Messages stay queued, encrypted, and will not be sent another way.", error = true)
         route == RouteStatus.OFFLINE || offline -> Banner("You're offline. Messages will send when you're back.")

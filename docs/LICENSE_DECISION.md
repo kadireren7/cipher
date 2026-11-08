@@ -12,3 +12,7 @@
 | Trademark and name "Cipher" | Name availability has not been checked. | ☐ |
 | Store policy | Google Play and F-Droid have their own rules for encryption declarations and anti-features. | ☐ |
 Once chosen: add `LICENSE`, set `license` in `Cargo.toml`, add SPDX headers if wanted, update `README.md`, SBOM metadata and the in-app "About" text.
+
+## Third-party licences that constrain the choice (added 2026-11-08)
+
+The Android APK now bundles IPtProxy (MIT), which contains **lyrebird (GPL-3.0)** and snowflake (BSD-3-Clause), in the same native library. Distributing the APK therefore distributes GPL-3.0 code: the app's licence must be compatible with GPL-3.0 for the combined work (GPL-3.0/AGPL-3.0 are; a proprietary or "all rights reserved" licence is not), and the corresponding source must be offered. tor-android (BSD-3-Clause) does not add such a constraint.

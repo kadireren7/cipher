@@ -169,6 +169,8 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
     var createError by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableIntStateOf(0) }
     var torWait by remember { mutableStateOf<Int?>(null) }
+    var torBridges by remember { mutableStateOf(false) }
+    var torFailed by remember { mutableStateOf(false) }
 
     Column(
         Modifier.fillMaxSize().padding(24.dp).verticalScroll(rememberScrollState()),
@@ -311,16 +313,22 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                     createError = null
                     if (vm.host.routeConfig.embedded()) {
                         // Registration goes through Tor: wait (bounded, with progress) until the built-in daemon is ready instead of failing at once.
-                        vm.host.tor.start()
+                        // In the default Automatic mode the daemon switches to a bridge by itself when the network blocks Tor, so the wait is long
+                        // enough for one direct attempt plus one bridge attempt. A retry after a failure starts a fresh attempt.
+                        torFailed = false
+                        if (attempt > 0 && (vm.host.torProgress() ?: 0) < 100) vm.host.tor.restart() else vm.host.tor.start()
                         var waitedSecs = 0
-                        while (waitedSecs < 180 && (vm.host.torProgress() ?: 0) < 100) {
+                        while (waitedSecs < TOR_WAIT_SECS && (vm.host.torProgress() ?: 0) < 100) {
                             torWait = vm.host.torProgress() ?: 0
+                            torBridges = vm.host.tor.usingBridges()
                             kotlinx.coroutines.delay(1000)
                             waitedSecs++
                         }
                         torWait = null
                         if ((vm.host.torProgress() ?: 0) < 100) {
-                            createError = "Couldn't connect to Tor. Check your internet connection and try again."
+                            torFailed = true
+                            createError = "Couldn't connect to Tor. Your network may be blocking it: choose \"Built-in bridges\" below " +
+                                "(or paste your own) and try again."
                             return@LaunchedEffect
                         }
                     }
@@ -353,7 +361,7 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                     CircularProgressIndicator()
                     Spacer(Modifier.height(16.dp))
                     Text(
-                        torWait?.let { "Connecting to Tor… $it%" } ?: "Creating your keys…",
+                        torWait?.let { torStatusLine(it, torBridges) } ?: "Creating your keys…",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(
@@ -364,6 +372,7 @@ fun OnboardingFlow(state: UiState, vm: AppViewModel) {
                 } else {
                     Banner(createError ?: "", error = true)
                     PrimaryButton("Try again") { attempt++ }
+                    if (torFailed) TorConnectionChooser(vm.host.tor)
                     TextButton(onClick = { step = Step.SERVER }) { Text("Change server") }
                 }
             }
@@ -450,3 +459,6 @@ private fun ModeCard(
         }
     }
 }
+
+/** Onboarding waits this long for Tor: a direct attempt (TorPlan.DIRECT_PATIENCE_MS) plus a slow bridge attempt and slack. */
+private const val TOR_WAIT_SECS = 300

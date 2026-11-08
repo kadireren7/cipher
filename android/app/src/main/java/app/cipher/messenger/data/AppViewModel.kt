@@ -288,8 +288,6 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         _state.update { it.copy(route = host.routeStatus(), torProgress = host.torProgress()) }
     }
 
-    fun saveBridges(block: String): Boolean = host.tor.setBridges(block)
-
     fun saveSocks(text: String): Boolean {
         val e = SocksEndpoint.parse(text) ?: return false
         host.configureSocks(e)

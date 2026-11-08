@@ -186,6 +186,9 @@ dependencies {
     // Embedded Tor (Guardian Project packaging of the C Tor daemon, from Maven Central): runs in its own :tor process, see net/tor/.
     implementation(libs.tor.android)
     implementation(libs.jtorctl)
+    // Pluggable transports (obfs4/webtunnel via lyrebird, and snowflake), from Maven Central. Used only inside the :tor process, only when a
+    // bridge needs them: they make Tor reachable on networks that block or fingerprint plain Tor connections (DPI).
+    implementation(libs.iptproxy)
 
     debugImplementation(libs.compose.ui.tooling)
     debugImplementation(libs.compose.ui.test.manifest)
